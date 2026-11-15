@@ -11,6 +11,7 @@ zeroize.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
+log.workspace = true
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]

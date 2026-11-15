@@ -4,34 +4,44 @@ on:
   push:
     branches: [main, "feat/**"]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  test-and-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  site:
+    name: Website checks
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Linux audio development headers
-        if: runner.os == 'Linux'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/check-site.mjs
+      - name: Excerpts are up to date
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
+          python3 scripts/gen-excerpts.py
+          git diff --exit-code website/excerpts.js
 
-      - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio headers
+        run: |
+          sudo -S -p '' apt-get update
+          sudo -S -p '' apt-get install -y libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
 
-      - name: Cache Cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run workspace unit & integration tests
-        run: cargo test --workspace
-
-      - name: Build release binary (Windows)
-        if: runner.os == 'Windows'
-        run: cargo build --release
+  windows:
+    name: Windows build & tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo build --release

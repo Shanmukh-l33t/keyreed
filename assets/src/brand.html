@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<!--
+  Source for the KeyReed brand images: social preview, website Open Graph card and README banner.
+  Render with headless Chromium, for example:
+
+    chromium --headless --disable-gpu --hide-scrollbars --window-size=1280,640 \
+      --screenshot=assets/social-preview/social-preview.png "file://$PWD/assets/src/brand.html#social"
+
+  Variants (URL hash): #social 1280x640, #og 1200x630, #banner 1600x440.
+  Fonts are the self-hosted website fonts. The mark is website/assets/icon.png.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>KeyReed brand images</title>
+<style>
+@font-face{font-family:"Geist";src:url(../../website/assets/fonts/geist-var.woff2) format("woff2");font-weight:400 700}
+@font-face{font-family:"Geist Mono";src:url(../../website/assets/fonts/geist-mono.woff2) format("woff2");font-weight:400 500}
+@font-face{font-family:"Instrument Serif";src:url(../../website/assets/fonts/instrument-serif-italic.woff2) format("woff2");font-style:italic}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#060908}
+body{width:1200px;height:630px;overflow:hidden;position:relative;font-family:"Geist",system-ui,sans-serif;color:#e8f1ec;-webkit-font-smoothing:antialiased}
+body.social{width:1280px;height:640px}
+body.banner{width:1600px;height:440px}
+.bg{position:absolute;inset:0;background:
+  radial-gradient(760px 520px at 12% -8%,rgba(16,185,129,.38),transparent 70%),
+  radial-gradient(640px 520px at 96% 108%,rgba(11,92,66,.7),transparent 70%),
+  #060908}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(176,236,208,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(176,236,208,.07) 1px,transparent 1px);background-size:56px 56px;-webkit-mask-image:radial-gradient(ellipse 80% 70% at 30% 20%,#000 20%,transparent 78%);mask-image:radial-gradient(ellipse 80% 70% at 30% 20%,#000 20%,transparent 78%)}
+.wrap{position:absolute;inset:0;display:flex;align-items:stretch;justify-content:space-between;padding:64px 72px}
+.left{display:flex;flex-direction:column;justify-content:space-between;min-width:0}
+.brand{display:flex;align-items:center;gap:16px}
+.brand img{width:64px;height:64px}
+.wordmark{font-size:40px;font-weight:600;letter-spacing:-.035em}
+.wordmark b{color:#34d399;font-weight:600}
+h1{font-size:88px;line-height:.98;font-weight:600;letter-spacing:-.05em}
+h1 em{font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;letter-spacing:-.02em;font-size:1.08em;background:linear-gradient(110deg,#a7f3d0,#34d399 55%,#6ee7b7);-webkit-background-clip:text;background-clip:text;color:transparent;padding-right:.06em}
+.sub{margin-top:26px;font-size:30px;line-height:1.3;color:#a5b8af;letter-spacing:-.015em;max-width:640px}
+.tags{display:flex;gap:10px;margin-top:26px}
+.tags span{padding:8px 16px;border-radius:999px;border:1px solid rgba(176,236,208,.22);background:rgba(16,185,129,.08);font-size:20px;color:#cfe3d9}
+.card{align-self:center;width:400px;padding:26px 26px 22px;border-radius:28px;border:1px solid rgba(176,236,208,.2);background:linear-gradient(180deg,rgba(176,236,208,.09),rgba(176,236,208,.02));box-shadow:0 40px 90px -30px rgba(0,0,0,.9),0 0 90px -20px rgba(16,185,129,.45)}
+.pill{display:flex;align-items:center;gap:14px;height:64px;padding:0 22px 0 12px;border-radius:999px;border:1px solid rgba(110,231,183,.6);background:#08110e;box-shadow:0 0 50px -8px rgba(52,211,153,.6)}
+.pill .mic{width:42px;height:42px;border-radius:50%;background:#f3f7f5;display:grid;place-items:center}
+.pill .mic img{width:30px;height:30px}
+.wave{display:flex;align-items:center;gap:4px;height:44px;flex:1}
+.wave i{display:block;width:4px;border-radius:2px;background:linear-gradient(180deg,#a7f3d0,#10b981)}
+.pill b{font-size:19px;font-weight:500;color:#fff;letter-spacing:-.01em;white-space:nowrap}
+.said{margin-top:22px;padding:18px 20px;border-radius:16px;border:1px solid rgba(52,211,153,.35);background:rgba(16,185,129,.08);font-size:22px;line-height:1.4;color:#fff}
+.said small{display:block;margin-bottom:8px;font:500 13px/1 "Geist Mono",monospace;letter-spacing:.12em;text-transform:uppercase;color:#34d399}
+.keys{display:flex;align-items:center;gap:14px;margin-top:20px;font:500 17px/1 "Geist Mono",monospace;color:#a5b8af}
+.keys kbd{padding:12px 18px;border-radius:12px;border:1px solid rgba(176,236,208,.25);border-bottom-width:4px;background:linear-gradient(180deg,#1a2a24,#132019);color:#e8f1ec;font:inherit}
+/* social + og share the same layout; banner is wide and short */
+body.banner .wrap{padding:56px 80px}
+body.banner h1{font-size:68px;line-height:1.04;white-space:nowrap}
+body.banner h1 br:first-of-type{display:none}
+body.banner .sub{font-size:28px;margin-top:18px;max-width:none}
+body.banner .tags{display:none}
+body.banner .card{width:430px}
+body.banner .brand img{width:72px;height:72px}
+body.banner .wordmark{font-size:46px}
+</style>
+</head>
+<body>
+<div class="bg"></div><div class="grid"></div>
+<div class="wrap">
+  <div class="left">
+    <div class="brand"><img src="../../website/assets/icon.png" alt=""><span class="wordmark">Key<b>Reed</b></span></div>
+    <div>
+      <h1>Your voice. <br>Your words. <br><em>Your machine.</em></h1>
+      <p class="sub">Open-source, local-first voice dictation for Windows.</p>
+      <div class="tags"><span>MIT or Apache-2.0</span><span>Windows x64</span><span>Local by default</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="pill"><span class="mic"><img src="../../website/assets/icon.png" alt=""></span><span class="wave" id="wave"></span><b>Listening</b></div>
+    <div class="said"><small>KeyReed wrote</small>Hey Maya, the launch is moving to Thursday because the design review is not finished yet.</div>
+    <div class="keys"><kbd>Right Ctrl</kbd><span>hold to talk</span></div>
+  </div>
+</div>
+<script>
+document.body.className = (location.hash || '#og').slice(1);
+// Deterministic waveform: bell-shaped envelope with a fixed pseudo-random wobble, so renders are reproducible.
+const w = document.getElementById('wave'); let s = 7;
+const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+for (let i = 0; i < 22; i++) {
+  const bell = Math.pow(Math.sin(Math.PI * (i + .5) / 22), .8);
+  const h = Math.round(6 + 38 * bell * (.55 + .45 * rnd()));
+  const b = document.createElement('i'); b.style.height = h + 'px'; w.appendChild(b);
+}
+</script>
+</body>
+</html>

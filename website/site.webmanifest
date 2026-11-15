@@ -1,11 +1,13 @@
 {
   "name": "KeyReed",
   "short_name": "KeyReed",
+  "description": "Open-source, local-first voice dictation for Windows.",
+  "start_url": "/",
   "icons": [
     { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
   ],
-  "display": "standalone",
-  "background_color": "#f4f1ea",
-  "theme_color": "#1c1e21"
+  "display": "browser",
+  "background_color": "#f6f9f6",
+  "theme_color": "#f6f9f6"
 }
