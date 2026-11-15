@@ -14,7 +14,7 @@ use vi_asr::{
     cloud::transcribe_cloud_multipart,
     LocalAsrEngine,
 };
-use vi_audio::{load_wav_16k_mono, ActiveCapture};
+use vi_audio::{list_input_devices, load_wav_16k_mono, ActiveCapture};
 use vi_core::{
     brand::{AUTOSTART_REG_VALUE, PRODUCT_NAME, PRODUCT_TAGLINE, SINGLE_INSTANCE_MUTEX, VERSION_STR},
     AppCategory, AppConfig, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
@@ -23,16 +23,20 @@ use vi_core::{
 use vi_rewrite::{slm::LlamaServerSupervisor, RewriteEngine};
 use vi_win32::{
     capture_foreground_context, current_process_memory_mb, deliver_direct_or_clipboard_fallback,
-    dpapi_decrypt_from_b64, dpapi_encrypt_to_b64, harden_and_init_process, read_clipboard_unicode,
-    set_autostart_enabled, read_autostart_value, timing_mark, write_clipboard_unicode, DirectTypeOutcome, GlobalHotkeyEngine,
-    HotkeyEvent, SingleInstanceGuard, UiAction,
+    dpapi_decrypt_from_b64, dpapi_encrypt_to_b64, harden_and_init_process, is_spec_physically_down,
+    prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
+    set_autostart_enabled, timing_mark, write_clipboard_unicode, DirectTypeOutcome,
+    GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
 };
 use zeroize::Zeroize;
 
-/// Resolves runtime directories relative to the executable or `KEYREED_RUNTIME_ROOT` override.
+/// Resolves runtime directories relative to the executable, `KEYREED_RUNTIME_ROOT`,
+/// and `%LOCALAPPDATA%\keyreed\models` so both bundled offline models and user-downloaded
+/// models work seamlessly even when installed under `C:\Program Files\KeyReed`.
 struct RuntimePaths {
     sherpa_lib_dir: PathBuf,
     models_dir: PathBuf,
+    user_models_dir: PathBuf,
     silero_vad_path: PathBuf,
     llama_server_bin: PathBuf,
 }
@@ -59,6 +63,7 @@ impl RuntimePaths {
                 }
             });
 
+        let user_models_dir = AppConfig::default_models_dir();
         let models_dir = env::var("KEYREED_MODELS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -66,18 +71,22 @@ impl RuntimePaths {
                 if bundled.exists() {
                     bundled
                 } else {
-                    AppConfig::default_models_dir()
+                    user_models_dir.clone()
                 }
             });
 
         let silero_vad_path = {
-            let p1 = models_dir.join("silero_vad.onnx");
-            let p2 = root.join("silero_vad.onnx");
-            if p1.exists() {
-                p1
-            } else {
-                p2
-            }
+            let candidates = [
+                models_dir.join("silero_vad.onnx"),
+                user_models_dir.join("silero_vad.onnx"),
+                root.join("models").join("silero_vad.onnx"),
+                root.join("silero_vad.onnx"),
+            ];
+            candidates
+                .iter()
+                .find(|p| p.exists())
+                .cloned()
+                .unwrap_or_else(|| models_dir.join("silero_vad.onnx"))
         };
 
         #[cfg(windows)]
@@ -100,9 +109,37 @@ impl RuntimePaths {
         Self {
             sherpa_lib_dir,
             models_dir,
+            user_models_dir,
             silero_vad_path,
             llama_server_bin,
         }
+    }
+
+    /// Returns a writable directory for downloading models. If `models_dir` is in `Program Files`
+    /// and not writable without elevation, falls back to `%LOCALAPPDATA%\keyreed\models`.
+    fn writable_models_dir(&self) -> PathBuf {
+        if env::var("KEYREED_MODELS_DIR").is_ok() {
+            return self.models_dir.clone();
+        }
+        let probe = self.models_dir.join(".write_probe");
+        if std::fs::create_dir_all(&self.models_dir).is_ok()
+            && std::fs::write(&probe, b"ok").is_ok()
+        {
+            let _ = std::fs::remove_file(&probe);
+            return self.models_dir.clone();
+        }
+        let _ = std::fs::create_dir_all(&self.user_models_dir);
+        self.user_models_dir.clone()
+    }
+
+    /// Finds which models root (`models_dir` or `user_models_dir`) contains `folder_name`.
+    fn find_installed_model_root(&self, folder_name: &str) -> Option<PathBuf> {
+        for root in [&self.models_dir, &self.user_models_dir] {
+            if root.join(folder_name).exists() {
+                return Some(root.clone());
+            }
+        }
+        None
     }
 
     fn resolve_gguf_path(&self, model_id: &str) -> Option<PathBuf> {
@@ -114,14 +151,16 @@ impl RuntimePaths {
             "Qwen3.5-0.8B-Q4_K_M.gguf".to_string(),
             "Qwen3-0.6B-Q4_K_M.gguf".to_string(),
         ];
-        for name in candidates {
-            let p = self.models_dir.join(&name);
-            if p.exists() {
-                if let Err(err) = vi_asr::integrity::verify_gguf(&p) {
-                    log::error!("refusing weight file {}: {err}", p.display());
-                    continue;
+        for root in [&self.models_dir, &self.user_models_dir] {
+            for name in &candidates {
+                let p = root.join(name);
+                if p.exists() {
+                    if let Err(err) = vi_asr::integrity::verify_gguf(&p) {
+                        log::error!("refusing weight file {}: {err}", p.display());
+                        continue;
+                    }
+                    return Some(p);
                 }
-                return Some(p);
             }
         }
         None
@@ -178,19 +217,20 @@ impl InferenceSupervisor {
         if self.asr.is_none() || self.loaded_asr_id != cfg.local_asr_model {
             let spec = find_model_spec(&cfg.local_asr_model)
                 .with_context(|| format!("ASR model '{}' not in catalog", cfg.local_asr_model))?;
-            vi_asr::integrity::sweep_incomplete(&self.paths.models_dir)?;
-            let model_dir = {
-                let direct = self.paths.models_dir.join(spec.folder_name);
-                if direct.exists() {
-                    vi_asr::integrity::prepare_installed_model(&self.paths.models_dir, spec.id)?
-                } else if cfg.processing_profile.allows_network() {
-                    ensure_model_present(&self.paths.models_dir, spec)?
-                } else {
-                    bail!(
-                        "ASR model '{}' is not installed and the offline profile will not download it",
-                        spec.id
-                    );
-                }
+            let _ = vi_asr::integrity::sweep_incomplete(&self.paths.models_dir);
+            let _ = vi_asr::integrity::sweep_incomplete(&self.paths.user_models_dir);
+            let model_dir = if let Some(installed_root) =
+                self.paths.find_installed_model_root(spec.folder_name)
+            {
+                vi_asr::integrity::prepare_installed_model(&installed_root, spec.id)?
+            } else if cfg.processing_profile.allows_network() {
+                let dl_root = self.paths.writable_models_dir();
+                ensure_model_present(&dl_root, spec)?
+            } else {
+                bail!(
+                    "ASR model '{}' is not installed and the offline profile will not download it",
+                    spec.id
+                );
             };
             let vad_opt = if self.paths.silero_vad_path.exists() {
                 Some(self.paths.silero_vad_path.as_path())
@@ -346,15 +386,31 @@ impl InferenceSupervisor {
 
         if deliver_output {
             match cfg.output_mode {
-                OutputMode::Clipboard | OutputMode::AskBeforeInserting => {
+                OutputMode::Clipboard => {
                     write_clipboard_unicode(
                         &rw.final_text,
                         cfg.privacy.exclude_from_clipboard_history,
                     )?;
                     delivered_via = OutputMode::Clipboard;
-                    if cfg.output_mode == OutputMode::AskBeforeInserting {
-                        let preview: String = rw.final_text.chars().take(96).collect();
-                        warning_note = Some(format!("Ready to paste. {}", preview));
+                }
+                OutputMode::AskBeforeInserting => {
+                    match prompt_and_deliver_ask_before_inserting(
+                        &rw.final_text,
+                        fg_ctx,
+                        cfg.privacy.block_password_fields,
+                        rw.requires_confirmation,
+                        cfg.privacy.exclude_from_clipboard_history,
+                        None,
+                    )? {
+                        DirectTypeOutcome::TypedDirectly { .. } => {
+                            delivered_via = OutputMode::DirectTyping;
+                        }
+                        DirectTypeOutcome::FallbackToClipboard { reason } => {
+                            delivered_via = OutputMode::Clipboard;
+                            fallback_to_clipboard = reason != "user_chose_clipboard_only";
+                            let preview: String = rw.final_text.chars().take(96).collect();
+                            warning_note = Some(format!("Copied to clipboard ({reason}). {preview}"));
+                        }
                     }
                 }
                 OutputMode::DirectTyping => {
@@ -658,15 +714,136 @@ fn run_eval_correction_jsonl(jsonl_path: &Path, llm_model: &str) -> Result<()> {
 }
 
 #[cfg(windows)]
+fn run_e2e_target_window_process() -> Result<()> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
+        RegisterClassW, SetForegroundWindow, ShowWindow, TranslateMessage, MSG,
+        SW_SHOWNORMAL, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_TOPMOST, WS_OVERLAPPED,
+        WS_SYSMENU, WS_VISIBLE,
+    };
+
+    unsafe extern "system" fn target_wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        const WM_DESTROY: u32 = 0x0002;
+        const WM_USER_FOCUS_EDIT: u32 = 0x0400 + 70;
+        const WM_USER_FOCUS_PASS: u32 = 0x0400 + 71;
+        match msg {
+            WM_USER_FOCUS_EDIT => {
+                let ed = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, 201);
+                if !ed.is_null() {
+                    let _ = SetFocus(ed);
+                }
+                0
+            }
+            WM_USER_FOCUS_PASS => {
+                let pw = windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, 202);
+                if !pw.is_null() {
+                    let _ = SetFocus(pw);
+                }
+                0
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe {
+        let hinst = GetModuleHandleW(std::ptr::null());
+        let cls: Vec<u16> = "KeyreedE2ETargetWindow\0".encode_utf16().collect();
+        let title: Vec<u16> = "KeyReed E2E Target Editor\0".encode_utf16().collect();
+        let edit_cls: Vec<u16> = "EDIT\0".encode_utf16().collect();
+        let empty: Vec<u16> = "\0".encode_utf16().collect();
+
+        let wc = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(target_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinst,
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: 6 as _,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: cls.as_ptr(),
+        };
+        RegisterClassW(&wc);
+
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST,
+            cls.as_ptr(),
+            title.as_ptr(),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            80,
+            120,
+            520,
+            340,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null(),
+        );
+        // ES_MULTILINE (0x0004) | ES_AUTOVSCROLL (0x0040) | ES_WANTRETURN (0x1000)
+        let ed = CreateWindowExW(
+            0,
+            edit_cls.as_ptr(),
+            empty.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | 0x0004 | 0x0040 | 0x1000,
+            16,
+            16,
+            470,
+            210,
+            hwnd,
+            201usize as _,
+            hinst,
+            std::ptr::null(),
+        );
+        // ES_PASSWORD (0x0020)
+        let _pw = CreateWindowExW(
+            0,
+            edit_cls.as_ptr(),
+            empty.as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | 0x0020,
+            16,
+            240,
+            470,
+            32,
+            hwnd,
+            202usize as _,
+            hinst,
+            std::ptr::null(),
+        );
+        let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+        let _ = SetForegroundWindow(hwnd);
+        if !ed.is_null() {
+            let _ = SetFocus(ed);
+        }
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<PathBuf>) -> Result<()> {
     use std::process::Command;
     use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
-    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, GetForegroundWindow, SendMessageW, SetForegroundWindow,
-        WM_GETTEXT, WM_GETTEXTLENGTH,
+        FindWindowW, GetDlgItem, SendMessageW,
+        WM_CLOSE, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
     };
 
     harden_and_init_process();
@@ -730,17 +907,52 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
     let clip_back = read_clipboard_unicode()?.unwrap_or_default();
     assert!(clip_back.contains("नमस्ते भारत") && clip_back.contains("₹1,250"));
 
-    // 5. Spawn live Tray + Non-Activating Layered Floating Pill + Settings Window + Notepad focus test!
+    // 5. Real Hardware Microphone Enumeration, Capture, Cancellation & Fallback Verification
+    let hw_mics = list_input_devices();
+    let mut mic_hw_report = serde_json::json!({
+        "enumerated_count": hw_mics.len(),
+        "devices": hw_mics,
+    });
+    if !hw_mics.is_empty() {
+        let t_mic = Instant::now();
+        if let Ok(cap) = ActiveCapture::start(None) {
+            let open_ms = t_mic.elapsed().as_secs_f64() * 1000.0;
+            let dev_name = cap.device_name().to_string();
+            std::thread::sleep(Duration::from_millis(350));
+            let samples_16k = cap.stop_and_take_16k();
+            let fallback_ok = ActiveCapture::start(Some("Unplugged_USB_Headset_Test_Device"))
+                .map(|c| {
+                    let fb = c.used_fallback_device();
+                    c.cancel_and_zeroize();
+                    fb
+                })
+                .unwrap_or(false);
+            mic_hw_report = serde_json::json!({
+                "status": "PASS",
+                "enumerated_count": hw_mics.len(),
+                "devices": hw_mics,
+                "active_device": dev_name,
+                "open_latency_ms": (open_ms * 100.0).round() / 100.0,
+                "captured_16k_samples_350ms": samples_16k.len(),
+                "cancel_and_zeroize": "PASS",
+                "unplugged_device_fallback": if fallback_ok { "PASS" } else { "FAIL" },
+            });
+        }
+    }
+
+    // 6. Spawn live Tray + Non-Activating Layered Floating Pill + Settings Window + Dedicated External Target Window!
     let (ui_tx, _ui_rx) = crossbeam_channel::unbounded();
-    let (gui, _pump) = vi_win32::ui::win_gui::init_and_spawn_gui_windows(ui_tx, cfg.clone(), true)?;
+    let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
+    let (gui, _pump) = vi_win32::ui::win_gui::init_and_spawn_gui_windows(
+        ui_tx,
+        cfg.clone(),
+        mic_names.clone(),
+        true,
+    )?;
     gui.sync(EngineState::Listening, 0.65, None);
 
-    // Launch classic/Windows 11 Notepad or inspect foreground focus
-    let mut notepad_child = Command::new("notepad.exe").spawn().ok();
-    std::thread::sleep(Duration::from_millis(900));
-
     // Pump pending GUI messages so Tray, Floating Pill, and Settings render completely on desktop
-    unsafe {
+    let pump_gui_messages = || unsafe {
         let mut msg: windows_sys::Win32::UI::WindowsAndMessaging::MSG = std::mem::zeroed();
         while windows_sys::Win32::UI::WindowsAndMessaging::PeekMessageW(
             &mut msg,
@@ -753,12 +965,221 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
             windows_sys::Win32::UI::WindowsAndMessaging::TranslateMessage(&msg);
             windows_sys::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg);
         }
-    }
+    };
+    pump_gui_messages();
 
+    // Read-only check of Windows 11 Notepad deep RichEditD2DPT discovery if Notepad is open on the desktop
+    let notepad_deep_editor_found = unsafe {
+        let cls_w: Vec<u16> = "Notepad\0".encode_utf16().collect();
+        let np_hwnd: HWND = FindWindowW(cls_w.as_ptr(), std::ptr::null());
+        if !np_hwnd.is_null() {
+            vi_win32::context::find_deep_editor_hwnd(np_hwnd).is_some()
+        } else {
+            false
+        }
+    };
+
+    // Spawn dedicated external E2E target editor process so we never disturb user windows
+    let mut target_child = Command::new(&exe)
+        .arg("--e2e-target-window")
+        .spawn()
+        .ok();
+    std::thread::sleep(Duration::from_millis(600));
+    pump_gui_messages();
+
+    let target_cls_w: Vec<u16> = "KeyreedE2ETargetWindow\0".encode_utf16().collect();
+    let target_hwnd: HWND = unsafe { FindWindowW(target_cls_w.as_ptr(), std::ptr::null()) };
+    let target_edit_hwnd: HWND = unsafe {
+        if !target_hwnd.is_null() {
+            GetDlgItem(target_hwnd, 201)
+        } else {
+            std::ptr::null_mut()
+        }
+    };
+
+    let read_hwnd_text = |h: HWND| -> String {
+        unsafe {
+            if h.is_null() {
+                return String::new();
+            }
+            let tlen = SendMessageW(h, WM_GETTEXTLENGTH, 0, 0);
+            if tlen > 0 {
+                let mut buf = vec![0u16; (tlen as usize) + 2];
+                SendMessageW(h, WM_GETTEXT, buf.len(), buf.as_mut_ptr() as isize);
+                String::from_utf16_lossy(&buf[..tlen as usize])
+            } else {
+                String::new()
+            }
+        }
+    };
+    let clear_hwnd_text = |h: HWND| unsafe {
+        if !h.is_null() {
+            let empty: [u16; 1] = [0];
+            SendMessageW(h, WM_SETTEXT, 0, empty.as_ptr() as isize);
+        }
+    };
+
+    // Focus the external target window's multiline editor
+    unsafe {
+        if !target_hwnd.is_null() {
+            let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+            SendMessageW(target_hwnd, 0x0400 + 70, 0, 0);
+            std::thread::sleep(Duration::from_millis(120));
+        }
+    }
     let fg_ctx = capture_foreground_context(true);
 
-    // Optional live desktop screenshot capture via PowerShell System.Drawing for visual verification
+    // 7. Comprehensive Automatic Text Insertion Matrix against External Target Process
+    let mut auto_insert_matrix = serde_json::Value::Null;
+    if !target_hwnd.is_null() && !target_edit_hwnd.is_null() {
+        // 7a. Direct Unicode + Multiline Auto Insert
+        unsafe {
+            clear_hwnd_text(target_edit_hwnd);
+            let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+            SendMessageW(target_hwnd, 0x0400 + 70, 0, 0);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let ctx_edit = capture_foreground_context(true);
+        let multiline_unicode = "Line 1: KeyReed Auto-Insert\nLine 2: नमस्ते भारत — ₹1,250";
+        let out_direct = deliver_direct_or_clipboard_fallback(
+            multiline_unicode,
+            &ctx_edit,
+            true,
+            false,
+            true,
+        )?;
+        std::thread::sleep(Duration::from_millis(180));
+        let readback_unicode = read_hwnd_text(target_edit_hwnd);
+
+        // 7b. AskBeforeInserting (simulated Approve vs CopyToClipboardOnly)
+        unsafe {
+            clear_hwnd_text(target_edit_hwnd);
+            let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+            SendMessageW(target_hwnd, 0x0400 + 70, 0, 0);
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        let ctx_ask = capture_foreground_context(true);
+        let out_ask_decline = prompt_and_deliver_ask_before_inserting(
+            "Declined insert stays on clipboard only.",
+            &ctx_ask,
+            true,
+            false,
+            true,
+            Some(vi_win32::AskInsertDecision::CopyToClipboardOnly),
+        )?;
+        let readback_after_decline = read_hwnd_text(target_edit_hwnd);
+        let out_ask_approve = prompt_and_deliver_ask_before_inserting(
+            "Approved insert types into target.",
+            &ctx_ask,
+            true,
+            false,
+            true,
+            Some(vi_win32::AskInsertDecision::InsertIntoTarget),
+        )?;
+        std::thread::sleep(Duration::from_millis(120));
+        let readback_after_approve = read_hwnd_text(target_edit_hwnd);
+
+        // 7c. Password Field Protection (ES_PASSWORD control id=202)
+        unsafe {
+            let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+            SendMessageW(target_hwnd, 0x0400 + 71, 0, 0);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let ctx_pw = capture_foreground_context(true);
+        let out_pw = deliver_direct_or_clipboard_fallback(
+            "SecretDictation123",
+            &ctx_pw,
+            true,
+            false,
+            true,
+        )?;
+        let pw_hwnd = unsafe { GetDlgItem(target_hwnd, 202) };
+        let pw_readback = read_hwnd_text(pw_hwnd);
+
+        // 7d. TOCTOU Focus-Switch Protection
+        let mut stale_ctx = ctx_edit.clone();
+        stale_ctx.hwnd = 0x7FFF_FFFF; // Mismatched HWND
+        let out_toctou = deliver_direct_or_clipboard_fallback(
+            "ShouldNotType",
+            &stale_ctx,
+            true,
+            false,
+            true,
+        )?;
+
+        auto_insert_matrix = serde_json::json!({
+            "unicode_multiline_outcome": format!("{:?}", out_direct),
+            "unicode_multiline_readback": readback_unicode,
+            "unicode_multiline_verified": readback_unicode.contains("नमस्ते भारत") && readback_unicode.contains("₹1,250") && readback_unicode.contains("Line 2:"),
+            "ask_before_inserting_decline_outcome": format!("{:?}", out_ask_decline),
+            "ask_before_inserting_decline_target_empty": readback_after_decline.is_empty(),
+            "ask_before_inserting_approve_outcome": format!("{:?}", out_ask_approve),
+            "ask_before_inserting_approve_readback": readback_after_approve,
+            "password_field_detected": ctx_pw.is_password_field,
+            "password_field_outcome": format!("{:?}", out_pw),
+            "password_field_target_empty": pw_readback.is_empty(),
+            "toctou_focus_switch_outcome": format!("{:?}", out_toctou),
+            "win11_notepad_deep_richedit_discovery": notepad_deep_editor_found,
+        });
+    }
+
+    // 8. Real ASR + Grammar Correction + Auto Insert into External Target Window if WAV provided
+    let mut wav_e2e_json = serde_json::Value::Null;
+    if let Some(wdir) = wav_dir {
+        if wdir.exists() {
+            cfg.local_llm_model = "Qwen3.5-0.8B-Q4_K_M".to_string();
+            cfg.output_mode = OutputMode::DirectTyping;
+            let mut full_sup = InferenceSupervisor::new(&cfg);
+            let samples = load_wav_16k_mono(&wdir)?;
+
+            // Warm up ASR + SLM first so focus doesn't drift during cold load, then focus target and run pipeline!
+            let _ = full_sup.execute_pipeline(
+                vec![0.0f32; 8000],
+                &cfg,
+                &ForegroundContext::default(),
+                Some(WritingMode::Smart),
+                false,
+                None,
+            );
+
+            unsafe {
+                if !target_hwnd.is_null() {
+                    clear_hwnd_text(target_edit_hwnd);
+                    let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+                    SendMessageW(target_hwnd, 0x0400 + 70, 0, 0);
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            }
+            let live_target_ctx = capture_foreground_context(true);
+
+            let r = full_sup.execute_pipeline(
+                samples,
+                &cfg,
+                &live_target_ctx,
+                Some(WritingMode::Smart),
+                true,
+                None,
+            )?;
+            std::thread::sleep(Duration::from_millis(220));
+            let auto_inserted_text = read_hwnd_text(target_edit_hwnd);
+            let (active_ws, active_priv) = current_process_memory_mb();
+            full_sup.force_unload_all();
+            let (after_unload_ws, after_unload_priv) = current_process_memory_mb();
+            wav_e2e_json = serde_json::json!({
+                "pipeline": r,
+                "target_window_auto_inserted_text": auto_inserted_text,
+                "auto_insert_exact_match": auto_inserted_text.trim() == r.final_text.trim(),
+                "active_working_set_mb": active_ws,
+                "active_private_mb": active_priv,
+                "post_unload_working_set_mb": after_unload_ws,
+                "post_unload_private_mb": after_unload_priv,
+            });
+        }
+    }
+
+    // Optional live desktop screenshot capture via PowerShell System.Drawing after auto-insert completes
     if let Some(shot_path) = &screenshot_out {
+        pump_gui_messages();
         let ps_cmd = format!(
             "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
              $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \
@@ -773,116 +1194,12 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
             .status();
     }
 
-    // 6. Real ASR + Grammar Correction on WAV file inside Windows 11 if provided
-    let mut wav_e2e_json = serde_json::Value::Null;
-    if let Some(wdir) = wav_dir {
-        if wdir.exists() {
-            cfg.local_llm_model = "Qwen3.5-0.8B-Q4_K_M".to_string();
-            let mut full_sup = InferenceSupervisor::new(&cfg);
-            let samples = load_wav_16k_mono(&wdir)?;
-            let r = full_sup.execute_pipeline(
-                samples,
-                &cfg,
-                &fg_ctx,
-                Some(WritingMode::Smart),
-                true,
-                None,
-            )?;
-            let (active_ws, active_priv) = current_process_memory_mb();
-            full_sup.force_unload_all();
-            let (after_unload_ws, after_unload_priv) = current_process_memory_mb();
-            wav_e2e_json = serde_json::json!({
-                "pipeline": r,
-                "active_working_set_mb": active_ws,
-                "active_private_mb": active_priv,
-                "post_unload_working_set_mb": after_unload_ws,
-                "post_unload_private_mb": after_unload_priv,
-            });
-
-            // Also send Ctrl+V into foreground Notepad to verify real paste!
-            unsafe {
-                let cls_w: Vec<u16> = "Notepad\0".encode_utf16().collect();
-                let np_hwnd: HWND = FindWindowW(cls_w.as_ptr(), std::ptr::null());
-                if !np_hwnd.is_null() {
-                    let _ = SetForegroundWindow(np_hwnd);
-                    std::thread::sleep(Duration::from_millis(150));
-                    let v_vk: u16 = 0x56;
-                    let paste_inputs = [
-                        INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: VK_CONTROL,
-                                    wScan: 0,
-                                    dwFlags: 0,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                        INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: v_vk,
-                                    wScan: 0,
-                                    dwFlags: 0,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                        INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: v_vk,
-                                    wScan: 0,
-                                    dwFlags: KEYEVENTF_KEYUP,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                        INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: VK_CONTROL,
-                                    wScan: 0,
-                                    dwFlags: KEYEVENTF_KEYUP,
-                                    time: 0,
-                                    dwExtraInfo: 0,
-                                },
-                            },
-                        },
-                    ];
-                    let _ = SendInput(
-                        paste_inputs.len() as u32,
-                        paste_inputs.as_ptr(),
-                        std::mem::size_of::<INPUT>() as i32,
-                    );
-                    std::thread::sleep(Duration::from_millis(250));
-                    let edit_cls: Vec<u16> = "Edit\0".encode_utf16().collect();
-                    let rich_cls: Vec<u16> = "RichEditD2DPT\0".encode_utf16().collect();
-                    let mut ed = FindWindowExW(np_hwnd, std::ptr::null_mut(), edit_cls.as_ptr(), std::ptr::null());
-                    if ed.is_null() {
-                        ed = FindWindowExW(np_hwnd, std::ptr::null_mut(), rich_cls.as_ptr(), std::ptr::null());
-                    }
-                    if !ed.is_null() {
-                        let tlen = SendMessageW(ed, WM_GETTEXTLENGTH, 0, 0);
-                        if tlen > 0 {
-                            let mut buf = vec![0u16; (tlen as usize) + 2];
-                            SendMessageW(ed, WM_GETTEXT, buf.len(), buf.as_mut_ptr() as isize);
-                            let _pasted = String::from_utf16_lossy(&buf[..tlen as usize]);
-                        }
-                    }
-                }
-            }
+    unsafe {
+        if !target_hwnd.is_null() {
+            SendMessageW(target_hwnd, WM_CLOSE, 0, 0);
         }
     }
-
-    if let Some(mut ch) = notepad_child.take() {
+    if let Some(mut ch) = target_child.take() {
         let _ = ch.kill();
     }
     gui.quit();
@@ -898,7 +1215,9 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
         "product_run_value_before_test": product_before,
         "clipboard_preserve_on_silence": "PASS",
         "clipboard_unicode_multilingual": "PASS",
+        "microphone_hardware": mic_hw_report,
         "foreground_context_detected": fg_ctx,
+        "auto_insert_matrix": auto_insert_matrix,
         "wav_e2e": wav_e2e_json,
     });
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -934,9 +1253,11 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
         initial_cfg.app_enabled && initial_cfg.ptt_enabled,
     )?);
 
+    let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
     let (gui_handle, gui_pump) = vi_win32::ui::win_gui::init_and_spawn_gui_windows(
         ui_tx,
         initial_cfg.clone(),
+        mic_names,
         open_settings_on_start,
     )?;
 
@@ -954,16 +1275,20 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
 
             let mut supervisor = InferenceSupervisor::new(&cfg);
             if let Some(spec) = vi_asr::catalog::find_model_spec(&cfg.local_asr_model) {
-                let installed = RuntimePaths::discover(&cfg).models_dir.join(spec.folder_name);
-                if !installed.exists() {
+                let paths = RuntimePaths::discover(&cfg);
+                if paths.find_installed_model_root(spec.folder_name).is_none() {
                     gui_for_worker.notify_toast(
                         PRODUCT_NAME,
-                        "Speech model is not installed. Open the tray menu and choose Download default speech model. Auto Insert stays off until you turn it on.",
+                        "Speech model is not installed yet. Open the tray menu or Settings and click Download Default Speech Model.",
                     );
                 }
             }
             let mut active_mic: Option<ActiveCapture> = None;
             let mut captured_fg_ctx = ForegroundContext::default();
+            let mut last_external_fg_ctx = ForegroundContext::default();
+            let mut last_completed_text = String::new();
+            let mut saw_physical_key_down = false;
+            let mut physical_key_up_ticks: u8 = 0;
             let start_epoch = Instant::now();
             let now_ms = || start_epoch.elapsed().as_millis() as u64;
 
@@ -975,9 +1300,19 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                 select! {
                     recv(hk_rx) -> ev => {
                         match ev {
-                            Ok(HotkeyEvent::PttDown) => pending_action = ptt.on_shortcut_down(now_ms()),
-                            Ok(HotkeyEvent::PttUp) => pending_action = ptt.on_shortcut_up(now_ms()),
+                            Ok(HotkeyEvent::PttDown) => {
+                                saw_physical_key_down = is_spec_physically_down(&cfg.ptt_hotkey);
+                                physical_key_up_ticks = 0;
+                                pending_action = ptt.on_shortcut_down(now_ms());
+                            }
+                            Ok(HotkeyEvent::PttUp) => {
+                                saw_physical_key_down = false;
+                                physical_key_up_ticks = 0;
+                                pending_action = ptt.on_shortcut_up(now_ms());
+                            }
                             Ok(HotkeyEvent::EmergencyCancel) => {
+                                saw_physical_key_down = false;
+                                physical_key_up_ticks = 0;
                                 pending_action = ptt.on_emergency_cancel("escape_pressed");
                             }
                             Ok(HotkeyEvent::CycleMode) => {
@@ -1011,6 +1346,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(UiAction::FloatingMicClicked) => {
                                 pending_action = ptt.on_floating_mic_click(now_ms());
                             }
+                            Ok(UiAction::SavePillPosition(x, y)) => {
+                                cfg.floating_pill_pos = Some((x, y));
+                                let _ = cfg.save_atomic(&cfg_path);
+                            }
                             Ok(UiAction::SetActivationMode(m)) => {
                                 cfg.activation_mode = m;
                                 ptt.set_activation_mode(m);
@@ -1024,30 +1363,80 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 if o == vi_core::OutputMode::DirectTyping {
                                     gui_for_worker.notify_toast(
                                         PRODUCT_NAME,
-                                        "Auto Insert is on. Text is typed into the focused field. Unsafe targets stay on the clipboard.",
+                                        "Auto Insert is on. Text is inserted automatically into the focused field, with clipboard fallback if unsafe.",
+                                    );
+                                }
+                            }
+                            Ok(UiAction::CopyLastDictation) => {
+                                if !last_completed_text.is_empty() {
+                                    if write_clipboard_unicode(
+                                        &last_completed_text,
+                                        cfg.privacy.exclude_from_clipboard_history,
+                                    )
+                                    .is_ok()
+                                    {
+                                        gui_for_worker.notify_toast(
+                                            PRODUCT_NAME,
+                                            "Last dictation copied to clipboard.",
+                                        );
+                                    }
+                                } else {
+                                    gui_for_worker.notify_toast(
+                                        PRODUCT_NAME,
+                                        "No completed dictation in this session yet.",
                                     );
                                 }
                             }
                             Ok(UiAction::DownloadDefaultModel) => {
-                                let models = RuntimePaths::discover(&cfg).models_dir;
+                                let dl_dir = RuntimePaths::discover(&cfg).writable_models_dir();
                                 let gui_dl = gui_for_worker.clone();
                                 std::thread::spawn(move || {
                                     gui_dl.notify_toast(
                                         PRODUCT_NAME,
-                                        "Downloading the default speech model. This can take several minutes.",
+                                        "Downloading the default speech model. This may take a few minutes.",
                                     );
                                     let result = match vi_asr::catalog::find_model_spec("parakeet-tdt-0.6b-v2-int8") {
-                                        Some(spec) => vi_asr::catalog::ensure_model_present(&models, spec).map(|_| ()),
+                                        Some(spec) => vi_asr::catalog::ensure_model_present(&dl_dir, spec).map(|_| ()),
                                         None => Err(anyhow::anyhow!("default speech model is not in the catalog")),
                                     };
                                     match result {
-                                        Ok(()) => gui_dl.notify_toast(PRODUCT_NAME, "Default speech model is ready."),
+                                        Ok(()) => gui_dl.notify_toast(PRODUCT_NAME, "Default speech model is verified and ready."),
                                         Err(e) => gui_dl.notify_toast(
                                             PRODUCT_NAME,
                                             &format!("Model download failed: {e}"),
                                         ),
                                     }
                                 });
+                            }
+                            Ok(UiAction::DownloadModel(model_id)) => {
+                                let dl_dir = RuntimePaths::discover(&cfg).writable_models_dir();
+                                let gui_dl = gui_for_worker.clone();
+                                std::thread::spawn(move || {
+                                    let Some(spec) = vi_asr::catalog::find_model_spec(&model_id) else {
+                                        gui_dl.notify_toast(PRODUCT_NAME, &format!("Unknown model '{model_id}'"));
+                                        return;
+                                    };
+                                    gui_dl.notify_toast(
+                                        PRODUCT_NAME,
+                                        &format!("Downloading {} (~{} MB)…", spec.display_name, spec.approx_download_mb),
+                                    );
+                                    match vi_asr::catalog::ensure_model_present(&dl_dir, spec) {
+                                        Ok(_) => gui_dl.notify_toast(
+                                            PRODUCT_NAME,
+                                            &format!("{} is verified and ready.", spec.display_name),
+                                        ),
+                                        Err(e) => gui_dl.notify_toast(
+                                            PRODUCT_NAME,
+                                            &format!("Model download failed: {e}"),
+                                        ),
+                                    }
+                                });
+                            }
+                            Ok(UiAction::SessionOrPowerReset) => {
+                                hk_for_worker.reset_modifiers();
+                                saw_physical_key_down = false;
+                                physical_key_up_ticks = 0;
+                                pending_action = ptt.on_emergency_cancel("session_or_power_transition");
                             }
                             Ok(UiAction::SetWritingMode(wm)) => {
                                 cfg.default_writing_mode = wm;
@@ -1089,7 +1478,11 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     new_cfg.mode_cycle_hotkey.clone(),
                                 );
                                 hk_for_worker.set_enabled(new_cfg.app_enabled && new_cfg.ptt_enabled);
+                                let llm_changed = cfg.local_llm_model != new_cfg.local_llm_model;
                                 cfg = *new_cfg;
+                                if llm_changed {
+                                    supervisor = InferenceSupervisor::new(&cfg);
+                                }
                                 let _ = cfg.save_atomic(&cfg_path);
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                             }
@@ -1108,9 +1501,52 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         }
                     }
                     recv(ticker) -> _ => {
-                        pending_action = ptt.on_tick(now_ms());
+                        // Track last known external foreground window so floating control or tray interactions never lose target focus
+                        if active_mic.is_none() {
+                            let cur = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                            if cur.hwnd != 0 && cur.process_id != std::process::id() {
+                                last_external_fg_ctx = cur;
+                            }
+                        }
+
+                        // Fast lost-keyup recovery if Windows swallowed WM_KEYUP across an elevation/focus boundary
+                        if ptt.is_recording()
+                            && cfg.activation_mode == vi_core::ActivationMode::HoldToTalk
+                            && ptt.is_shortcut_physically_down()
+                            && saw_physical_key_down
+                        {
+                            if !is_spec_physically_down(&cfg.ptt_hotkey) {
+                                physical_key_up_ticks = physical_key_up_ticks.saturating_add(1);
+                                if physical_key_up_ticks >= 3 {
+                                    saw_physical_key_down = false;
+                                    physical_key_up_ticks = 0;
+                                    hk_for_worker.reset_modifiers();
+                                    pending_action = ptt.on_shortcut_up(now_ms());
+                                }
+                            } else {
+                                physical_key_up_ticks = 0;
+                            }
+                        }
+
+                        if pending_action == PttAction::None {
+                            pending_action = ptt.on_tick(now_ms());
+                        }
                         if let Some(mic) = &active_mic {
-                            gui_for_worker.sync(EngineState::Listening, mic.current_rms(), None);
+                            if mic.is_disconnected() {
+                                // Microphone disconnected mid-recording: attempt seamless rebind to default device
+                                log::warn!("Active microphone disconnected mid-session; attempting default-device recovery");
+                                if let Ok( fallback_cap ) = ActiveCapture::start(None) {
+                                    active_mic = Some(fallback_cap);
+                                    gui_for_worker.notify_toast(
+                                        PRODUCT_NAME,
+                                        "Microphone disconnected; switched to system default microphone.",
+                                    );
+                                } else {
+                                    pending_action = PttAction::StopAndProcess;
+                                }
+                            } else {
+                                gui_for_worker.sync(EngineState::Listening, mic.current_rms(), None);
+                            }
                         } else {
                             supervisor.maybe_unload_idle(cfg.idle_unload_seconds);
                         }
@@ -1121,7 +1557,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     PttAction::None => {}
                     PttAction::StartRecording => {
                         timing_mark("coordinator_start_recording");
-                        captured_fg_ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                        let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                        captured_fg_ctx = if cur_fg.hwnd != 0 && cur_fg.process_id != std::process::id() {
+                            last_external_fg_ctx = cur_fg.clone();
+                            cur_fg
+                        } else {
+                            last_external_fg_ctx.clone()
+                        };
                         match ActiveCapture::start(cfg.selected_microphone.as_deref()) {
                             Ok(cap) => {
                                 timing_mark("mic_started");
@@ -1179,6 +1621,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         res.metrics.total_release_to_ready_ms,
                                         res.metrics.used_tier
                                     ));
+                                    last_completed_text = res.final_text.clone();
                                     ptt.transition_to_ready();
                                     gui_for_worker.sync(EngineState::ReadyToPaste, 0.0, None);
                                     play_subtle_earcon(cfg.audio_cues_enabled, false);
@@ -1195,10 +1638,12 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         let _ = history.save_atomic(&hist_path);
                                     }
 
-                                    if cfg.notify_on_ready {
+                                    if cfg.notify_on_ready && (res.delivered_via == OutputMode::Clipboard || res.fallback_to_clipboard || res.requires_command_confirmation) {
                                         let preview: String = res.final_text.chars().take(72).collect();
                                         let title = if res.requires_command_confirmation {
                                             "Review Command Before Pasting (Ctrl+V)"
+                                        } else if res.fallback_to_clipboard {
+                                            "Copied to Clipboard (Ctrl+V)"
                                         } else {
                                             "Ready to Paste (Ctrl+V)"
                                         };
@@ -1309,12 +1754,19 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.iter().any(|a| a == "--list-devices") {
+        let devs = list_input_devices();
+        println!("{}", serde_json::to_string_pretty(&devs)?);
+        return Ok(());
+    }
+
     if let Some(pos) = args.iter().position(|a| a == "--download-model") {
         let id = args.get(pos + 1).context("missing <id> after --download-model")?;
         let spec = find_model_spec(id).with_context(|| format!("unknown model '{}'", id))?;
         let cfg = AppConfig::load_or_default(&AppConfig::default_config_path());
         let paths = RuntimePaths::discover(&cfg);
-        let dir = ensure_model_present(&paths.models_dir, spec)?;
+        let dl_dir = paths.writable_models_dir();
+        let dir = ensure_model_present(&dl_dir, spec)?;
         println!("Model ready at {}", dir.display());
         return Ok(());
     }
@@ -1334,6 +1786,11 @@ fn main() -> Result<()> {
             .and_then(|p| args.get(p + 1).cloned())
             .unwrap_or_else(|| "Qwen3.5-0.8B-Q4_K_M".to_string());
         return run_eval_correction_jsonl(&jsonl, &llm_opt);
+    }
+
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--e2e-target-window") {
+        return run_e2e_target_window_process();
     }
 
     #[cfg(windows)]

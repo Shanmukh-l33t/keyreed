@@ -87,6 +87,12 @@ pub struct AppConfig {
     /// Number of CPU threads for local inference (0 = auto physical-core cap).
     pub inference_threads: usize,
     pub autostart_on_login: bool,
+    /// Saved floating microphone pill screen position `(x, y)`.
+    #[serde(default)]
+    pub floating_pill_pos: Option<(i32, i32)>,
+    /// Tracks whether first-run setup/onboarding has been shown.
+    #[serde(default)]
+    pub first_run_completed: bool,
     pub privacy: PrivacySettings,
     pub cloud: CloudSettings,
     pub dictionary: PersonalDictionary,
@@ -102,7 +108,7 @@ impl Default for AppConfig {
             ptt_hotkey: HotkeySpec::right_ctrl(),
             cancel_hotkey: HotkeySpec::cancel_escape(),
             mode_cycle_hotkey: HotkeySpec::ctrl_shift_space(),
-            output_mode: OutputMode::Clipboard,
+            output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
             auto_context_mode: true,
             processing_profile: ProcessingProfile::MaxPrivacyOffline,
@@ -117,6 +123,8 @@ impl Default for AppConfig {
             idle_unload_seconds: 300,
             inference_threads: 4,
             autostart_on_login: false,
+            floating_pill_pos: None,
+            first_run_completed: false,
             privacy: PrivacySettings::default(),
             cloud: CloudSettings::default(),
             dictionary: PersonalDictionary::default(),
@@ -160,5 +168,54 @@ impl AppConfig {
         fs::write(&tmp, body)?;
         fs::rename(&tmp, path)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_uses_auto_insert_and_offline_privacy() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.output_mode, OutputMode::DirectTyping);
+        assert_eq!(cfg.processing_profile, ProcessingProfile::MaxPrivacyOffline);
+        assert_eq!(cfg.local_asr_model, "parakeet-tdt-0.6b-v2-int8");
+    }
+
+    #[test]
+    fn config_persists_and_reloads_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = AppConfig::default();
+        cfg.selected_microphone = Some("Microphone (OWL 4K PRO Audio)".to_string());
+        cfg.floating_pill_pos = Some((420, 880));
+        cfg.first_run_completed = true;
+        cfg.save_atomic(&path).unwrap();
+
+        let loaded = AppConfig::load_or_default(&path);
+        assert_eq!(
+            loaded.selected_microphone.as_deref(),
+            Some("Microphone (OWL 4K PRO Audio)")
+        );
+        assert_eq!(loaded.floating_pill_pos, Some((420, 880)));
+        assert!(loaded.first_run_completed);
+    }
+
+    #[test]
+    fn hotkey_conflict_detection_blocks_reserved_chords() {
+        let ctrl_c = HotkeySpec {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+            vk: 0x43,
+            display_name: "Ctrl + C".to_string(),
+        };
+        assert!(ctrl_c.check_conflict(None).is_some());
+
+        let rctrl = HotkeySpec::right_ctrl();
+        assert!(rctrl.check_conflict(None).is_none());
+        assert!(rctrl.check_conflict(Some(&rctrl)).is_some());
     }
 }

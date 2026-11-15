@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KeyReed. Voice it. Everywhere.</title>
-  <meta name="description" content="KeyReed is a Windows voice input application. Hold a shortcut, speak, and paste polished text. Version 0.1.1.">
+  <meta name="description" content="KeyReed is a Windows voice input application. Hold a shortcut, speak, and auto-insert polished text. Version 0.2.0.">
   <meta property="og:title" content="KeyReed. Voice it. Everywhere.">
-  <meta property="og:description" content="Hold a shortcut, speak, and paste polished text on Windows. Version 0.1.1. Unsigned build.">
+  <meta property="og:description" content="Hold a shortcut, speak, and auto-insert polished text on Windows. Version 0.2.0. Unsigned build.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="assets/logo.png">
   <meta name="theme-color" content="#f4f1ea">
@@ -44,14 +44,14 @@
   <main id="main">
     <section class="hero" id="top">
       <div class="hero-copy">
-        <p class="eyebrow">Windows x64. Version 0.1.1. Unsigned.</p>
+        <p class="eyebrow">Windows x64. Version 0.2.0. Unsigned.</p>
         <h1>Voice it. Everywhere.</h1>
-        <p class="lede">Speak naturally. KeyReed turns your words into polished text, ready to use anywhere on Windows.</p>
+        <p class="lede">Speak naturally. KeyReed turns your words into polished text and inserts it directly into your active application on Windows.</p>
         <div class="cta-row">
-          <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Setup-x64.exe">Download for Windows</a>
+          <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.2.0/KeyReed-Setup-x64.exe">Download for Windows</a>
           <a class="btn ghost" href="#demo">See how it works</a>
         </div>
-        <p class="fine">Installer 32,600,120 bytes. Speech models download after install. Windows may warn because the file is not signed.</p>
+        <p class="fine">Installer 18,589,388 bytes (~17.7 MB). Speech models download on demand after install. Windows may warn because the file is not signed.</p>
       </div>
       <div class="stage" id="stage">
         <div class="product" id="product">
@@ -76,12 +76,12 @@
     </section>
 
     <section class="flow" id="flow">
-      <h2>Hold. Speak. Release. Paste.</h2>
+      <h2>Hold. Speak. Release. Auto-Insert.</h2>
       <ol>
         <li><strong>Hold</strong><span>Right Ctrl, unless you change it.</span></li>
         <li><strong>Speak</strong><span>The microphone opens only while you record.</span></li>
         <li><strong>Release</strong><span>Transcription, then grammar correction.</span></li>
-        <li><strong>Paste</strong><span>Ctrl+V. Auto Insert stays off until you turn it on.</span></li>
+        <li><strong>Auto-Insert</strong><span>Inserted automatically into your focused field, with clipboard fallback if protected.</span></li>
       </ol>
     </section>
 
@@ -152,14 +152,14 @@
 
     <section class="download" id="download">
       <h2>Download KeyReed for Windows.</h2>
-      <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Setup-x64.exe">Download the installer</a>
+      <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.2.0/KeyReed-Setup-x64.exe">Download the installer</a>
       <dl>
-        <div><dt>Version</dt><dd>0.1.1</dd></div>
+        <div><dt>Version</dt><dd>0.2.0</dd></div>
         <div><dt>Architecture</dt><dd>Windows x64</dd></div>
-        <div><dt>Installer</dt><dd>32,600,120 bytes</dd></div>
-        <div><dt>Full offline archive</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Full-x64.zip">1,041,930,575 bytes</a></dd></div>
-        <div><dt>Models</dt><dd>Not in the small installer. Download the default speech model from the tray, or use the full archive.</dd></div>
-        <div><dt>Checksums</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/SHA256SUMS.txt">SHA256SUMS.txt</a></dd></div>
+        <div><dt>Installer</dt><dd>18,589,388 bytes (~17.7 MB)</dd></div>
+        <div><dt>Full offline archive</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.2.0/keyreed-0.2.0-windows-x64-full-offline.zip">1,245,412,519 bytes (~1.16 GB)</a></dd></div>
+        <div><dt>Models</dt><dd>Download on demand in Settings or tray menu, or use the full offline archive.</dd></div>
+        <div><dt>Checksums</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.2.0/SHA256SUMS.txt">SHA256SUMS.txt</a></dd></div>
         <div><dt>Source</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed">github.com/Shanmukh-l33t/keyreed</a></dd></div>
         <div><dt>Signing</dt><dd>Unsigned. SmartScreen was not observed for this file.</dd></div>
       </dl>
@@ -169,7 +169,7 @@
       <h2>Questions</h2>
       <details>
         <summary>What is KeyReed?</summary>
-        <p>A Windows tray application. It records while you hold a shortcut, transcribes, corrects, and leaves the text on the clipboard.</p>
+        <p>A Windows tray and floating-control voice input application. It records while you hold a shortcut, transcribes, polishes, and automatically inserts the text into your active window.</p>
       </details>
       <details>
         <summary>How does Push-to-Talk work?</summary>
@@ -177,7 +177,7 @@
       </details>
       <details>
         <summary>Does the text type itself?</summary>
-        <p>Not until you turn Auto Insert on. The stored default is clipboard only. Auto Insert types into the focused field and falls back to the clipboard if the target is a password field, elevated, or no longer focused.</p>
+        <p>Yes. Auto Insert is the default delivery mode. KeyReed types Unicode text directly into the focused field and automatically falls back to the clipboard if the target is a password field, elevated, or no longer focused. You can also choose Clipboard Only or Ask Before Inserting.</p>
       </details>
       <details>
         <summary>Does it work in every Windows application?</summary>

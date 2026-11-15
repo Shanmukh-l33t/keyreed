@@ -108,6 +108,7 @@ pub struct LlamaServerSupervisor {
     port: u16,
     child: Option<Child>,
     last_used: Instant,
+    startup_failed_permanently: bool,
 }
 
 impl LlamaServerSupervisor {
@@ -123,6 +124,7 @@ impl LlamaServerSupervisor {
             port: 0,
             child: None,
             last_used: Instant::now(),
+            startup_failed_permanently: false,
         }
     }
 
@@ -163,10 +165,15 @@ impl LlamaServerSupervisor {
         if self.is_running() {
             return Ok(self.port);
         }
+        if self.startup_failed_permanently {
+            bail!("llama-server previously failed startup check in this session");
+        }
         if !self.server_bin.exists() {
+            self.startup_failed_permanently = true;
             bail!("llama-server binary not found at {}", self.server_bin.display());
         }
         if !self.gguf_path.exists() {
+            self.startup_failed_permanently = true;
             bail!("local GGUF model not found at {}", self.gguf_path.display());
         }
 
@@ -237,6 +244,10 @@ impl LlamaServerSupervisor {
 
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
+            if !self.is_running() {
+                self.startup_failed_permanently = true;
+                bail!("llama-server process exited prematurely during initialization");
+            }
             if let Ok(resp) = agent.get(&health_url).call() {
                 if resp.status() == 200 {
                     self.last_used = Instant::now();
@@ -246,6 +257,7 @@ impl LlamaServerSupervisor {
             std::thread::sleep(Duration::from_millis(80));
         }
         self.stop();
+        self.startup_failed_permanently = true;
         bail!("llama-server health check timed out on port {}", port)
     }
 

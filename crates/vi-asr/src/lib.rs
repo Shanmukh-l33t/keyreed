@@ -144,6 +144,7 @@ fn pin_file(dir: &Path, model_id: &str, pred: impl Fn(&str) -> bool) -> Result<P
     Ok(dir.join(pin.relative))
 }
 
+#[allow(dead_code)]
 fn find_first_existing(dir: &Path, candidates: &[&str]) -> Result<PathBuf> {
     for name in candidates {
         let p = dir.join(name);

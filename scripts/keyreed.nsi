@@ -7,14 +7,15 @@
 !include "MUI2.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "0.1.1"
+!define APP_VERSION "0.2.0"
 
-Name "${APP_NAME}"
-OutFile "KeyReed-Setup-x64.exe"
-InstallDir "$PROGRAMFILES64\KeyReed"
+Name "${APP_NAME} ${APP_VERSION}"
+OutFile "..\dist\KeyReed-Setup-x64.exe"
+InstallDir "$LOCALAPPDATA\Programs\KeyReed"
 InstallDirRegKey HKCU "Software\KeyReed" "InstallDir"
-RequestExecutionLevel admin
+RequestExecutionLevel user
 Unicode True
+SetCompressor /SOLID lzma
 Icon "..\assets\keyreed.ico"
 UninstallIcon "..\assets\keyreed.ico"
 
@@ -33,12 +34,12 @@ UninstallIcon "..\assets\keyreed.ico"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.1.0.0"
+VIProductVersion "0.2.0.0"
 VIAddVersionKey "ProductName" "KeyReed"
-VIAddVersionKey "FileDescription" "KeyReed Setup"
+VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
-VIAddVersionKey "LegalCopyright" "KeyReed"
+VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 KeyReed"
 VIAddVersionKey "CompanyName" "KeyReed"
 
 Section "KeyReed" SecApp
@@ -50,10 +51,13 @@ Section "KeyReed" SecApp
   WriteRegStr HKCU "Software\KeyReed" "Version" "${APP_VERSION}"
   CreateDirectory "$SMPROGRAMS\KeyReed"
   CreateShortcut "$SMPROGRAMS\KeyReed\KeyReed.lnk" "$INSTDIR\keyreed.exe" "" "$INSTDIR\keyreed.exe" 0
+  CreateShortcut "$SMPROGRAMS\KeyReed\KeyReed Settings.lnk" "$INSTDIR\keyreed.exe" "--settings" "$INSTDIR\keyreed.exe" 0
   CreateShortcut "$SMPROGRAMS\KeyReed\Uninstall KeyReed.lnk" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "DisplayName" "KeyReed"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "DisplayIcon" "$INSTDIR\keyreed.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "QuietUninstallString" "$\"$INSTDIR\Uninstall.exe$\" /S"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "Publisher" "KeyReed"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed" "NoModify" 1
@@ -65,20 +69,25 @@ Section "Desktop shortcut" SecDesktop
 SectionEnd
 
 Section "Uninstall"
+  nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
   Delete "$DESKTOP\KeyReed.lnk"
   Delete "$SMPROGRAMS\KeyReed\KeyReed.lnk"
+  Delete "$SMPROGRAMS\KeyReed\KeyReed Settings.lnk"
   Delete "$SMPROGRAMS\KeyReed\Uninstall KeyReed.lnk"
   RMDir "$SMPROGRAMS\KeyReed"
-  RMDir /r "$INSTDIR\runtime"
   RMDir /r "$INSTDIR\models"
+  RMDir /r "$INSTDIR"
   Delete "$INSTDIR\keyreed.exe"
   Delete "$INSTDIR\Uninstall.exe"
+  Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\CHECKSUMS.sha256"
   RMDir "$INSTDIR"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Keyreed"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReed"
   DeleteRegValue HKCU "Software\KeyReed" "InstallDir"
   DeleteRegValue HKCU "Software\KeyReed" "Version"
+  DeleteRegKey /ifempty HKCU "Software\KeyReed"
 SectionEnd
 
 LangString DESC_App ${LANG_ENGLISH} "KeyReed, the speech runtime, and the default local models."

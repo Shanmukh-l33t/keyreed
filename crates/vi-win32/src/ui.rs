@@ -4,7 +4,7 @@
 //! - Idle private RAM of the entire UI shell is ~4-6 MiB!
 //! - Settings dialog creates standard Win32 controls only while open and frees them on close.
 
-use crate::overlay::render_pill_bgra_premultiplied;
+use crate::overlay::{render_pill_bgra_premultiplied_ex, KEYREED_ICON_28_BGRA};
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -23,12 +23,16 @@ pub enum UiAction {
     ToggleAutoContext,
     SetProcessingProfile(ProcessingProfile),
     ToggleFloatingMicVisible,
+    SavePillPosition(i32, i32),
     SaveUpdatedConfig {
         new_cfg: Box<AppConfig>,
         new_plaintext_api_key: Option<String>,
     },
     ClearHistory,
+    CopyLastDictation,
     DownloadDefaultModel,
+    DownloadModel(String),
+    SessionOrPowerReset,
     Quit,
 }
 
@@ -38,6 +42,7 @@ pub struct SharedUiModel {
     pub state: EngineState,
     pub rms_level: f32,
     pub status_detail: String,
+    pub available_microphones: Vec<String>,
 }
 
 #[cfg(windows)]
@@ -50,8 +55,9 @@ pub mod win_gui {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GetDC,
-        ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
-        BI_RGB, BLENDFUNCTION, COLOR_WINDOW, DIB_RGB_COLORS, HBITMAP,
+        ReleaseDC, SelectObject, SetBkMode, SetTextColor, TextOutW, AC_SRC_ALPHA, AC_SRC_OVER,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, COLOR_WINDOW, DIB_RGB_COLORS,
+        HBITMAP, TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -80,6 +86,7 @@ pub mod win_gui {
     const IDM_EXIT: usize = 1011;
     const IDM_OUT_ASK: usize = 1012;
     const IDM_DOWNLOAD_MODEL: usize = 1013;
+    const IDM_COPY_LAST: usize = 1014;
 
     const IDM_MODE_BASE: usize = 1100;
     const IDM_PROF_BASE: usize = 1200;
@@ -99,6 +106,11 @@ pub mod win_gui {
     const IDC_EDT_APIKEY: i32 = 2012;
     const IDC_BTN_SAVE: i32 = 2013;
     const IDC_BTN_CLOSE: i32 = 2014;
+    const IDC_CMB_MIC: i32 = 2015;
+    const IDC_CMB_LLM: i32 = 2016;
+    const IDC_BTN_DL_MODEL: i32 = 2017;
+    const IDC_CHK_CUES: i32 = 2018;
+    const IDC_CHK_NOTIFY: i32 = 2019;
 
     struct WinGuiGlobals {
         tx: Sender<UiAction>,
@@ -108,6 +120,8 @@ pub mod win_gui {
         settings_hwnd: Mutex<isize>,
         drag_offset: Mutex<Option<(i32, i32, bool)>>,
         toast_buf: Mutex<Option<(String, String)>>,
+        anim_tick: std::sync::atomic::AtomicU32,
+        pill_hovered: std::sync::atomic::AtomicBool,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -119,28 +133,34 @@ pub mod win_gui {
     unsafe fn create_state_hicon(state: &EngineState) -> HICON {
         let (r, g, b) = match state {
             EngineState::Disabled => (120u8, 126u8, 135u8),
-            EngineState::Idle => (72u8, 149u8, 239u8),
-            EngineState::Listening => (239u8, 68u8, 68u8),
+            EngineState::Idle => (31u8, 107u8, 74u8),
+            EngineState::Listening => (42u8, 168u8, 112u8),
             EngineState::Processing => (245u8, 158u8, 11u8),
-            EngineState::Correcting => (14u8, 165u8, 233u8),
+            EngineState::Correcting => (20u8, 184u8, 166u8),
             EngineState::ReadyToPaste => (16u8, 185u8, 129u8),
             EngineState::Error(_) => (244u8, 63u8, 94u8),
         };
         let mut color_bits = [0u32; 32 * 32];
         let mut mask_bits = [0u8; (32 * 32) / 8];
         for y in 0..32usize {
+            let sy = ((y * 28) / 32).min(27);
             for x in 0..32usize {
-                let dx = (x as f32) - 15.5;
-                let dy = (y as f32) - 15.5;
+                let sx = ((x * 28) / 32).min(27);
+                let mut px = KEYREED_ICON_28_BGRA[sy * 28 + sx];
+                // Composite state badge dot in bottom-right corner (center 25.5, 25.5, radius 5.0)
+                let dx = (x as f32) - 25.5;
+                let dy = (y as f32) - 25.5;
                 let d = (dx * dx + dy * dy).sqrt();
-                if d <= 13.5 {
-                    let a = ((13.5 - d + 0.5).clamp(0.0, 1.0) * 255.0) as u32;
-                    let (cr, cg, cb) = if d <= 5.5 {
-                        (255u32, 255u32, 255u32)
-                    } else {
+                if d <= 5.2 && !matches!(state, EngineState::Idle) {
+                    let (cr, cg, cb) = if d <= 3.8 {
                         (r as u32, g as u32, b as u32)
+                    } else {
+                        (255u32, 255u32, 255u32)
                     };
-                    color_bits[y * 32 + x] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+                    px = (255u32 << 24) | (cr << 16) | (cg << 8) | cb;
+                }
+                if (px >> 24) > 8 {
+                    color_bits[y * 32 + x] = px;
                 } else {
                     mask_bits[(y * 32 + x) / 8] |= 1 << (7 - (x % 8));
                 }
@@ -173,24 +193,8 @@ pub mod win_gui {
         icon
     }
 
-    unsafe fn load_brand_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
-        let Ok(exe) = std::env::current_exe() else {
-            return std::ptr::null_mut();
-        };
-        let Some(dir) = exe.parent() else {
-            return std::ptr::null_mut();
-        };
-        let path = dir.join("keyreed.ico");
-        if !path.exists() {
-            return std::ptr::null_mut();
-        }
-        let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-        LoadImageW(std::ptr::null_mut(), wide.as_ptr(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
-    }
-
     unsafe fn update_tray_icon(hwnd: HWND, action: u32, state: &EngineState, tip_text: &str) {
-        let branded = load_brand_icon();
-        let hicon = if branded.is_null() { create_state_hicon(state) } else { branded };
+        let hicon = create_state_hicon(state);
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
@@ -234,10 +238,36 @@ pub mod win_gui {
             if d == 0 { 96 } else { d }
         };
         let scale = (dpi as f32) / 96.0;
-        let width = ((164.0 * scale).round() as i32).max(96);
-        let height = ((38.0 * scale).round() as i32).max(28);
+        let width = ((196.0 * scale).round() as i32).max(120);
+        let height = ((40.0 * scale).round() as i32).max(30);
 
-        let bgra = render_pill_bgra_premultiplied(width as usize, height as usize, state, rms);
+        let (anim_tick, is_hovered, mode_short, out_mode) = if let Some(g) = GUI_GLOBALS.get() {
+            let tick = g
+                .anim_tick
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let hov = g.pill_hovered.load(std::sync::atomic::Ordering::Relaxed);
+            let m = g.model.lock();
+            let ms = match m.config.default_writing_mode {
+                WritingMode::Smart => "Smart",
+                WritingMode::Exact => "Exact",
+                WritingMode::Professional => "Pro",
+                WritingMode::Casual => "Casual",
+                WritingMode::Technical => "Tech",
+                WritingMode::TerminalCode => "Code",
+            };
+            (tick, hov, ms, m.config.output_mode)
+        } else {
+            (0, false, "Smart", OutputMode::DirectTyping)
+        };
+
+        let bgra = render_pill_bgra_premultiplied_ex(
+            width as usize,
+            height as usize,
+            state,
+            rms,
+            anim_tick,
+            is_hovered,
+        );
 
         let hdc_screen = GetDC(std::ptr::null_mut());
         let hdc_mem = CreateCompatibleDC(hdc_screen);
@@ -266,6 +296,79 @@ pub mod win_gui {
                 bgra.len(),
             );
             let old_bm = SelectObject(hdc_mem, hbm as _);
+
+            // Render crisp state & mode label on the right half of the pill
+            let label_str = match state {
+                EngineState::Disabled => "Paused".to_string(),
+                EngineState::Idle => format!("Ready · {mode_short}"),
+                EngineState::Listening => "Listening…".to_string(),
+                EngineState::Processing => "Transcribing…".to_string(),
+                EngineState::Correcting => "Polishing…".to_string(),
+                EngineState::ReadyToPaste => match out_mode {
+                    OutputMode::DirectTyping => "Inserted ✓".to_string(),
+                    _ => "Ready (Ctrl+V)".to_string(),
+                },
+                EngineState::Error(_) => "Check Mic".to_string(),
+            };
+            let font_h = -((13.0 * scale).round() as i32);
+            let font_name = to_wide("Segoe UI Semibold");
+            let hfont = CreateFontW(
+                font_h,
+                0,
+                0,
+                0,
+                600,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                5, // CLEARTYPE_QUALITY
+                0,
+                font_name.as_ptr(),
+            );
+            let old_font = if !hfont.is_null() {
+                SelectObject(hdc_mem, hfont as _)
+            } else {
+                std::ptr::null_mut()
+            };
+            let _ = SetBkMode(hdc_mem, TRANSPARENT as i32);
+            let text_color = match state {
+                EngineState::Listening => 0x00A7F3D0u32,    // Soft mint-white (BGR)
+                EngineState::Processing => 0x0082D8FBu32,   // Warm amber-gold (BGR)
+                EngineState::ReadyToPaste => 0x00A7F3D0u32, // Emerald-mint (BGR)
+                EngineState::Error(_) => 0x00B4A5FDu32,     // Soft rose (BGR)
+                _ => 0x00EBE8E2u32,                         // Crisp warm off-white
+            };
+            let _ = SetTextColor(hdc_mem, text_color);
+            let text_x = ((height as f32 * 1.95).round() as i32).min(width - 40);
+            let text_y = ((height as f32 * 0.27).round() as i32).max(4);
+            let wide_lbl: Vec<u16> = label_str.encode_utf16().collect();
+            let _ = TextOutW(
+                hdc_mem,
+                text_x,
+                text_y,
+                wide_lbl.as_ptr(),
+                wide_lbl.len() as i32,
+            );
+            if !old_font.is_null() {
+                SelectObject(hdc_mem, old_font);
+            }
+            if !hfont.is_null() {
+                DeleteObject(hfont as _);
+            }
+
+            // GDI TextOutW sets the destination alpha byte to 0 on touched pixels;
+            // restore the capsule's premultiplied alpha from `bgra` so text stays 100% opaque!
+            let dst_slice = std::slice::from_raw_parts_mut(bits_ptr as *mut u32, bgra.len());
+            for (dst_p, &orig_p) in dst_slice.iter_mut().zip(bgra.iter()) {
+                if *dst_p != orig_p && (*dst_p >> 24) == 0 {
+                    let orig_a = orig_p & 0xFF00_0000;
+                    *dst_p |= orig_a;
+                }
+            }
+
             let pt_src = POINT { x: 0, y: 0 };
             let sz = SIZE {
                 cx: width,
@@ -350,24 +453,24 @@ pub mod win_gui {
         append(
             hmenu,
             MF_STRING
-                | if snap.config.output_mode == OutputMode::Clipboard {
-                    MF_CHECKED
-                } else {
-                    0
-                },
-            IDM_OUT_CLIP,
-            "Output: Clipboard only",
-        );
-        append(
-            hmenu,
-            MF_STRING
                 | if snap.config.output_mode == OutputMode::DirectTyping {
                     MF_CHECKED
                 } else {
                     0
                 },
             IDM_OUT_TYPE,
-            "Output: Auto Insert (recommended)",
+            "Output: Auto Insert (Recommended)",
+        );
+        append(
+            hmenu,
+            MF_STRING
+                | if snap.config.output_mode == OutputMode::Clipboard {
+                    MF_CHECKED
+                } else {
+                    0
+                },
+            IDM_OUT_CLIP,
+            "Output: Clipboard Only (Ctrl+V)",
         );
         append(
             hmenu,
@@ -378,13 +481,19 @@ pub mod win_gui {
                     0
                 },
             IDM_OUT_ASK,
-            "Output: Ask before inserting",
+            "Output: Ask Before Inserting",
+        );
+        append(
+            hmenu,
+            MF_STRING,
+            IDM_COPY_LAST,
+            "Copy Last Dictation to Clipboard",
         );
         append(
             hmenu,
             MF_STRING,
             IDM_DOWNLOAD_MODEL,
-            "Download default speech model",
+            "Download Default Speech Model",
         );
 
         // Writing Mode submenu
@@ -446,7 +555,7 @@ pub mod win_gui {
         let _ = DestroyMenu(hmenu);
     }
 
-    fn hotkey_presets() -> [HotkeySpec; 4] {
+    fn hotkey_presets() -> [HotkeySpec; 6] {
         [
             HotkeySpec::right_ctrl(),
             HotkeySpec::default(), // Ctrl + Win
@@ -459,6 +568,51 @@ pub mod win_gui {
                 vk: 0x20,
                 display_name: "Alt + Space".to_string(),
             },
+            HotkeySpec {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+                vk: 0xA5, // VK_RMENU (Right Alt)
+                display_name: "Right Alt".to_string(),
+            },
+            HotkeySpec {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+                vk: 0x77, // VK_F8
+                display_name: "F8".to_string(),
+            },
+        ]
+    }
+
+    fn asr_catalog_options() -> [(&'static str, &'static str); 6] {
+        [
+            (
+                "parakeet-tdt-0.6b-v2-int8",
+                "Parakeet TDT 0.6B v2 (Default EN)",
+            ),
+            (
+                "parakeet-tdt-0.6b-v3-int8",
+                "Parakeet TDT 0.6B v3 (25 Languages)",
+            ),
+            (
+                "moonshine-base-en-int8",
+                "Moonshine Base (Ultra-Light EN)",
+            ),
+            (
+                "moonshine-tiny-en-int8",
+                "Moonshine Tiny (Low-RAM PC)",
+            ),
+            (
+                "sense-voice-small-int8",
+                "SenseVoice Small (Multilingual)",
+            ),
+            (
+                "whisper-small.en-int8",
+                "Whisper Small.en (INT8 ONNX)",
+            ),
         ]
     }
 
@@ -473,16 +627,24 @@ pub mod win_gui {
 
         let hinst = GetModuleHandleW(std::ptr::null());
         let cls = to_wide(SETTINGS_WINDOW_CLASS);
-        let title = to_wide(&format!("{} Settings", PRODUCT_NAME));
+        let title = to_wide(&format!(
+            "{} Settings — {}",
+            PRODUCT_NAME,
+            vi_core::brand::PRODUCT_TAGLINE
+        ));
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        let win_x = ((screen_w - 600) / 2).max(40);
+        let win_y = ((screen_h - 660) / 2).max(40);
         let hwnd = CreateWindowExW(
-            0,
+            WS_EX_TOPMOST,
             cls.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            520,
-            540,
+            win_x,
+            win_y,
+            600,
+            660,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             hinst,
@@ -490,6 +652,8 @@ pub mod win_gui {
         );
         if !hwnd.is_null() {
             *g.settings_hwnd.lock() = hwnd as isize;
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            let _ = SetForegroundWindow(hwnd);
         }
     }
 
@@ -513,11 +677,16 @@ pub mod win_gui {
         match msg {
             WM_CREATE => {
                 let Some(g) = GUI_GLOBALS.get() else { return 0 };
-                let cfg = g.model.lock().config.clone();
+                let snap = g.model.lock().clone();
+                let cfg = snap.config;
+                let mics = snap.available_microphones;
                 let hinst = GetModuleHandleW(std::ptr::null());
                 let font_name = to_wide("Segoe UI");
                 let hfont = CreateFontW(
-                    -15, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, font_name.as_ptr(),
+                    -15, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, font_name.as_ptr(),
+                );
+                let hfont_bold = CreateFontW(
+                    -16, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 5, 0, font_name.as_ptr(),
                 );
 
                 let mk_ctrl = |cls: &str, txt: &str, style: u32, x: i32, y: i32, w: i32, h: i32, id: i32| -> HWND {
@@ -543,8 +712,44 @@ pub mod win_gui {
                     ch
                 };
 
-                mk_ctrl("STATIC", "Push-to-Talk Shortcut:", 0, 20, 20, 185, 22, 0);
-                let cmb_hk = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 215, 16, 265, 160, IDC_CMB_HOTKEY);
+                let hdr = mk_ctrl(
+                    "STATIC",
+                    &format!(
+                        "{} v{} — {}   [{}]",
+                        PRODUCT_NAME,
+                        vi_core::brand::VERSION_STR,
+                        vi_core::brand::PRODUCT_TAGLINE,
+                        snap.state.status_label()
+                    ),
+                    0,
+                    20,
+                    14,
+                    500,
+                    24,
+                    0,
+                );
+                if !hdr.is_null() && !hfont_bold.is_null() {
+                    SendMessageW(hdr, WM_SETFONT, hfont_bold as WPARAM, 1);
+                }
+
+                mk_ctrl("STATIC", "Microphone Device:", 0, 20, 48, 185, 22, 0);
+                let cmb_mic = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 44, 350, 180, IDC_CMB_MIC);
+                let def_mic_lbl = to_wide("System Default Microphone");
+                SendMessageW(cmb_mic, CB_ADDSTRING, 0, def_mic_lbl.as_ptr() as LPARAM);
+                let mut mic_idx = 0usize;
+                for (i, mname) in mics.iter().enumerate() {
+                    let s = to_wide(mname);
+                    SendMessageW(cmb_mic, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
+                    if let Some(sel) = &cfg.selected_microphone {
+                        if sel.eq_ignore_ascii_case(mname) || mname.contains(sel.as_str()) {
+                            mic_idx = i + 1;
+                        }
+                    }
+                }
+                SendMessageW(cmb_mic, CB_SETCURSEL, mic_idx, 0);
+
+                mk_ctrl("STATIC", "Push-to-Talk Shortcut:", 0, 20, 82, 185, 22, 0);
+                let cmb_hk = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 78, 350, 180, IDC_CMB_HOTKEY);
                 let presets = hotkey_presets();
                 let mut hk_idx = 0usize;
                 for (i, p) in presets.iter().enumerate() {
@@ -556,9 +761,9 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_hk, CB_SETCURSEL, hk_idx, 0);
 
-                mk_ctrl("STATIC", "Activation Behaviour:", 0, 20, 56, 185, 22, 0);
-                let cmb_act = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 215, 52, 265, 120, IDC_CMB_ACT);
-                for lbl in ["Hold to Talk (Release to Finish)", "Toggle to Talk (Press Start/Stop)"] {
+                mk_ctrl("STATIC", "Activation Behaviour:", 0, 20, 116, 185, 22, 0);
+                let cmb_act = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 112, 350, 120, IDC_CMB_ACT);
+                for lbl in ["Hold to Talk (Release to Finish)", "Toggle to Talk (Press Start / Stop)"] {
                     let s = to_wide(lbl);
                     SendMessageW(cmb_act, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
                 }
@@ -569,25 +774,25 @@ pub mod win_gui {
                     0,
                 );
 
-                mk_ctrl("STATIC", "Output Delivery:", 0, 20, 92, 185, 22, 0);
-                let cmb_out = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 215, 88, 265, 120, IDC_CMB_OUT);
+                mk_ctrl("STATIC", "Output Delivery:", 0, 20, 150, 185, 22, 0);
+                let cmb_out = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 146, 350, 120, IDC_CMB_OUT);
                 for lbl in [
-                    "Clipboard only (Ctrl+V)",
-                    "Auto Insert (recommended)",
-                    "Ask before inserting",
+                    "Auto Insert into Active App (Default)",
+                    "Clipboard Only (Ctrl+V)",
+                    "Ask Before Inserting",
                 ] {
                     let s = to_wide(lbl);
                     SendMessageW(cmb_out, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
                 }
                 let out_idx = match cfg.output_mode {
-                    OutputMode::Clipboard => 0,
-                    OutputMode::DirectTyping => 1,
+                    OutputMode::DirectTyping => 0,
+                    OutputMode::Clipboard => 1,
                     OutputMode::AskBeforeInserting => 2,
                 };
                 SendMessageW(cmb_out, CB_SETCURSEL, out_idx, 0);
 
-                mk_ctrl("STATIC", "Default Writing Mode:", 0, 20, 128, 185, 22, 0);
-                let cmb_mode = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 215, 124, 265, 200, IDC_CMB_MODE);
+                mk_ctrl("STATIC", "Default Writing Mode:", 0, 20, 184, 185, 22, 0);
+                let cmb_mode = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 180, 350, 200, IDC_CMB_MODE);
                 let mut m_idx = 0usize;
                 for (i, m) in WritingMode::ALL.iter().enumerate() {
                     let s = to_wide(m.label());
@@ -598,8 +803,8 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_mode, CB_SETCURSEL, m_idx, 0);
 
-                mk_ctrl("STATIC", "Privacy & Processing:", 0, 20, 164, 185, 22, 0);
-                let cmb_prof = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 215, 160, 265, 140, IDC_CMB_PROF);
+                mk_ctrl("STATIC", "Privacy && Processing:", 0, 20, 218, 185, 22, 0);
+                let cmb_prof = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 214, 350, 140, IDC_CMB_PROF);
                 let profs = [
                     ProcessingProfile::MaxPrivacyOffline,
                     ProcessingProfile::Balanced,
@@ -615,15 +820,9 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_prof, CB_SETCURSEL, p_idx, 0);
 
-                mk_ctrl("STATIC", "Local Speech Engine:", 0, 20, 200, 185, 22, 0);
-                let cmb_asr = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 215, 196, 265, 180, IDC_CMB_ASR);
-                let asr_ids = [
-                    ("parakeet-tdt-0.6b-v2-int8", "Parakeet TDT 0.6B v2 INT8 (Default)"),
-                    ("parakeet-tdt-0.6b-v3-int8", "Parakeet TDT 0.6B v3 INT8 (25 Langs)"),
-                    ("moonshine-base-en-int8", "Moonshine Base INT8 (Light 65 MB)"),
-                    ("moonshine-tiny-en-int8", "Moonshine Tiny INT8 (Legacy 30 MB)"),
-                    ("sense-voice-small-int8", "SenseVoice Small INT8 (Multilingual)"),
-                ];
+                mk_ctrl("STATIC", "Local Speech Engine:", 0, 20, 252, 185, 22, 0);
+                let cmb_asr = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 248, 254, 200, IDC_CMB_ASR);
+                let asr_ids = asr_catalog_options();
                 let mut a_idx = 0usize;
                 for (i, (id, lbl)) in asr_ids.iter().enumerate() {
                     let s = to_wide(lbl);
@@ -633,28 +832,47 @@ pub mod win_gui {
                     }
                 }
                 SendMessageW(cmb_asr, CB_SETCURSEL, a_idx, 0);
+                mk_ctrl("BUTTON", "Download", BS_PUSHBUTTON, 470, 247, 90, 26, IDC_BTN_DL_MODEL);
 
-                let chk_ctx = mk_ctrl("BUTTON", "Automatic App-Context Writing Adaptation", BS_AUTOCHECKBOX, 20, 238, 450, 22, IDC_CHK_AUTO_CTX);
+                mk_ctrl("STATIC", "Local Grammar Model:", 0, 20, 286, 185, 22, 0);
+                let cmb_llm = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 282, 350, 120, IDC_CMB_LLM);
+                for lbl in [
+                    "Qwen3.5-0.8B-Q4_K_M (Local AI Grammar Polish)",
+                    "Tier 0 Deterministic Only (Instant / Low-RAM)",
+                ] {
+                    let s = to_wide(lbl);
+                    SendMessageW(cmb_llm, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
+                }
+                let llm_idx = if cfg.local_llm_model.eq_ignore_ascii_case("none") { 1 } else { 0 };
+                SendMessageW(cmb_llm, CB_SETCURSEL, llm_idx, 0);
+
+                let chk_ctx = mk_ctrl("BUTTON", "Automatic App-Context Writing Adaptation", BS_AUTOCHECKBOX, 20, 322, 540, 22, IDC_CHK_AUTO_CTX);
                 SendMessageW(chk_ctx, BM_SETCHECK, usize::from(cfg.auto_context_mode), 0);
 
-                let chk_pill = mk_ctrl("BUTTON", "Show Non-Activating Floating Microphone Pill", BS_AUTOCHECKBOX, 20, 266, 450, 22, IDC_CHK_PILL);
+                let chk_pill = mk_ctrl("BUTTON", "Show Non-Activating Floating KeyReed Control", BS_AUTOCHECKBOX, 20, 348, 540, 22, IDC_CHK_PILL);
                 SendMessageW(chk_pill, BM_SETCHECK, usize::from(cfg.show_floating_mic), 0);
 
-                let chk_excl = mk_ctrl("BUTTON", "Exclude Dictation from Windows Clipboard History & Cloud Sync", BS_AUTOCHECKBOX, 20, 294, 460, 22, IDC_CHK_CLIP_EXCL);
+                let chk_cues = mk_ctrl("BUTTON", "Play Subtle Audio Earcons on Start && Completion", BS_AUTOCHECKBOX, 20, 374, 540, 22, IDC_CHK_CUES);
+                SendMessageW(chk_cues, BM_SETCHECK, usize::from(cfg.audio_cues_enabled), 0);
+
+                let chk_notify = mk_ctrl("BUTTON", "Show Tray Notification on Completion / Fallback", BS_AUTOCHECKBOX, 20, 400, 540, 22, IDC_CHK_NOTIFY);
+                SendMessageW(chk_notify, BM_SETCHECK, usize::from(cfg.notify_on_ready), 0);
+
+                let chk_excl = mk_ctrl("BUTTON", "Exclude Dictation from Windows Clipboard History && Cloud Sync", BS_AUTOCHECKBOX, 20, 426, 540, 22, IDC_CHK_CLIP_EXCL);
                 SendMessageW(chk_excl, BM_SETCHECK, usize::from(cfg.privacy.exclude_from_clipboard_history), 0);
 
-                let chk_auto = mk_ctrl("BUTTON", "Launch Quietly in System Tray at Windows Login", BS_AUTOCHECKBOX, 20, 322, 450, 22, IDC_CHK_AUTOSTART);
+                let chk_auto = mk_ctrl("BUTTON", "Start KeyReed Automatically when Windows Starts", BS_AUTOCHECKBOX, 20, 452, 540, 22, IDC_CHK_AUTOSTART);
                 SendMessageW(chk_auto, BM_SETCHECK, usize::from(cfg.autostart_on_login), 0);
 
-                mk_ctrl("STATIC", "Personal Dictionary (comma-separated):", 0, 20, 358, 260, 20, 0);
+                mk_ctrl("STATIC", "Personal Dictionary (comma-separated terms):", 0, 20, 484, 540, 20, 0);
                 let vocab_str = cfg.dictionary.vocabulary.join(", ");
-                mk_ctrl("EDIT", &vocab_str, WS_BORDER | ES_AUTOHSCROLL, 20, 380, 460, 26, IDC_EDT_VOCAB);
+                mk_ctrl("EDIT", &vocab_str, WS_BORDER | ES_AUTOHSCROLL, 20, 506, 540, 26, IDC_EDT_VOCAB);
 
-                mk_ctrl("STATIC", "Optional Cloud API Key (DPAPI Encrypted):", 0, 20, 414, 280, 20, 0);
-                mk_ctrl("EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD_U32, 295, 412, 185, 24, IDC_EDT_APIKEY);
+                mk_ctrl("STATIC", "Optional Cloud API Key (DPAPI):", 0, 20, 542, 260, 20, 0);
+                mk_ctrl("EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD_U32, 285, 540, 275, 24, IDC_EDT_APIKEY);
 
-                mk_ctrl("BUTTON", "Save & Apply", BS_PUSHBUTTON, 270, 455, 105, 32, IDC_BTN_SAVE);
-                mk_ctrl("BUTTON", "Cancel", BS_PUSHBUTTON, 385, 455, 95, 32, IDC_BTN_CLOSE);
+                mk_ctrl("BUTTON", "Save && Apply", BS_PUSHBUTTON, 340, 578, 110, 34, IDC_BTN_SAVE);
+                mk_ctrl("BUTTON", "Close", BS_PUSHBUTTON, 460, 578, 100, 34, IDC_BTN_CLOSE);
                 0
             }
             WM_COMMAND => {
@@ -663,9 +881,28 @@ pub mod win_gui {
                     let _ = DestroyWindow(hwnd);
                     return 0;
                 }
+                if id == IDC_BTN_DL_MODEL {
+                    if let Some(g) = GUI_GLOBALS.get() {
+                        let asr_ids = asr_catalog_options();
+                        let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
+                        if let Some((aid, _)) = asr_ids.get(asr_sel) {
+                            let _ = g.tx.send(UiAction::DownloadModel((*aid).to_string()));
+                        }
+                    }
+                    return 0;
+                }
                 if id == IDC_BTN_SAVE {
                     if let Some(g) = GUI_GLOBALS.get() {
-                        let mut new_cfg = g.model.lock().config.clone();
+                        let snap = g.model.lock().clone();
+                        let mut new_cfg = snap.config;
+
+                        let mic_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_MIC), CB_GETCURSEL, 0, 0) as usize;
+                        if mic_sel == 0 {
+                            new_cfg.selected_microphone = None;
+                        } else if let Some(mname) = snap.available_microphones.get(mic_sel - 1) {
+                            new_cfg.selected_microphone = Some(mname.clone());
+                        }
+
                         let presets = hotkey_presets();
                         let hk_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_HOTKEY), CB_GETCURSEL, 0, 0) as usize;
                         if let Some(p) = presets.get(hk_sel) {
@@ -679,9 +916,9 @@ pub mod win_gui {
                         };
                         let out_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_OUT), CB_GETCURSEL, 0, 0);
                         new_cfg.output_mode = match out_sel {
-                            1 => OutputMode::DirectTyping,
+                            1 => OutputMode::Clipboard,
                             2 => OutputMode::AskBeforeInserting,
-                            _ => OutputMode::Clipboard,
+                            _ => OutputMode::DirectTyping,
                         };
                         let mode_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_MODE), CB_GETCURSEL, 0, 0) as usize;
                         if let Some(m) = WritingMode::ALL.get(mode_sel) {
@@ -693,26 +930,31 @@ pub mod win_gui {
                             2 => ProcessingProfile::MaxAccuracy,
                             _ => ProcessingProfile::MaxPrivacyOffline,
                         };
-                        let asr_ids = [
-                            "parakeet-tdt-0.6b-v2-int8",
-                            "parakeet-tdt-0.6b-v3-int8",
-                            "moonshine-base-en-int8",
-                            "moonshine-tiny-en-int8",
-                            "sense-voice-small-int8",
-                        ];
+                        let asr_ids = asr_catalog_options();
                         let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
-                        if let Some(aid) = asr_ids.get(asr_sel) {
+                        if let Some((aid, _)) = asr_ids.get(asr_sel) {
                             new_cfg.local_asr_model = (*aid).to_string();
                         }
+                        let llm_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_LLM), CB_GETCURSEL, 0, 0);
+                        new_cfg.local_llm_model = if llm_sel == 1 {
+                            "none".to_string()
+                        } else {
+                            "qwen3.5-0.8b-q4_k_m".to_string()
+                        };
 
                         new_cfg.auto_context_mode =
                             SendMessageW(GetDlgItem(hwnd, IDC_CHK_AUTO_CTX), BM_GETCHECK, 0, 0) == 1;
                         new_cfg.show_floating_mic =
                             SendMessageW(GetDlgItem(hwnd, IDC_CHK_PILL), BM_GETCHECK, 0, 0) == 1;
+                        new_cfg.audio_cues_enabled =
+                            SendMessageW(GetDlgItem(hwnd, IDC_CHK_CUES), BM_GETCHECK, 0, 0) == 1;
+                        new_cfg.notify_on_ready =
+                            SendMessageW(GetDlgItem(hwnd, IDC_CHK_NOTIFY), BM_GETCHECK, 0, 0) == 1;
                         new_cfg.privacy.exclude_from_clipboard_history =
                             SendMessageW(GetDlgItem(hwnd, IDC_CHK_CLIP_EXCL), BM_GETCHECK, 0, 0) == 1;
                         new_cfg.autostart_on_login =
                             SendMessageW(GetDlgItem(hwnd, IDC_CHK_AUTOSTART), BM_GETCHECK, 0, 0) == 1;
+                        new_cfg.first_run_completed = true;
 
                         let read_edit = |cid: i32| -> String {
                             let he = GetDlgItem(hwnd, cid);
@@ -778,6 +1020,13 @@ pub mod win_gui {
             }
             WM_MOUSEMOVE => {
                 if let Some(g) = GUI_GLOBALS.get() {
+                    if !g
+                        .pill_hovered
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let snap = g.model.lock().clone();
+                        paint_layered_pill(hwnd, &snap.state, snap.rms_level);
+                    }
                     let mut drag = g.drag_offset.lock();
                     if let Some((sx, sy, ref mut moved)) = *drag {
                         let mut pt = POINT { x: 0, y: 0 };
@@ -808,7 +1057,12 @@ pub mod win_gui {
                 ReleaseCapture();
                 if let Some(g) = GUI_GLOBALS.get() {
                     let was_drag = g.drag_offset.lock().take().map(|t| t.2).unwrap_or(false);
-                    if !was_drag && g.model.lock().config.floating_mic_clickable {
+                    if was_drag {
+                        let mut rc = std::mem::zeroed();
+                        if GetWindowRect(hwnd, &mut rc) != 0 {
+                            let _ = g.tx.send(UiAction::SavePillPosition(rc.left, rc.top));
+                        }
+                    } else if g.model.lock().config.floating_mic_clickable {
                         let _ = g.tx.send(UiAction::FloatingMicClicked);
                     }
                 }
@@ -905,6 +1159,9 @@ pub mod win_gui {
                         }
                         IDM_OUT_ASK => {
                             let _ = g.tx.send(UiAction::SetOutputMode(OutputMode::AskBeforeInserting));
+                        }
+                        IDM_COPY_LAST => {
+                            let _ = g.tx.send(UiAction::CopyLastDictation);
                         }
                         IDM_DOWNLOAD_MODEL => {
                             let _ = g.tx.send(UiAction::DownloadDefaultModel);
@@ -1004,6 +1261,7 @@ pub mod win_gui {
     pub fn init_and_spawn_gui_windows(
         tx: Sender<UiAction>,
         initial_cfg: AppConfig,
+        available_microphones: Vec<String>,
         open_settings_immediately: bool,
     ) -> anyhow::Result<(WinGuiHandle, Box<dyn FnOnce()>)> {
         let model = Arc::new(Mutex::new(SharedUiModel {
@@ -1015,6 +1273,7 @@ pub mod win_gui {
             },
             rms_level: 0.0,
             status_detail: String::new(),
+            available_microphones,
         }));
 
         let _ = GUI_GLOBALS.set(WinGuiGlobals {
@@ -1025,6 +1284,8 @@ pub mod win_gui {
             settings_hwnd: Mutex::new(0),
             drag_offset: Mutex::new(None),
             toast_buf: Mutex::new(None),
+            anim_tick: std::sync::atomic::AtomicU32::new(0),
+            pill_hovered: std::sync::atomic::AtomicBool::new(false),
         });
 
         unsafe {
@@ -1072,11 +1333,19 @@ pub mod win_gui {
                 anyhow::bail!("Failed to create tray host window");
             }
 
-            // Position floating pill near bottom-center of primary work area
+            // Position floating pill at saved position or near bottom-center of primary work area
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
             let screen_h = GetSystemMetrics(SM_CYSCREEN);
-            let pill_x = ((screen_w - 168) / 2).max(20);
-            let pill_y = (screen_h - 108).max(40);
+            let default_x = ((screen_w - 196) / 2).max(20);
+            let default_y = (screen_h - 108).max(40);
+            let (pill_x, pill_y) = match initial_cfg.floating_pill_pos {
+                Some((sx, sy))
+                    if sx >= 0 && sx < (screen_w - 60) && sy >= 0 && sy < (screen_h - 30) =>
+                {
+                    (sx, sy)
+                }
+                _ => (default_x, default_y),
+            };
 
             let pill_cls = to_wide(OVERLAY_WINDOW_CLASS);
             let pill_hwnd = CreateWindowExW(
@@ -1086,7 +1355,7 @@ pub mod win_gui {
                 WS_POPUP,
                 pill_x,
                 pill_y,
-                168,
+                196,
                 40,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),

@@ -284,16 +284,35 @@ pub fn capture_foreground_context(redact_sensitive_titles: bool) -> ForegroundCo
         gti.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
         let mut control_type = String::new();
         let mut is_password_field = false;
+        let mut focus_hwnd: HWND = std::ptr::null_mut();
         if tid != 0 && GetGUIThreadInfo(tid, &mut gti) != 0 && !gti.hwndFocus.is_null() {
+            focus_hwnd = gti.hwndFocus;
+        }
+        // In Windows 11 XAML Islands apps (e.g. modern Notepad), the actual editor child (`RichEditD2DPT`)
+        // may live inside a nested child container (`NotepadTextBox`).
+        if focus_hwnd.is_null() || focus_hwnd == hwnd {
+            if let Some(deep) = find_deep_editor_hwnd(hwnd) {
+                focus_hwnd = deep;
+            }
+        }
+        if !focus_hwnd.is_null() {
             let mut fcls = [0u16; 96];
-            let flen = GetClassNameW(gti.hwndFocus, fcls.as_mut_ptr(), fcls.len() as i32);
+            let flen = GetClassNameW(focus_hwnd, fcls.as_mut_ptr(), fcls.len() as i32);
             if flen > 0 {
                 control_type = String::from_utf16_lossy(&fcls[..flen as usize]);
             }
-            let style = GetWindowLongW(gti.hwndFocus, GWL_STYLE);
+            let style = GetWindowLongW(focus_hwnd, GWL_STYLE);
             if (style & ES_PASSWORD) != 0 || control_type.to_lowercase().contains("password") {
                 is_password_field = true;
             }
+        }
+        let raw_title_low = raw_title.to_lowercase();
+        if raw_title_low.contains("password")
+            || raw_title_low.contains("1password")
+            || raw_title_low.contains("keepass")
+            || raw_title_low.contains("bitwarden")
+        {
+            is_password_field = true;
         }
 
         let category = classify_application(&proc_name, &window_class, &raw_title, is_password_field);
@@ -322,6 +341,53 @@ pub fn capture_foreground_context(redact_sensitive_titles: bool) -> ForegroundCo
     {
         let _ = redact_sensitive_titles;
         ForegroundContext::default()
+    }
+}
+
+/// Recursively searches child windows of `parent` for a known text editor surface
+/// (`RichEditD2DPT`, `Edit`, `RICHEDIT50W`, `Scintilla`). Used for Windows 11 tabbed Notepad
+/// (`Notepad` -> `NotepadTextBox` -> `RichEditD2DPT`) and classic Win32 editors.
+#[cfg(windows)]
+pub fn find_deep_editor_hwnd(
+    parent: windows_sys::Win32::Foundation::HWND,
+) -> Option<windows_sys::Win32::Foundation::HWND> {
+    unsafe {
+        use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW, IsWindowVisible};
+
+        struct EditorSearch {
+            found: HWND,
+        }
+        unsafe extern "system" fn enum_editor_cb(child: HWND, lparam: LPARAM) -> BOOL {
+            let st = &mut *(lparam as *mut EditorSearch);
+            if IsWindowVisible(child) == 0 {
+                return 1;
+            }
+            let mut cls_buf = [0u16; 96];
+            let len = GetClassNameW(child, cls_buf.as_mut_ptr(), cls_buf.len() as i32);
+            if len > 0 {
+                let cls = String::from_utf16_lossy(&cls_buf[..len as usize]);
+                let low = cls.to_lowercase();
+                if low == "richeditd2dpt"
+                    || low == "edit"
+                    || low.starts_with("richedit")
+                    || low == "scintilla"
+                {
+                    st.found = child;
+                    return 0;
+                }
+            }
+            1
+        }
+        let mut search = EditorSearch {
+            found: std::ptr::null_mut(),
+        };
+        EnumChildWindows(parent, Some(enum_editor_cb), &mut search as *mut _ as LPARAM);
+        if search.found.is_null() {
+            None
+        } else {
+            Some(search.found)
+        }
     }
 }
 

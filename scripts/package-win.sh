@@ -8,23 +8,44 @@ set -euo pipefail
 
 MODE="${1:-default}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="$ROOT/dist/keyreed-win-x64"
+if [[ "$MODE" == "slim" ]]; then
+  DIST="$ROOT/dist/keyreed-win-x64-slim"
+else
+  DIST="$ROOT/dist/keyreed-win-x64"
+fi
 VENDOR="$ROOT/vendor"
 BENCH="$ROOT/bench/models"
-TARGET_EXE="$ROOT/target/x86_64-pc-windows-msvc/release/keyreed.exe"
+FALLBACK_RT="${KEYREED_RUNTIME_ROOT:-/c/Program Files/KeyReed}"
+
+TARGET_EXE=""
+for cand in \
+  "$ROOT/target/release/keyreed.exe" \
+  "$ROOT/target/x86_64-pc-windows-gnu/release/keyreed.exe" \
+  "$ROOT/target/x86_64-pc-windows-msvc/release/keyreed.exe"; do
+  [[ -f "$cand" ]] && TARGET_EXE="$cand" && break
+done
 
 DEFAULT_ASR=(sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8)
 ALL_ASR=(sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 sherpa-onnx-moonshine-base-en-int8 sherpa-onnx-moonshine-tiny-en-int8)
 DEFAULT_LLM=(Qwen3.5-0.8B-Q4_K_M.gguf)
 ALL_LLM=(Qwen3.5-0.8B-Q4_K_M.gguf Qwen3-0.6B-Q4_K_M.gguf)
 
-if [[ "$MODE" == "all" ]]; then ASR_SET=("${ALL_ASR[@]}"); LLM_SET=("${ALL_LLM[@]}"); else ASR_SET=("${DEFAULT_ASR[@]}"); LLM_SET=("${DEFAULT_LLM[@]}"); fi
+if [[ "$MODE" == "slim" ]]; then
+  ASR_SET=()
+  LLM_SET=()
+elif [[ "$MODE" == "all" ]]; then
+  ASR_SET=("${ALL_ASR[@]}")
+  LLM_SET=("${ALL_LLM[@]}")
+else
+  ASR_SET=("${DEFAULT_ASR[@]}")
+  LLM_SET=("${DEFAULT_LLM[@]}")
+fi
 
 # link_or_copy: hardlink when possible (same fs, zero cost), else copy.
 loc() { ln "$2" "$1" 2>/dev/null || cp -f "$2" "$1"; }
 
-echo "== Keyreed Windows packager (mode=$MODE) =="
-[[ -f "$TARGET_EXE" ]] || { echo "FATAL: exe not built: $TARGET_EXE"; exit 1; }
+echo "== KeyReed Windows packager (mode=$MODE) =="
+[[ -n "$TARGET_EXE" && -f "$TARGET_EXE" ]] || { echo "FATAL: keyreed.exe not built"; exit 1; }
 
 rm -rf "$DIST"
 mkdir -p "$DIST/models" "$DIST/runtime/sherpa-onnx" "$DIST/runtime/llama"
@@ -33,16 +54,21 @@ mkdir -p "$DIST/models" "$DIST/runtime/sherpa-onnx" "$DIST/runtime/llama"
 cp -f "$TARGET_EXE" "$DIST/keyreed.exe"
 
 # 2) sherpa runtime DLLs
-cp -f "$VENDOR"/sherpa-onnx/win-x64/lib/*.dll "$DIST/runtime/sherpa-onnx/"
+if [[ -d "$VENDOR/sherpa-onnx/win-x64/lib" ]]; then
+  cp -f "$VENDOR"/sherpa-onnx/win-x64/lib/*.dll "$DIST/runtime/sherpa-onnx/"
+elif [[ -d "$FALLBACK_RT/runtime/sherpa-onnx" ]]; then
+  cp -f "$FALLBACK_RT"/runtime/sherpa-onnx/*.dll "$DIST/runtime/sherpa-onnx/"
+else
+  echo "FATAL: sherpa-onnx DLLs not found"; exit 1
+fi
 
-# 3) llama runtime: copy ONLY the curated set validated in the Windows VM E2E (server + its
-#    impl/backing DLLs + MSVC CRT), not the 18 unused llama-*.exe CLI tools from the vendor drop.
+# 3) llama runtime: copy ONLY the curated set validated in Windows 11 E2E
 LLAMA_SRC=""
-for cand in "$VENDOR/llama-cpp/win-x64" "$VENDOR/llama" "$VENDOR/llama.cpp"; do
+for cand in "$VENDOR/llama-cpp/win-x64" "$VENDOR/llama" "$VENDOR/llama.cpp" "$FALLBACK_RT/runtime/llama"; do
   [[ -f "$cand/llama-server.exe" ]] && LLAMA_SRC="$cand" && break
 done
 if [[ -z "$LLAMA_SRC" ]]; then
-  echo "FATAL: llama-server.exe not found under vendor; cannot ship Tier-1 SLM"; exit 1
+  echo "FATAL: llama-server.exe not found; cannot ship Tier-1 SLM"; exit 1
 fi
 LLAMA_FILES=(
   ggml-base.dll ggml-cpu-alderlake.dll ggml-cpu-cannonlake.dll ggml-cpu-cascadelake.dll
@@ -58,11 +84,9 @@ CRT_FILES=(msvcp140.dll msvcp140_1.dll vcruntime140.dll vcruntime140_1.dll)
 CRT_PROV=""
 for f in "${LLAMA_FILES[@]}"; do
   src="$LLAMA_SRC/$f"
-  # MSVC CRT is not in the llama drop; resolve it from a vendored copy or the local
-  # redistributable image, and record provenance (threat model T12: these must be code-signed
-  # / from a trusted redistributable before public release).
-  if [[ ! -f "$src" ]] && printf '%s\n' "${CRT_FILES[@]}" | grep -qx "$f"; then
-    for cand in "$VENDOR/msvc-crt/$f" "/root/.wine/drive_c/windows/system32/$f"; do
+  # Always prefer genuine Microsoft-signed System32 MSVC CRT DLLs over any Wine stub DLLs!
+  if printf '%s\n' "${CRT_FILES[@]}" | grep -qx "$f"; then
+    for cand in "C:/Windows/System32/$f" "/c/Windows/System32/$f" "$VENDOR/msvc-crt/$f"; do
       [[ -f "$cand" ]] && src="$cand" && CRT_PROV="$cand" && break
     done
   fi
@@ -71,22 +95,26 @@ for f in "${LLAMA_FILES[@]}"; do
 done
 
 # 4) models: VAD + ASR folders + GGUFs
-VAD="$BENCH/silero_vad.onnx"
+VAD=""
+for cand in "$BENCH/silero_vad.onnx" "$FALLBACK_RT/models/silero_vad.onnx"; do
+  [[ -f "$cand" ]] && VAD="$cand" && break
+done
 [[ -f "$VAD" ]] || VAD="$(find "$BENCH" "$VENDOR" -name silero_vad.onnx 2>/dev/null | head -1)"
 [[ -f "$VAD" ]] || { echo "FATAL: silero_vad.onnx not found"; exit 1; }
 cp -f "$VAD" "$DIST/models/silero_vad.onnx"
 
 for folder in "${ASR_SET[@]}"; do
   src="$BENCH/$folder"
-  [[ -d "$src" ]] || { echo "FATAL: missing extracted ASR model $src (download+extract first)"; exit 1; }
-  # hardlink the whole tree; strip test_wavs to keep bundle lean
-  cp -al "$src" "$DIST/models/$folder"
+  [[ -d "$src" ]] || src="$FALLBACK_RT/models/$folder"
+  [[ -d "$src" ]] || { echo "FATAL: missing extracted ASR model $folder"; exit 1; }
+  cp -r "$src" "$DIST/models/$folder"
   rm -rf "$DIST/models/$folder/test_wavs"
 done
 
 for gguf in "${LLM_SET[@]}"; do
   src="$VENDOR/models/$gguf"
-  [[ -f "$src" ]] || { echo "FATAL: missing GGUF $src"; exit 1; }
+  [[ -f "$src" ]] || src="$FALLBACK_RT/models/$gguf"
+  [[ -f "$src" ]] || { echo "FATAL: missing GGUF $gguf"; exit 1; }
   loc "$DIST/models/$gguf" "$src"
 done
 
