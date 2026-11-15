@@ -41,7 +41,7 @@ function setMode(key) {
 document.querySelectorAll(".mode-row button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 setMode("smart");
 
-const world = document.getElementById("world");
+const product = document.getElementById("product");
 const field = document.getElementById("field-text");
 const heroState = document.getElementById("hero-state");
 const status = document.getElementById("status");
@@ -67,9 +67,13 @@ function drawWave(active) {
 drawWave(false);
 
 function setHero(name, text) {
-  world.className = "world " + name;
+  product.className = "product " + name;
   heroState.textContent = name === "done" ? "Ready" : name[0].toUpperCase() + name.slice(1);
   field.textContent = text;
+  document.querySelectorAll(".flow li").forEach((li, n) => {
+    const map = { idle: 0, listening: 1, processing: 2, done: 3 };
+    li.classList.toggle("on", n === map[name]);
+  });
 }
 function startHold() {
   hold.setAttribute("aria-pressed", "true");
@@ -98,80 +102,6 @@ document.getElementById("play").addEventListener("click", () => {
   if (!reduce) setTimeout(endHold, 1200);
   else endHold();
 });
-
-const stage = document.getElementById("stage");
-if (!reduce) {
-  stage.addEventListener("pointermove", (e) => {
-    const r = stage.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width - 0.5;
-    const y = (e.clientY - r.top) / r.height - 0.5;
-    world.style.transform = "rotateY(" + (x * 14) + "deg) rotateX(" + (-y * 8) + "deg)";
-  });
-  stage.addEventListener("pointerleave", () => { world.style.transform = ""; });
-}
-
-const canvas = document.getElementById("gl");
-const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
-if (gl) {
-  const vs = "attribute vec3 p;attribute vec2 uv;uniform mat4 m;varying vec2 v;void main(){v=uv;gl_Position=m*vec4(p,1.0);}";
-  const fs = "precision mediump float;varying vec2 v;uniform sampler2D tex;uniform float shade;void main(){vec4 c=texture2D(tex,v);gl_FragColor=vec4(c.rgb*shade,1.0);}";
-  function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
-  const prog = gl.createProgram();
-  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
-  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
-  gl.linkProgram(prog);
-  gl.useProgram(prog);
-  const data = new Float32Array([
-    -0.42,-0.05,0.12, 0,1,  0.42,-0.05,0.12, 1,1,  0.48,0.52,0.12, 1,0,
-    -0.42,-0.05,0.12, 0,1,  0.48,0.52,0.12, 1,0,  -0.48,0.52,0.12, 0,0,
-    -0.5,-0.42,-0.08, 0,1,  0.5,-0.42,-0.08, 1,1,  0.42,-0.05,0.12, 1,0,
-    -0.5,-0.42,-0.08, 0,1,  0.42,-0.05,0.12, 1,0,  -0.42,-0.05,0.12, 0,0
-  ]);
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, "p");
-  const uv = gl.getAttribLocation(prog, "uv");
-  gl.enableVertexAttribArray(loc);
-  gl.enableVertexAttribArray(uv);
-  gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 20, 0);
-  gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 20, 12);
-  const mu = gl.getUniformLocation(prog, "m");
-  const su = gl.getUniformLocation(prog, "shade");
-  const tex = gl.createTexture();
-  const img = new Image();
-  img.onload = () => {
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  };
-  img.src = "assets/icon.png";
-  gl.clearColor(0, 0, 0, 0);
-  let t = 0;
-  function frame() {
-    const yaw = reduce ? 0.35 : 0.4 + Math.sin(t) * 0.22;
-    const pitch = -0.25;
-    const c = Math.cos(yaw), s = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const m = new Float32Array([
-      c, sp*s, cp*s, 0,
-      0, cp, -sp, 0,
-      -s, sp*c, cp*c, 0,
-      0, -0.02, 0, 1
-    ]);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniformMatrix4fv(mu, false, m);
-    gl.uniform1f(su, 0.35);
-    gl.drawArrays(gl.TRIANGLES, 6, 6);
-    gl.uniform1f(su, 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    if (!reduce) { t += 0.012; requestAnimationFrame(frame); }
-  }
-  frame();
-}
 
 if (!reduce) {
   const seq = [
