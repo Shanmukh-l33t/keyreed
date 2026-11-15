@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>KeyReed: open-source, local-first voice dictation for Windows</title>
   <meta name="description" content="Open-source, local-first voice dictation for Windows. Hold a shortcut, speak, and get polished text in any app. Six writing modes, CPU-only, MIT or Apache-2.0.">
   <link rel="canonical" href="https://keyreed-website.vercel.app/">
-  <meta name="theme-color" content="#060908">
-  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#f6f9f6">
+  <meta name="color-scheme" content="light dark">
   <meta name="author" content="Shanmukh-l33t">
 
   <meta property="og:type" content="website">
@@ -33,7 +33,7 @@
   <link rel="preload" href="assets/fonts/geist-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="assets/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
-  <script>document.documentElement.className+=' js'</script>
+  <script src="theme.js"></script>
 
   <script type="application/ld+json">
   {
@@ -83,6 +83,8 @@
       <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></symbol>
       <symbol id="i-code" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 8-5 4 5 4m8-8 5 4-5 4m-3.5-10-3 12"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></symbol>
     </defs>
   </svg>
@@ -103,6 +105,7 @@
         <a href="#faq" data-spy="faq">FAQ</a>
       </nav>
       <div class="nav-actions">
+        <button class="theme-btn" id="theme-btn" type="button" aria-label="Switch to dark theme" title="Switch to dark theme"><svg class="ic i-sun"><use href="#i-sun"/></svg><svg class="ic i-moon"><use href="#i-moon"/></svg></button>
         <a class="nav-gh" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic"><use href="#i-github"/></svg><span>GitHub</span></a>
         <a class="btn btn-sm btn-primary" href="#download"><svg class="ic"><use href="#i-download"/></svg>Download</a>
         <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open menu"><svg class="ic"><use href="#i-menu"/></svg></button>
@@ -151,7 +154,7 @@
 
       <!-- Product scene: an illustration, not a live recording -->
       <div class="wrap stage-wrap rise" style="--d:.5s">
-        <div class="stage lit" id="scene" data-state="idle" role="img" aria-label="Animated illustration: hold Right Ctrl, speak, release, then paste polished text. It is not a recording of the app.">
+        <div class="stage lit keep-dark" id="scene" data-state="idle" role="img" aria-label="Animated illustration: hold Right Ctrl, speak, release, then paste polished text. It is not a recording of the app.">
           <div class="stage-glow" aria-hidden="true"></div>
           <div class="desk" aria-hidden="true">
             <div class="win">
@@ -467,7 +470,7 @@
           </div>
         </div>
 
-        <div class="code lit" id="code" data-reveal style="--d:.1s">
+        <div class="code lit keep-dark" id="code" data-reveal style="--d:.1s">
           <div class="code-bar">
             <span class="tl" aria-hidden="true"><i></i><i></i><i></i></span>
             <div class="code-tabs" role="tablist" aria-label="Source excerpts">

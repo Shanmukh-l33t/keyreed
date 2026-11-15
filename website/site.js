@@ -6,6 +6,25 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /* ---------- Theme toggle (light is the default) ---------- */
+  const root = document.documentElement;
+  const themeBtn = $('#theme-btn');
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  const paintTheme = (t) => {
+    root.setAttribute('data-theme', t);
+    const next = t === 'dark' ? 'light' : 'dark';
+    themeBtn.setAttribute('aria-label', `Switch to ${next} theme`);
+    themeBtn.title = `Switch to ${next} theme`;
+    if (metaTheme) metaTheme.setAttribute('content', t === 'dark' ? '#060908' : '#f6f9f6');
+  };
+  paintTheme(root.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
+  themeBtn.addEventListener('click', () => {
+    const t = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    if (!reduce) { root.classList.add('theming'); setTimeout(() => root.classList.remove('theming'), 450); }
+    paintTheme(t);
+    try { localStorage.setItem('keyreed-theme', t); } catch { /* storage blocked */ }
+  });
+
   /* ---------- Header ---------- */
   const nav = $('#nav');
   const menuBtn = $('#menu-btn');

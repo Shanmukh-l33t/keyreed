@@ -39,7 +39,9 @@ node scripts/check-site.mjs          # static checks: anchors, ARIA, SEO, CSP ha
 python3 scripts/gen-excerpts.py      # regenerate website/excerpts.js from the real Rust files
 ```
 
-If you edit the inline script in `website/index.html`, update the CSP hash in both `vercel.json` files. `check-site.mjs` tells you when it is out of sync.
+The site ships a strict Content-Security-Policy (`script-src 'self'`), so do not add inline scripts; put code in a file. `check-site.mjs` fails if one appears. Keep the `headers` block identical in `website/vercel.json` and the root `vercel.json`.
+
+The theme (light by default, dark optional) is set by `website/theme.js` before first paint and stored in `localStorage` under `keyreed-theme`. The colour tokens live at the top of `website/styles.css`; the product scene and source viewer use `.keep-dark` and stay dark in both themes.
 
 Vercel serves `website/` via the root `vercel.json`, which copies it to `public/`.
 
