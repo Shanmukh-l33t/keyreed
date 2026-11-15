@@ -1,13 +1,13 @@
-; KeyReed installer. Includes the application, speech runtime, the default
-; local speech model, and the default local grammar model so the first launch
-; is not an empty shell.
+; KeyReed standard installer. Does not embed speech or grammar models.
+; The tray menu downloads the default speech model and verifies the compile-time pins.
+; The full offline zip is a separate package.
 ; Uninstall removes the installed program files. It does not delete
 ; %LOCALAPPDATA%\Keyreed, which holds settings.
 
 !include "MUI2.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "0.1.0"
+!define APP_VERSION "0.1.1"
 
 Name "${APP_NAME}"
 OutFile "KeyReed-Setup-x64.exe"
@@ -44,7 +44,7 @@ VIAddVersionKey "CompanyName" "KeyReed"
 Section "KeyReed" SecApp
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File /r "..\dist\keyreed-win-x64\*.*"
+  File /r "..\dist\keyreed-win-x64-slim\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\KeyReed" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\KeyReed" "Version" "${APP_VERSION}"

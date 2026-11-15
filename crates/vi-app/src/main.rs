@@ -1,5 +1,6 @@
-// On Windows release builds without CLI flags, we still allow console output when invoked from CLI,
-// while running silently when launched from Start Menu / Run key.
+// On Windows release builds without CLI flags, the process is a GUI application.
+// A console is attached only when a flag is present, so closing a terminal does not end the tray app.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{select, tick};
 use parking_lot::Mutex;
@@ -345,12 +346,16 @@ impl InferenceSupervisor {
 
         if deliver_output {
             match cfg.output_mode {
-                OutputMode::Clipboard => {
+                OutputMode::Clipboard | OutputMode::AskBeforeInserting => {
                     write_clipboard_unicode(
                         &rw.final_text,
                         cfg.privacy.exclude_from_clipboard_history,
                     )?;
                     delivered_via = OutputMode::Clipboard;
+                    if cfg.output_mode == OutputMode::AskBeforeInserting {
+                        let preview: String = rw.final_text.chars().take(96).collect();
+                        warning_note = Some(format!("Ready to paste. {}", preview));
+                    }
                 }
                 OutputMode::DirectTyping => {
                     match deliver_direct_or_clipboard_fallback(
@@ -948,6 +953,15 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let _ = ptt.set_ptt_enabled(cfg.ptt_enabled);
 
             let mut supervisor = InferenceSupervisor::new(&cfg);
+            if let Some(spec) = vi_asr::catalog::find_model_spec(&cfg.local_asr_model) {
+                let installed = RuntimePaths::discover(&cfg).models_dir.join(spec.folder_name);
+                if !installed.exists() {
+                    gui_for_worker.notify_toast(
+                        PRODUCT_NAME,
+                        "Speech model is not installed. Open the tray menu and choose Download default speech model. Auto Insert stays off until you turn it on.",
+                    );
+                }
+            }
             let mut active_mic: Option<ActiveCapture> = None;
             let mut captured_fg_ctx = ForegroundContext::default();
             let start_epoch = Instant::now();
@@ -1007,6 +1021,33 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 cfg.output_mode = o;
                                 let _ = cfg.save_atomic(&cfg_path);
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
+                                if o == vi_core::OutputMode::DirectTyping {
+                                    gui_for_worker.notify_toast(
+                                        PRODUCT_NAME,
+                                        "Auto Insert is on. Text is typed into the focused field. Unsafe targets stay on the clipboard.",
+                                    );
+                                }
+                            }
+                            Ok(UiAction::DownloadDefaultModel) => {
+                                let models = RuntimePaths::discover(&cfg).models_dir;
+                                let gui_dl = gui_for_worker.clone();
+                                std::thread::spawn(move || {
+                                    gui_dl.notify_toast(
+                                        PRODUCT_NAME,
+                                        "Downloading the default speech model. This can take several minutes.",
+                                    );
+                                    let result = match vi_asr::catalog::find_model_spec("parakeet-tdt-0.6b-v2-int8") {
+                                        Some(spec) => vi_asr::catalog::ensure_model_present(&models, spec).map(|_| ()),
+                                        None => Err(anyhow::anyhow!("default speech model is not in the catalog")),
+                                    };
+                                    match result {
+                                        Ok(()) => gui_dl.notify_toast(PRODUCT_NAME, "Default speech model is ready."),
+                                        Err(e) => gui_dl.notify_toast(
+                                            PRODUCT_NAME,
+                                            &format!("Model download failed: {e}"),
+                                        ),
+                                    }
+                                });
                             }
                             Ok(UiAction::SetWritingMode(wm)) => {
                                 cfg.default_writing_mode = wm;
@@ -1240,8 +1281,14 @@ fn print_foreground() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args: Vec<String> = env::args().skip(1).collect();
+    #[cfg(windows)]
+    if !args.is_empty() {
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(0xFFFFFFFF);
+        }
+    }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();

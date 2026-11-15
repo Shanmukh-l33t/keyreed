@@ -22,8 +22,8 @@ pub fn render_pill_bgra_premultiplied(
     // State accent color (R, G, B)
     let (acc_r, acc_g, acc_b) = match state {
         EngineState::Disabled => (108u8, 117u8, 125u8),     // Muted gray
-        EngineState::Idle => (99u8, 179u8, 237u8),          // Calm sky blue
-        EngineState::Listening => (245u8, 82u8, 82u8),      // Crisp recording coral-red
+        EngineState::Idle => (31u8, 107u8, 74u8),
+        EngineState::Listening => (31u8, 107u8, 74u8),
         EngineState::Processing => (246u8, 173u8, 85u8),    // Warm amber (transcribing)
         EngineState::Correcting => (56u8, 189u8, 248u8),    // Cyan (AI grammar polish)
         EngineState::ReadyToPaste => (52u8, 211u8, 153u8),  // Emerald green (Ctrl+V ready)

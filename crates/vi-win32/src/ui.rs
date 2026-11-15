@@ -28,6 +28,7 @@ pub enum UiAction {
         new_plaintext_api_key: Option<String>,
     },
     ClearHistory,
+    DownloadDefaultModel,
     Quit,
 }
 
@@ -77,6 +78,8 @@ pub mod win_gui {
     const IDM_OPEN_SETTINGS: usize = 1009;
     const IDM_CLEAR_HISTORY: usize = 1010;
     const IDM_EXIT: usize = 1011;
+    const IDM_OUT_ASK: usize = 1012;
+    const IDM_DOWNLOAD_MODEL: usize = 1013;
 
     const IDM_MODE_BASE: usize = 1100;
     const IDM_PROF_BASE: usize = 1200;
@@ -170,8 +173,24 @@ pub mod win_gui {
         icon
     }
 
+    unsafe fn load_brand_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+        let Ok(exe) = std::env::current_exe() else {
+            return std::ptr::null_mut();
+        };
+        let Some(dir) = exe.parent() else {
+            return std::ptr::null_mut();
+        };
+        let path = dir.join("keyreed.ico");
+        if !path.exists() {
+            return std::ptr::null_mut();
+        }
+        let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+        LoadImageW(std::ptr::null_mut(), wide.as_ptr(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+    }
+
     unsafe fn update_tray_icon(hwnd: HWND, action: u32, state: &EngineState, tip_text: &str) {
-        let hicon = create_state_hicon(state);
+        let branded = load_brand_icon();
+        let hicon = if branded.is_null() { create_state_hicon(state) } else { branded };
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
@@ -337,7 +356,7 @@ pub mod win_gui {
                     0
                 },
             IDM_OUT_CLIP,
-            "Output: Clipboard (Ctrl+V Default)",
+            "Output: Clipboard only",
         );
         append(
             hmenu,
@@ -348,7 +367,24 @@ pub mod win_gui {
                     0
                 },
             IDM_OUT_TYPE,
-            "Output: Direct Typing",
+            "Output: Auto Insert (recommended)",
+        );
+        append(
+            hmenu,
+            MF_STRING
+                | if snap.config.output_mode == OutputMode::AskBeforeInserting {
+                    MF_CHECKED
+                } else {
+                    0
+                },
+            IDM_OUT_ASK,
+            "Output: Ask before inserting",
+        );
+        append(
+            hmenu,
+            MF_STRING,
+            IDM_DOWNLOAD_MODEL,
+            "Download default speech model",
         );
 
         // Writing Mode submenu
@@ -535,16 +571,20 @@ pub mod win_gui {
 
                 mk_ctrl("STATIC", "Output Delivery:", 0, 20, 92, 185, 22, 0);
                 let cmb_out = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 215, 88, 265, 120, IDC_CMB_OUT);
-                for lbl in ["Clipboard (Ctrl+V Default)", "Direct Typing (Auto Fallback)"] {
+                for lbl in [
+                    "Clipboard only (Ctrl+V)",
+                    "Auto Insert (recommended)",
+                    "Ask before inserting",
+                ] {
                     let s = to_wide(lbl);
                     SendMessageW(cmb_out, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
                 }
-                SendMessageW(
-                    cmb_out,
-                    CB_SETCURSEL,
-                    if cfg.output_mode == OutputMode::Clipboard { 0 } else { 1 },
-                    0,
-                );
+                let out_idx = match cfg.output_mode {
+                    OutputMode::Clipboard => 0,
+                    OutputMode::DirectTyping => 1,
+                    OutputMode::AskBeforeInserting => 2,
+                };
+                SendMessageW(cmb_out, CB_SETCURSEL, out_idx, 0);
 
                 mk_ctrl("STATIC", "Default Writing Mode:", 0, 20, 128, 185, 22, 0);
                 let cmb_mode = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 215, 124, 265, 200, IDC_CMB_MODE);
@@ -638,10 +678,10 @@ pub mod win_gui {
                             ActivationMode::HoldToTalk
                         };
                         let out_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_OUT), CB_GETCURSEL, 0, 0);
-                        new_cfg.output_mode = if out_sel == 1 {
-                            OutputMode::DirectTyping
-                        } else {
-                            OutputMode::Clipboard
+                        new_cfg.output_mode = match out_sel {
+                            1 => OutputMode::DirectTyping,
+                            2 => OutputMode::AskBeforeInserting,
+                            _ => OutputMode::Clipboard,
                         };
                         let mode_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_MODE), CB_GETCURSEL, 0, 0) as usize;
                         if let Some(m) = WritingMode::ALL.get(mode_sel) {
@@ -862,6 +902,12 @@ pub mod win_gui {
                         }
                         IDM_OUT_TYPE => {
                             let _ = g.tx.send(UiAction::SetOutputMode(OutputMode::DirectTyping));
+                        }
+                        IDM_OUT_ASK => {
+                            let _ = g.tx.send(UiAction::SetOutputMode(OutputMode::AskBeforeInserting));
+                        }
+                        IDM_DOWNLOAD_MODEL => {
+                            let _ = g.tx.send(UiAction::DownloadDefaultModel);
                         }
                         IDM_AUTO_CTX => {
                             let _ = g.tx.send(UiAction::ToggleAutoContext);

@@ -71,20 +71,25 @@ impl ActivationMode {
     }
 }
 
-/// Output delivery mode (Master Prompt Section 4). Clipboard is always default.
+/// Output delivery mode. Clipboard stays the stored default until the user turns on Auto Insert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
+    /// Copies the finished text and waits for Ctrl+V.
     #[default]
     Clipboard,
+    /// Types into the focused field. Falls back to the clipboard if that is unsafe.
     DirectTyping,
+    /// Copies the text and asks the user to paste. Does not type into a window.
+    AskBeforeInserting,
 }
 
 impl OutputMode {
     pub fn label(self) -> &'static str {
         match self {
-            OutputMode::Clipboard => "Clipboard (Ctrl+V)",
-            OutputMode::DirectTyping => "Direct Typing (with Clipboard Fallback)",
+            OutputMode::Clipboard => "Clipboard only (Ctrl+V)",
+            OutputMode::DirectTyping => "Auto Insert (recommended)",
+            OutputMode::AskBeforeInserting => "Ask before inserting",
         }
     }
 }

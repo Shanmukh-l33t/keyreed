@@ -10,10 +10,10 @@ The Windows build in this release is unsigned. Windows SmartScreen may warn befo
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| [KeyReed-Setup-x64.exe](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/KeyReed-Setup-x64.exe) | 1,023,920,942 bytes | `18d3fb5bd8af9c0fa62d5b3b2ac2652f7782a663a92ee335423ea08b7a2d3e64` |
-| [KeyReed-Portable-x64.zip](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/KeyReed-Portable-x64.zip) | 1,041,840,773 bytes | `40a429b3104ceb491ffaf38f62d3a7a13fd56a1c198a5b1b345bd3271fb8e510` |
+| [KeyReed-Setup-x64.exe](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Setup-x64.exe) | 32,600,120 bytes | `cba942e7e6e7236f6201ca9e8f77fd9e9798bfb66d8de3c235bb4355fa46ab10` |
+| [KeyReed-Full-x64.zip](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Full-x64.zip) | 1,041,930,575 bytes | `63767c3cf0a46561ae84ad5a49785a29852ec7d00af1d2fbc7f75e2bc872fcc5` |
 
-The setup file is the installer. The zip is the same application, runtime, and default models without an installer. Checksums are also in [SHA256SUMS.txt](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/SHA256SUMS.txt).
+The setup file is the small installer. It does not include speech models. After launch, use the tray menu item Download default speech model. The zip is the full offline package, with the default speech model and the default grammar model. Checksums are also in [SHA256SUMS.txt](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/SHA256SUMS.txt).
 
 ## Install
 
@@ -39,7 +39,7 @@ Uninstall removes the program files, including the models that the installer pla
 4. Hold the shortcut, speak, and release.
 5. When the tray says the text is ready, click the place you want it and press Ctrl+V.
 
-The installer includes the default local speech model (Parakeet TDT 0.6B v2 INT8) and the default local grammar model (Qwen3.5 0.8B). The other five speech models are not in the installer. They can be fetched later with `keyreed.exe --download-model <id>`. That command checks the compile-time size and SHA-256 pins before a model is activated.
+The installer does not include the speech models. Open the tray menu and choose Download default speech model. That download checks the compile-time size and SHA-256 pins before the model is activated. The other five speech models stay available through `keyreed.exe --download-model <id>`. None of them download unless you ask.
 
 Startup with Windows is off unless you turn it on in Settings.
 
