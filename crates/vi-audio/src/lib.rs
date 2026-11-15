@@ -11,18 +11,21 @@ use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::SampleFormat;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
 #[cfg(windows)]
 use zeroize::Zeroize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioDeviceInfo {
     pub name: String,
     pub is_default: bool,
+    pub sample_rate: u32,
+    pub channels: u16,
 }
 
 pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
@@ -39,7 +42,16 @@ pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
             for dev in devs {
                 if let Ok(name) = dev.name() {
                     let is_default = !default_name.is_empty() && name == default_name;
-                    out.push(AudioDeviceInfo { name, is_default });
+                    let (sample_rate, channels) = dev
+                        .default_input_config()
+                        .map(|c| (c.sample_rate().0, c.channels()))
+                        .unwrap_or((16_000, 1));
+                    out.push(AudioDeviceInfo {
+                        name,
+                        is_default,
+                        sample_rate,
+                        channels,
+                    });
                 }
             }
         }
@@ -62,6 +74,16 @@ pub struct ActiveCapture {
     input_sample_rate: u32,
     #[cfg(windows)]
     latest_rms_bits: Arc<AtomicU32>,
+    #[cfg(windows)]
+    peak_rms_bits: Arc<AtomicU32>,
+    #[cfg(windows)]
+    stream_disconnected: Arc<AtomicBool>,
+    #[cfg(windows)]
+    last_error: Arc<Mutex<Option<String>>>,
+    #[cfg(windows)]
+    device_name: String,
+    #[cfg(windows)]
+    used_fallback_device: bool,
 }
 
 impl ActiveCapture {
@@ -74,78 +96,146 @@ impl ActiveCapture {
         }
         #[cfg(windows)]
         {
-        let host = cpal::default_host();
-        let device = match preferred_device.filter(|s| !s.trim().is_empty()) {
-            Some(wanted) => host
-                .input_devices()
-                .ok()
-                .and_then(|mut it| {
-                    it.find(|d| {
-                        d.name()
-                            .map(|n| n.eq_ignore_ascii_case(wanted) || n.contains(wanted))
-                            .unwrap_or(false)
-                    })
-                })
-                .or_else(|| host.default_input_device()),
-            None => host.default_input_device(),
+            let host = cpal::default_host();
+            let mut used_fallback = false;
+            let device = match preferred_device.filter(|s| !s.trim().is_empty()) {
+                Some(wanted) => {
+                    let matched = host.input_devices().ok().and_then(|mut it| {
+                        it.find(|d| {
+                            d.name()
+                                .map(|n| n.eq_ignore_ascii_case(wanted) || n.contains(wanted))
+                                .unwrap_or(false)
+                        })
+                    });
+                    if let Some(dev) = matched {
+                        Some(dev)
+                    } else {
+                        used_fallback = true;
+                        host.default_input_device()
+                    }
+                }
+                None => host.default_input_device(),
+            }
+            .context("No microphone input device available (check Windows Microphone Privacy settings)")?;
+
+            let device_name = device.name().unwrap_or_else(|_| "Default Microphone".to_string());
+            let supported = device
+                .default_input_config()
+                .context("Failed to query microphone format (check Windows Microphone Privacy permission)")?;
+            let sample_rate = supported.sample_rate().0;
+            let channels = supported.channels() as usize;
+            let sample_format = supported.sample_format();
+            let stream_cfg: cpal::StreamConfig = supported.into();
+
+            // Pre-allocate 30s in RAM to avoid reallocations on the real-time audio callback thread
+            let raw_mono = Arc::new(Mutex::new(Vec::with_capacity((sample_rate as usize) * 30)));
+            let buf_ref = Arc::clone(&raw_mono);
+            let latest_rms_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+            let rms_ref = Arc::clone(&latest_rms_bits);
+            let peak_rms_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+            let peak_ref = Arc::clone(&peak_rms_bits);
+            let stream_disconnected = Arc::new(AtomicBool::new(false));
+            let disc_ref = Arc::clone(&stream_disconnected);
+            let last_error = Arc::new(Mutex::new(None));
+            let err_ref = Arc::clone(&last_error);
+
+            let err_fn = move |err: cpal::StreamError| {
+                log::error!("Audio capture stream error: {}", err);
+                disc_ref.store(true, Ordering::Relaxed);
+                *err_ref.lock() = Some(err.to_string());
+            };
+
+            let stream = match sample_format {
+                cpal::SampleFormat::F32 => device.build_input_stream(
+                    &stream_cfg,
+                    move |data: &[f32], _| {
+                        push_interleaved_f32(data, channels, &buf_ref, &rms_ref, &peak_ref)
+                    },
+                    err_fn,
+                    None,
+                )?,
+                cpal::SampleFormat::I16 => device.build_input_stream(
+                    &stream_cfg,
+                    move |data: &[i16], _| {
+                        let converted: Vec<f32> =
+                            data.iter().map(|&x| (x as f32) / 32768.0).collect();
+                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref);
+                    },
+                    err_fn,
+                    None,
+                )?,
+                cpal::SampleFormat::U16 => device.build_input_stream(
+                    &stream_cfg,
+                    move |data: &[u16], _| {
+                        let converted: Vec<f32> = data
+                            .iter()
+                            .map(|&x| ((x as f32) - 32768.0) / 32768.0)
+                            .collect();
+                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref);
+                    },
+                    err_fn,
+                    None,
+                )?,
+                other => bail!("Unsupported microphone sample format: {:?}", other),
+            };
+
+            stream.play().context("Failed to start microphone stream")?;
+
+            Ok(Self {
+                stream: Some(stream),
+                raw_mono,
+                input_sample_rate: sample_rate,
+                latest_rms_bits,
+                peak_rms_bits,
+                stream_disconnected,
+                last_error,
+                device_name,
+                used_fallback_device: used_fallback,
+            })
         }
-        .context("No microphone input device available (check Windows Microphone Privacy settings)")?;
+    }
 
-        let supported = device
-            .default_input_config()
-            .context("Failed to query microphone format (check Windows Microphone Privacy permission)")?;
-        let sample_rate = supported.sample_rate().0;
-        let channels = supported.channels() as usize;
-        let sample_format = supported.sample_format();
-        let stream_cfg: cpal::StreamConfig = supported.into();
+    pub fn device_name(&self) -> &str {
+        #[cfg(windows)]
+        {
+            &self.device_name
+        }
+        #[cfg(not(windows))]
+        {
+            "none"
+        }
+    }
 
-        // Pre-allocate 30s in RAM to avoid reallocations on the real-time audio callback thread
-        let raw_mono = Arc::new(Mutex::new(Vec::with_capacity((sample_rate as usize) * 30)));
-        let buf_ref = Arc::clone(&raw_mono);
-        let latest_rms_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-        let rms_ref = Arc::clone(&latest_rms_bits);
+    pub fn used_fallback_device(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.used_fallback_device
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 
-        let err_fn = |err| log::error!("Audio capture stream error: {}", err);
+    pub fn is_disconnected(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.stream_disconnected.load(Ordering::Relaxed)
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &stream_cfg,
-                move |data: &[f32], _| push_interleaved_f32(data, channels, &buf_ref, &rms_ref),
-                err_fn,
-                None,
-            )?,
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &stream_cfg,
-                move |data: &[i16], _| {
-                    let converted: Vec<f32> = data.iter().map(|&x| (x as f32) / 32768.0).collect();
-                    push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref);
-                },
-                err_fn,
-                None,
-            )?,
-            cpal::SampleFormat::U16 => device.build_input_stream(
-                &stream_cfg,
-                move |data: &[u16], _| {
-                    let converted: Vec<f32> = data
-                        .iter()
-                        .map(|&x| ((x as f32) - 32768.0) / 32768.0)
-                        .collect();
-                    push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref);
-                },
-                err_fn,
-                None,
-            )?,
-            other => bail!("Unsupported microphone sample format: {:?}", other),
-        };
-
-        stream.play().context("Failed to start microphone stream")?;
-
-        Ok(Self {
-            stream: Some(stream),
-            raw_mono,
-            input_sample_rate: sample_rate,
-            latest_rms_bits,
-        })
+    pub fn last_error(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            self.last_error.lock().clone()
+        }
+        #[cfg(not(windows))]
+        {
+            None
         }
     }
 
@@ -154,6 +244,17 @@ impl ActiveCapture {
         #[cfg(windows)]
         {
             f32::from_bits(self.latest_rms_bits.load(Ordering::Relaxed))
+        }
+        #[cfg(not(windows))]
+        {
+            0.0
+        }
+    }
+
+    pub fn peak_rms(&self) -> f32 {
+        #[cfg(windows)]
+        {
+            f32::from_bits(self.peak_rms_bits.load(Ordering::Relaxed))
         }
         #[cfg(not(windows))]
         {
@@ -220,6 +321,7 @@ fn push_interleaved_f32(
     channels: usize,
     dest: &Mutex<Vec<f32>>,
     rms_atomic: &AtomicU32,
+    peak_atomic: &AtomicU32,
 ) {
     if data.is_empty() || channels == 0 {
         return;
@@ -241,6 +343,10 @@ fn push_interleaved_f32(
     if frames > 0 {
         let rms = (sum_sq / (frames as f32)).sqrt().clamp(0.0, 1.0);
         rms_atomic.store(rms.to_bits(), Ordering::Relaxed);
+        let prev_peak = f32::from_bits(peak_atomic.load(Ordering::Relaxed));
+        if rms > prev_peak {
+            peak_atomic.store(rms.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 

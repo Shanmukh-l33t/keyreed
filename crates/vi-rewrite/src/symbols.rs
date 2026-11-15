@@ -16,6 +16,10 @@ const PHRASES: &[Phrase] = &[
     Phrase { pattern: r"(?i)\bclose\s+square\s+bracket\b", replacement: "]" },
     Phrase { pattern: r"(?i)\bopen\s+bracket\b", replacement: "[" },
     Phrase { pattern: r"(?i)\bclose\s+bracket\b", replacement: "]" },
+    Phrase { pattern: r"(?i)\bopen\s+paren(?:thesis)?\b", replacement: "(" },
+    Phrase { pattern: r"(?i)\bclose\s+paren(?:thesis)?\b", replacement: ")" },
+    Phrase { pattern: r"(?i)\bopen\s+curly\s+brace\b", replacement: "{" },
+    Phrase { pattern: r"(?i)\bclose\s+curly\s+brace\b", replacement: "}" },
 ];
 
 pub fn apply_spoken_symbols(input: &str) -> String {

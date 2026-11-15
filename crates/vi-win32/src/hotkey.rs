@@ -414,6 +414,38 @@ impl GlobalHotkeyEngine {
     }
 }
 
+/// Checks via `GetAsyncKeyState` whether the physical key(s) in `spec` are currently held down.
+/// Used for fast lost-keyup recovery when Windows swallows a `WM_KEYUP` across focus/elevation boundaries.
+pub fn is_spec_physically_down(spec: &HotkeySpec) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let down = |vk: i32| (GetAsyncKeyState(vk) as u16 & 0x8000) != 0;
+
+        if spec.ctrl && !(down(0xA2) || down(0xA3) || down(0x11)) {
+            return false;
+        }
+        if spec.alt && !(down(0xA4) || down(0xA5) || down(0x12)) {
+            return false;
+        }
+        if spec.shift && !(down(0xA0) || down(0xA1) || down(0x10)) {
+            return false;
+        }
+        if spec.win && !(down(0x5B) || down(0x5C)) {
+            return false;
+        }
+        if spec.vk != 0 {
+            return down(spec.vk as i32);
+        }
+        spec.ctrl || spec.alt || spec.shift || spec.win
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = spec;
+        false
+    }
+}
+
 #[cfg(windows)]
 impl Drop for GlobalHotkeyEngine {
     fn drop(&mut self) {

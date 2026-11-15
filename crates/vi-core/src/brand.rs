@@ -1,7 +1,7 @@
 //! Centralized product identity constants.
 //! Kept in a single module so packaging, Win32 class names, mutexes, and UI strings stay consistent.
 
-pub const PRODUCT_NAME: &str = "Keyreed";
+pub const PRODUCT_NAME: &str = "KeyReed";
 pub const PRODUCT_SLUG: &str = "keyreed";
 pub const PRODUCT_TAGLINE: &str = "Voice it. Everywhere.";
 pub const SINGLE_INSTANCE_MUTEX: &str = "Local\\Keyreed_SingleInstance_v1";

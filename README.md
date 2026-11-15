@@ -29,18 +29,18 @@
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** early release (0.1.x). The Windows build is unsigned and has had limited testing on physical hardware. Read [Known limits](#known-limits) before you rely on it.
+> **Status:** release **0.2.0** (Windows 11 x64 verified). The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+1. Download **`KeyReed-Setup-x64.exe`** (`17.7 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
 2. Run it. Windows SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
-3. Open the KeyReed tray icon and choose **Download default speech model** (about 460 MB, once).
-4. Open **Settings** from the tray and pick your microphone.
-5. Hold **Right Ctrl**, speak, release.
-6. Click where you want the text and press **Ctrl+V**.
+3. Open **Settings** from the KeyReed tray icon (or click **Download** next to **Local Speech Engine** in Settings) to download the default speech model (`Parakeet TDT 0.6B v2`, verified against compile-time SHA-256 pins).
+4. Pick your microphone in **Settings**.
+5. Focus any text field, hold **Right Ctrl**, speak, and release.
+6. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `KeyReed-Full-x64.zip`, which already contains the default speech and grammar models.
+No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.2.0-windows-x64-full-offline.zip`, which already contains the default speech and grammar models.
 
 ## Why KeyReed
 
@@ -60,7 +60,7 @@ No Rust, Python, Visual Studio or command line needed. Prefer one offline downlo
   &nbsp;&nbsp;
   <img src="assets/screenshots/floating-pill.png" alt="The KeyReed floating microphone pill on the Windows desktop" width="46%" />
 </p>
-<p align="center"><sub>Real captures from KeyReed 0.1.1 on Windows 11. Some Settings labels show an underscore where an ampersand belongs; this is a known cosmetic issue.</sub></p>
+<p align="center"><sub>Real captures from KeyReed 0.2.0 on Windows 11.</sub></p>
 
 The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow. It is an illustration, not a recording.
 

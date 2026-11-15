@@ -114,6 +114,16 @@ impl PttController {
         matches!(self.state, EngineState::Listening)
     }
 
+    pub fn is_shortcut_physically_down(&self) -> bool {
+        self.shortcut_physically_down
+    }
+
+    pub fn recording_elapsed_ms(&self, now_ms: u64) -> u64 {
+        self.recording_started_ms
+            .map(|s| now_ms.saturating_sub(s))
+            .unwrap_or(0)
+    }
+
     pub fn is_busy_processing(&self) -> bool {
         matches!(self.state, EngineState::Processing | EngineState::Correcting)
     }

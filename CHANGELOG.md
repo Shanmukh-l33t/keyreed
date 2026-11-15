@@ -1,12 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-16)
 
-- Website rebuilt: new design, animated dictation illustration, writing-mode explorer, Wispr Flow comparison, privacy flow, and live release information.
-- README rewritten. Added installation, troubleshooting, development and architecture guides, a feature request template, and CI for the website and Rust tests.
-- Added brand assets, a social preview image and genuine Windows 11 screenshots under `assets/`.
-- Website: added a light theme, now the default, with a toggle in the header. The previous look is the dark theme. The choice is remembered in the browser.
-- No application code changed.
+- **Automatic Text Insertion (`Auto Insert`) as Default**: Completed dictations are now automatically typed into the focused target window via batched Win32 `SendInput` (`KEYEVENTF_UNICODE`), with deep child HWND resolution (`RichEditD2DPT` for Windows 11 Tabbed Notepad and nested editors), focus restoration, terminal newline stripping (preventing accidental command execution), and automatic clipboard fallback on password fields, elevated windows (UIPI), or focus changes (TOCTOU).
+- **Interactive Ask Before Inserting Mode**: Added a native confirmation dialog displaying the target application and dictated text preview so users can approve direct insertion or copy to clipboard on a per-dictation basis.
+- **Critical Local SLM Fix on Windows 11**: Replaced Wine stub MSVC CRT DLLs in `runtime/llama/` with genuine Microsoft-signed VC++ runtime DLLs (`msvcp140.dll`, `msvcp140_1.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`) and added fast process-exit detection in `LlamaServerSupervisor`, resolving the `0xC0000142` (`STATUS_DLL_INIT_FAILED`) startup crash and eliminating the 15-second health-check timeout.
+- **Polished Brand Assets & Floating Control**: Rebuilt `assets/keyreed-logo.png`, `assets/keyreed-icon.png`, `assets/keyreed.ico`, and embedded `KEYREED_ICON_28_BGRA` with true alpha transparency (removing the baked-in checkerboard background and fixing bottom-left keycap clipping). Added 5-bar live voice waveform animation, hover state, and persistent drag positioning to the non-activating (`WS_EX_NOACTIVATE`) floating pill.
+- **Expanded Settings & Tray Experience**: Added Microphone Device selector, Local Speech Engine selector with in-UI **Download** button, Local Grammar Model selector, **Copy Last Dictation** tray command, state-colored tray icon badge, and writable `%LOCALAPPDATA%\keyreed\models` fallback for non-elevated model downloads. Fixed ampersand mnemonic rendering and label widths in Settings.
+- **Six Writing Modes & Spoken Symbol Precision**: Improved `Exact`, `Smart`, `Professional`, `Casual`, `Technical`, and `Terminal / Code` differentiation; fixed sentence-period capitalization so filenames (`auth_middleware.rs`) and domains (`github.com`) are never miscapitalized; preserved identifier casing during spoken symbol expansion; added spoken IPv4/semver formatting (`10 dot 0 dot 0 dot 1` -> `10.0.0.1`).
+- **Audio & Shortcut Resilience**: Added physical `GetAsyncKeyState` watchdog for fast lost `WM_KEYUP` recovery (~225 ms), automatic fallback to the system default microphone when a preferred USB/Bluetooth microphone is unplugged, peak/clipping diagnostics, and shortcut conflict checks.
+- **Lightweight User-Scoped Installer (`17.7 MB`)**: Switched `KeyReed-Setup-x64.exe` to LZMA solid compression and user-scoped default install directory (`%LOCALAPPDATA%\Programs\KeyReed`) with clean Start Menu shortcuts and automated uninstallation.
+- **Website & Documentation Rebuilt**: Added light/dark theme website with animated dictation illustration, writing-mode explorer, Wispr Flow comparison, live code excerpts (`scripts/gen-excerpts.py`), and comprehensive architecture, installation, and troubleshooting guides.
 
 ## 0.1.1
 

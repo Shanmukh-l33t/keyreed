@@ -71,25 +71,25 @@ impl ActivationMode {
     }
 }
 
-/// Output delivery mode. Clipboard stays the stored default until the user turns on Auto Insert.
+/// Output delivery mode. Auto Insert (`DirectTyping`) is the default primary experience.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
     /// Copies the finished text and waits for Ctrl+V.
-    #[default]
     Clipboard,
-    /// Types into the focused field. Falls back to the clipboard if that is unsafe.
+    /// Automatically inserts text into the focused field; falls back to the clipboard if unsafe.
+    #[default]
     DirectTyping,
-    /// Copies the text and asks the user to paste. Does not type into a window.
+    /// Shows a confirmation prompt before inserting into the focused target window.
     AskBeforeInserting,
 }
 
 impl OutputMode {
     pub fn label(self) -> &'static str {
         match self {
-            OutputMode::Clipboard => "Clipboard only (Ctrl+V)",
-            OutputMode::DirectTyping => "Auto Insert (recommended)",
-            OutputMode::AskBeforeInserting => "Ask before inserting",
+            OutputMode::DirectTyping => "Auto Insert (Recommended)",
+            OutputMode::Clipboard => "Clipboard Only (Ctrl+V)",
+            OutputMode::AskBeforeInserting => "Ask Before Inserting",
         }
     }
 }
@@ -256,6 +256,37 @@ impl HotkeySpec {
             vk: 0x1B, // VK_ESCAPE
             display_name: "Esc".to_string(),
         }
+    }
+
+    /// Checks whether this shortcut conflicts with reserved OS chords or another configured shortcut.
+    pub fn check_conflict(&self, other: Option<&HotkeySpec>) -> Option<String> {
+        if let Some(o) = other {
+            if self.ctrl == o.ctrl
+                && self.alt == o.alt
+                && self.shift == o.shift
+                && self.win == o.win
+                && self.vk == o.vk
+            {
+                return Some(format!(
+                    "Shortcut '{}' conflicts with another configured KeyReed shortcut.",
+                    self.display_name
+                ));
+            }
+        }
+        // Reserved Windows system / standard editing chords that must not be hijacked
+        if self.ctrl && self.alt && self.vk == 0x2E {
+            return Some("Ctrl + Alt + Delete is reserved by the Windows security desktop.".to_string());
+        }
+        if self.win && !self.ctrl && !self.alt && !self.shift && self.vk == 0x4C {
+            return Some("Win + L is reserved by Windows Lock Screen.".to_string());
+        }
+        if self.alt && !self.ctrl && !self.shift && !self.win && (self.vk == 0x09 || self.vk == 0x73) {
+            return Some("Alt + Tab and Alt + F4 are reserved Windows window-management shortcuts.".to_string());
+        }
+        if self.ctrl && !self.alt && !self.shift && !self.win && matches!(self.vk, 0x43 | 0x56 | 0x58 | 0x5A) {
+            return Some("Standard editing shortcuts (Ctrl+C/V/X/Z) cannot be used as a global dictation trigger.".to_string());
+        }
+        None
     }
 }
 

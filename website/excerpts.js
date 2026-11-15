@@ -131,11 +131,11 @@ window.KR_CODE={
    "]",
    " ",
    "<span class=\"sx-t\">[workspace.package]</span>",
-   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.1.1\"</span>",
+   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.2.0\"</span>",
    "<span class=\"sx-f\">edition</span> = <span class=\"sx-s\">\"2021\"</span>",
    "<span class=\"sx-f\">license</span> = <span class=\"sx-s\">\"MIT OR Apache-2.0\"</span>",
-   "<span class=\"sx-f\">rust-version</span> = <span class=\"sx-s\">\"1.80\"</span>",
-   " "
+   " ",
+   "<span class=\"sx-t\">[workspace.dependencies]</span>"
   ],
   "hl": [
    2,

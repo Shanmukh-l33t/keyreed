@@ -107,6 +107,29 @@ const TECH_CASING: &[(&str, &str)] = &[
     ("october", "October"),
     ("november", "November"),
     ("december", "December"),
+    ("sendinput", "SendInput"),
+    ("keyeventf_unicode", "KEYEVENTF_UNICODE"),
+    ("cryptprotectdata", "CryptProtectData"),
+    ("setdefaultdlldirectories", "SetDefaultDllDirectories"),
+    ("iaudioclient", "IAudioClient"),
+    ("wasapi", "WASAPI"),
+    ("onnx", "ONNX"),
+    ("gguf", "GGUF"),
+    ("uipi", "UIPI"),
+    ("dpapi", "DPAPI"),
+    ("hwnd", "HWND"),
+    ("pkce", "PKCE"),
+    ("mib", "MiB"),
+    ("gib", "GiB"),
+    ("redis", "Redis"),
+    ("docker", "Docker"),
+    ("terraform", "Terraform"),
+    ("graphql", "GraphQL"),
+    ("grpc", "gRPC"),
+    ("websocket", "WebSocket"),
+    ("sha256", "SHA-256"),
+    ("utf8", "UTF-8"),
+    ("utf16", "UTF-16"),
 ];
 
 pub fn is_likely_silence_hallucination(raw: &str, speech_ratio: f32) -> bool {
@@ -231,9 +254,25 @@ fn apply_spoken_formatting(input: &str, mode: WritingMode, category: AppCategory
     s = re_nl.replace_all(&s, "\n").to_string();
 
     if mode != WritingMode::TerminalCode {
+        // Convert spoken IPv4 addresses: `192 dot 168 dot 1 dot 10` -> `192.168.1.10`
+        let re_ipv4 = Regex::new(
+            r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b",
+        )
+        .unwrap();
+        s = re_ipv4.replace_all(&s, "$1.$2.$3.$4").to_string();
+
+        // Convert spoken semantic version numbers: `version 1 dot 2 dot 0` -> `version 1.2.0`
+        let re_semver3 = Regex::new(
+            r"(?i)\b(version\s+|v\s*)(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b",
+        )
+        .unwrap();
+        s = re_semver3.replace_all(&s, "${1}$2.$3.$4").to_string();
+        let re_semver2 = Regex::new(r"(?i)\b(version\s+|v\s*)(\d+)\s+dot\s+(\d+)\b").unwrap();
+        s = re_semver2.replace_all(&s, "${1}$2.$3").to_string();
+
         // Convert unambiguous filename/domain spoken dots: `auth_middleware dot rs`, `example dot com`
         let re_file_dot = Regex::new(
-            r"(?i)\b([a-z0-9_-]+)\s+dot\s+(rs|py|js|ts|tsx|jsx|go|c|cpp|h|json|yaml|yml|toml|md|txt|exe|dll|ps1|sh|sql|com|org|net|io|ai|dev|in|cc)\b",
+            r"(?i)\b([a-z0-9_-]+)\s+dot\s+(rs|py|js|ts|tsx|jsx|go|c|cpp|h|json|yaml|yml|toml|md|txt|exe|dll|ps1|sh|sql|com|org|net|io|ai|dev|in|cc|local)\b",
         )
         .unwrap();
         s = re_file_dot.replace_all(&s, "$1.$2").to_string();
@@ -261,9 +300,10 @@ fn capitalize_sentences_and_pronoun_i(input: &str) -> String {
     let re_im = Regex::new(r"\bi'(m|ve|ll|d)\b").unwrap();
     let s = re_im.replace_all(&s, "I'$1").to_string();
 
+    let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + 2);
     let mut cap_next = true;
-    for ch in s.chars() {
+    for (idx, &ch) in chars.iter().enumerate() {
         if cap_next && ch.is_alphabetic() {
             for up in ch.to_uppercase() {
                 result.push(up);
@@ -271,12 +311,44 @@ fn capitalize_sentences_and_pronoun_i(input: &str) -> String {
             cap_next = false;
         } else {
             result.push(ch);
-            if matches!(ch, '.' | '!' | '?' | '\n') {
+            if ch == '\n' {
                 cap_next = true;
+            } else if matches!(ch, '.' | '!' | '?') {
+                // Only treat `.` as sentence boundary if followed by whitespace or end-of-string,
+                // never inside filenames (`auth_middleware.rs`) or domains (`github.com`)!
+                let next_is_space = chars
+                    .get(idx + 1)
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(true);
+                if next_is_space {
+                    cap_next = true;
+                }
             }
         }
     }
     result
+}
+
+fn is_question_sentence(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.ends_with('?') {
+        return true;
+    }
+    let first_word = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_lowercase();
+    matches!(
+        first_word.as_str(),
+        "what" | "why" | "how" | "where" | "when" | "who" | "which" | "whom" | "whose"
+            | "can" | "could" | "would" | "should" | "will" | "shall" | "is" | "are"
+            | "am" | "was" | "were" | "do" | "does" | "did" | "have" | "has"
+    )
 }
 
 fn ensure_terminal_punctuation(s: &str) -> String {
@@ -288,19 +360,7 @@ fn ensure_terminal_punctuation(s: &str) -> String {
     if matches!(last, '.' | '?' | '!' | ':' | ';') {
         return trimmed.to_string();
     }
-    let first_word = trimmed
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim_matches(|c: char| !c.is_alphabetic())
-        .to_lowercase();
-    let is_question = matches!(
-        first_word.as_str(),
-        "what" | "why" | "how" | "where" | "when" | "who" | "which" | "whom" | "whose"
-            | "can" | "could" | "would" | "should" | "will" | "shall" | "is" | "are"
-            | "am" | "was" | "were" | "do" | "does" | "did" | "have" | "has"
-    );
-    if is_question {
+    if is_question_sentence(trimmed) {
         format!("{}?", trimmed)
     } else {
         format!("{}.", trimmed)
@@ -395,13 +455,29 @@ pub fn run_tier0(
             .to_string();
     }
 
-    if matches!(mode, WritingMode::Smart | WritingMode::Professional) {
-        s = RE_NOT_ABLE_REASON
-            .replace_all(&s, "I couldn't identify the reason the $1 is going down")
-            .to_string();
-        s = RE_NOT_ABLE_GENERIC
-            .replace_all(&s, "couldn't identify the reason for")
-            .to_string();
+    if matches!(mode, WritingMode::Smart | WritingMode::Professional | WritingMode::Technical | WritingMode::Casual) {
+        if mode == WritingMode::Professional {
+            s = RE_NOT_ABLE_REASON
+                .replace_all(&s, "I could not identify the reason the $1 is going down")
+                .to_string();
+            s = RE_NOT_ABLE_GENERIC
+                .replace_all(&s, "could not identify the reason for")
+                .to_string();
+        } else if mode == WritingMode::Technical {
+            s = RE_NOT_ABLE_REASON
+                .replace_all(&s, "Unable to identify the cause of the $1 outage")
+                .to_string();
+            s = RE_NOT_ABLE_GENERIC
+                .replace_all(&s, "unable to identify the cause of")
+                .to_string();
+        } else {
+            s = RE_NOT_ABLE_REASON
+                .replace_all(&s, "I couldn't identify the reason the $1 is going down")
+                .to_string();
+            s = RE_NOT_ABLE_GENERIC
+                .replace_all(&s, "couldn't identify the reason for")
+                .to_string();
+        }
         s = RE_INDIRECT_WHAT_IS
             .replace_all(&s, "$1 $2 $3 is $4")
             .to_string();
@@ -424,12 +500,63 @@ pub fn run_tier0(
         s = re_lead_basically.replace_all(&s, "").to_string();
     }
 
+    // Mode-specific style shaping so all 6 writing modes produce meaningful differences
+    match mode {
+        WritingMode::Professional => {
+            let formal_rules = [
+                (r"(?i)^hey\b[,]?\s*", "Hello, "),
+                (r"(?i)\bi'm\b", "I am"),
+                (r"(?i)\bcan't\b", "cannot"),
+                (r"(?i)\bwon't\b", "will not"),
+                (r"(?i)\bcouldn't\b", "could not"),
+                (r"(?i)\bshouldn't\b", "should not"),
+                (r"(?i)\bwouldn't\b", "would not"),
+                (r"(?i)\bdidn't\b", "did not"),
+                (r"(?i)\bdoesn't\b", "does not"),
+                (r"(?i)\bisn't\b", "is not"),
+                (r"(?i)\baren't\b", "are not"),
+                (r"(?i)\bgonna\b", "going to"),
+                (r"(?i)\bwanna\b", "want to"),
+                (r"(?i)\bkinda\b", "somewhat"),
+            ];
+            for (pat, rep) in formal_rules {
+                let re = Regex::new(pat).unwrap();
+                s = re.replace_all(&s, rep).to_string();
+            }
+        }
+        WritingMode::Casual => {
+            let casual_rules = [
+                (r"(?i)\bi\s+am\b", "I'm"),
+                (r"(?i)\bi\s+will\b", "I'll"),
+                (r"(?i)\bwe\s+are\b", "we're"),
+                (r"(?i)\bdo\s+not\b", "don't"),
+                (r"(?i)\bdoes\s+not\b", "doesn't"),
+                (r"(?i)\bdid\s+not\b", "didn't"),
+                (r"(?i)\bcannot\b", "can't"),
+                (r"(?i)\bcan\s+not\b", "can't"),
+                (r"(?i)\bwill\s+not\b", "won't"),
+            ];
+            for (pat, rep) in casual_rules {
+                let re = Regex::new(pat).unwrap();
+                s = re.replace_all(&s, rep).to_string();
+            }
+        }
+        WritingMode::Technical => {
+            // Preserve technical precision; convert spoken "colon colon" between identifiers into `::`
+            let re_scope = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+colon\s+colon\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap();
+            s = re_scope.replace_all(&s, "$1::$2").to_string();
+            let re_cant = Regex::new(r"(?i)\bcouldn't\b").unwrap();
+            s = re_cant.replace_all(&s, "could not").to_string();
+        }
+        _ => {}
+    }
+
     s = apply_spoken_formatting(&s, mode, category);
     s = RE_MULTI_SPACE.replace_all(&s, " ").trim().to_string();
     s = capitalize_sentences_and_pronoun_i(&s);
     s = apply_dictionary_and_casing(&s, dict, mode != WritingMode::Exact);
 
-    if mode != WritingMode::Casual || s.split_whitespace().count() > 8 {
+    if mode != WritingMode::Casual || s.split_whitespace().count() > 12 || is_question_sentence(&s) {
         s = ensure_terminal_punctuation(&s);
     }
 
@@ -497,5 +624,26 @@ mod tests {
         );
         assert_eq!(risky.text, "sudo rm -rf /var/tmp/cache");
         assert!(risky.requires_confirmation);
+    }
+
+    #[test]
+    fn six_writing_modes_produce_meaningful_differences_and_preserve_identifiers() {
+        let dict = PersonalDictionary::default();
+        let sample = "um i am not able to find what is the reason for the website going down on 192 dot 168 dot 1 dot 10";
+        let smart = run_tier0(sample, 0.9, WritingMode::Smart, AppCategory::General, &dict).text;
+        let exact = run_tier0(sample, 0.9, WritingMode::Exact, AppCategory::General, &dict).text;
+        let pro = run_tier0(sample, 0.9, WritingMode::Professional, AppCategory::Email, &dict).text;
+        let tech = run_tier0(sample, 0.9, WritingMode::Technical, AppCategory::CodeEditor, &dict).text;
+
+        assert!(exact.to_lowercase().contains("um "), "Exact must preserve wording: {exact}");
+        assert!(!smart.to_lowercase().contains("um "), "Smart must strip fillers: {smart}");
+        assert!(smart.contains("couldn't identify"), "Smart uses natural contraction: {smart}");
+        assert!(pro.contains("could not identify"), "Professional uses formal full words: {pro}");
+        assert!(tech.contains("Unable to identify"), "Technical uses technical phrasing: {tech}");
+        assert!(tech.contains("192.168.1.10"), "IP address must be preserved: {tech}");
+
+        let chat_in = "um i will check auth_middleware dot rs now";
+        let casual = run_tier0(chat_in, 0.9, WritingMode::Casual, AppCategory::Chat, &dict).text;
+        assert_eq!(casual, "I'll check auth_middleware.rs now");
     }
 }

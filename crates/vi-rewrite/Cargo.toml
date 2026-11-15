@@ -7,11 +7,9 @@ license.workspace = true
 [dependencies]
 vi-core = { path = "../vi-core" }
 anyhow.workspace = true
-thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 once_cell.workspace = true
 ureq.workspace = true
-parking_lot.workspace = true
 log.workspace = true
