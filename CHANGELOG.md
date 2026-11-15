@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Website rebuilt: new design, animated dictation illustration, writing-mode explorer, Wispr Flow comparison, privacy flow, and live release information.
+- README rewritten. Added installation, troubleshooting, development and architecture guides, a feature request template, and CI for the website and Rust tests.
+- Added brand assets, a social preview image and genuine Windows 11 screenshots under `assets/`.
+- No application code changed.
+
 ## 0.1.1
 
 - The Windows build is a GUI application. Closing a terminal no longer ends the tray process.
