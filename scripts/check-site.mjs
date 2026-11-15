@@ -8,7 +8,6 @@
 // matches the inline script in index.html.
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,7 +68,7 @@ for (const prop of ['og:title', 'og:description', 'og:image', 'og:url', 'og:type
 const ogImg = meta(/<meta property="og:image" content="([^"]+)"/);
 check(ogImg && ogImg.startsWith('https://keyreed-website.vercel.app/assets/') && existsSync(join(site, new URL(ogImg).pathname)), 'og:image is absolute and the file exists');
 check(/<meta name="twitter:card" content="summary_large_image"/.test(html), 'Twitter card');
-check(/<html lang="en">/.test(html), 'html lang');
+check(/<html lang="en"/.test(html), 'html lang');
 check(/<h1[\s>]/.test(html) && (html.match(/<h1[\s>]/g) || []).length === 1, 'exactly one <h1>');
 check(existsSync(join(site, 'robots.txt')) && existsSync(join(site, 'sitemap.xml')), 'robots.txt and sitemap.xml exist');
 check(/keyreed-website\.vercel\.app\/sitemap\.xml/.test(readFileSync(join(site, 'robots.txt'), 'utf8')), 'robots.txt points at the sitemap');
@@ -91,22 +90,23 @@ for (const f of ['site.js', 'demo.js', 'excerpts.js']) {
   try { execFileSync(process.execPath, ['--check', join(site, f)], { stdio: 'pipe' }); ok(`${f} parses`); } catch (e) { fail(`${f} syntax: ${e.stderr}`); }
 }
 
-// ---- CSP hash matches the one inline script
-const inline = (html.match(/<script>([\s\S]*?)<\/script>/) || [])[1] || '';
-const hash = 'sha256-' + createHash('sha256').update(inline).digest('base64');
+// ---- CSP: scripts come from 'self' only, so no inline script may exist
 const cfgs = [join(site, 'vercel.json'), join(root, 'vercel.json')];
 const sets = cfgs.map((p) => JSON.parse(readFileSync(p, 'utf8')));
 for (const [i, cfg] of sets.entries()) {
   const csp = cfg.headers?.flatMap((h) => h.headers).find((h) => h.key === 'Content-Security-Policy')?.value || '';
-  check(csp.includes(`'${hash}'`), `${i === 0 ? 'website/' : ''}vercel.json CSP allows the inline script hash`);
+  check(/script-src 'self'(;|$)/.test(csp), `${i === 0 ? 'website/' : ''}vercel.json CSP restricts scripts to 'self'`);
 }
 check(JSON.stringify(sets[0].headers) === JSON.stringify(sets[1].headers), 'both vercel.json files carry identical headers');
-check(!/<script(?![^>]*\bsrc=)(?![^>]*ld\+json)[^>]*>/.test(html.replace(/<script>[\s\S]*?<\/script>/, '')), 'no other inline scripts');
+check(!/<script(?![^>]*\bsrc=)(?![^>]*ld\+json)[^>]*>/.test(html), 'no inline scripts (JSON-LD data excepted)');
+check(/<script src="theme\.js"><\/script>/.test(html) && existsSync(join(site, 'theme.js')), 'theme.js loads synchronously in <head>');
+check(/<html lang="en" data-theme="light">/.test(html), 'light is the default theme');
+check(/id="theme-btn"/.test(html), 'theme toggle exists');
 
 // ---- hygiene: no obvious secrets in the website folder
 const secretRe = /(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[abp]-[A-Za-z0-9-]{10,})/;
 let leaked = [];
-for (const f of ['index.html', 'styles.css', 'site.js', 'demo.js', 'excerpts.js', 'vercel.json', '404.html']) {
+for (const f of ['index.html', 'styles.css', 'site.js', 'demo.js', 'theme.js', 'excerpts.js', 'vercel.json', '404.html']) {
   const p = join(site, f);
   if (existsSync(p) && secretRe.test(readFileSync(p, 'utf8'))) leaked.push(f);
 }
