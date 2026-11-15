@@ -1,0 +1,36 @@
+[package]
+name = "vi-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vi-core = { path = "../vi-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KeyReed. Voice it. Everywhere.</title>
+  <meta name="description" content="KeyReed turns speech into polished text on Windows. Hold a shortcut, speak, release, and paste.">
+  <meta property="og:title" content="KeyReed. Voice it. Everywhere.">
+  <meta property="og:description" content="Hold a shortcut, speak, release, and paste the finished text. A Windows voice input application.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/logo.png">
+  <link rel="icon" href="favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,560&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="nav">
+    <a class="brand" href="#top"><img src="assets/icon.png" alt="" width="28" height="28"> KeyReed</a>
+    <nav>
+      <a href="#experience">Product</a>
+      <a href="#modes">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="https://github.com/Shanmukh-l33t/keyreed">GitHub</a>
+    </nav>
+    <a class="nav-cta" href="#download">Download</a>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow">Windows voice input. Version 0.1.0. Unsigned build.</p>
+        <h1>Voice it. Everywhere.</h1>
+        <p class="lede">Speak naturally. Let KeyReed turn your words into polished text, ready to use anywhere on Windows.</p>
+        <div class="cta-row">
+          <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/KeyReed-Setup-x64.exe">Download for Windows</a>
+          <a class="btn ghost" href="#demo">See how it works</a>
+        </div>
+        <p class="fine">64-bit installer, 1,023,920,942 bytes. Default local models included. Windows may warn because this file is not signed.</p>
+      </div>
+      <div class="stage" aria-hidden="true">
+        <div class="desk">
+          <div class="keycap" id="keycap">
+            <span class="key-face">
+              <i></i><i></i><i class="blade"></i><i></i><i></i>
+            </span>
+          </div>
+          <div class="pill" id="pill">Idle</div>
+          <div class="field">
+            <span class="field-label">Message</span>
+            <p id="field-text">Click hold, then release.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="problem" id="problem">
+      <h2>Typing breaks the sentence you already have.</h2>
+      <p>Mail, chat, notes, a terminal. The words are ready. The keyboard is the delay. KeyReed keeps the shortcut global, so you do not switch into a separate dictation window.</p>
+    </section>
+
+    <section class="steps" id="experience">
+      <h2>Hold. Speak. Release. Paste.</h2>
+      <ol>
+        <li><strong>Hold</strong> the shortcut. The default is Right Ctrl.</li>
+        <li><strong>Speak</strong> the way you would say it.</li>
+        <li><strong>Release.</strong> Transcription runs, then grammar correction.</li>
+        <li><strong>Paste</strong> with Ctrl+V. The clipboard keeps the finished text.</li>
+      </ol>
+    </section>
+
+    <section class="demo" id="demo">
+      <div class="demo-head">
+        <h2>From speech to a sentence you can send.</h2>
+        <p>This is an illustration of the pipeline, not a live microphone. Hold the control. The sample moves from a rough line to a corrected one.</p>
+      </div>
+      <div class="demo-card">
+        <button type="button" id="hold" aria-pressed="false">Hold to speak</button>
+        <canvas id="wave" width="640" height="72" aria-hidden="true"></canvas>
+        <p class="status" id="status">Idle. Nothing is recording.</p>
+        <div class="pair">
+          <div>
+            <span>Spoken shape</span>
+            <p id="raw">I checked the server but I am not able to find what is the reason for the website going down.</p>
+          </div>
+          <div>
+            <span>After correction</span>
+            <p id="clean">I checked the server but couldn't identify the reason the website is going down.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="modes" id="modes">
+      <h2>Six writing modes. One shortcut.</h2>
+      <div class="mode-row" role="tablist">
+        <button type="button" class="on" data-mode="smart">Smart</button>
+        <button type="button" data-mode="exact">Exact</button>
+        <button type="button" data-mode="pro">Professional</button>
+        <button type="button" data-mode="casual">Casual</button>
+        <button type="button" data-mode="tech">Technical</button>
+        <button type="button" data-mode="term">Terminal / Code</button>
+      </div>
+      <p id="mode-copy" class="mode-copy"></p>
+      <p class="fine">Samples are illustrations of the mode, not a recording from this page. Terminal / Code is the only mode that turns spoken symbols such as "forward slash" into characters. A code editor is classified as Technical, not Terminal / Code, unless you choose that mode.</p>
+    </section>
+
+    <section class="privacy" id="privacy">
+      <h2>Local by default. Cloud only if you turn it on.</h2>
+      <ul>
+        <li>The microphone opens when a recording starts and closes when it stops, is cancelled, or hits the time limit.</li>
+        <li>A lost key release discards the audio. It does not transcribe and it does not change the clipboard.</li>
+        <li>The default profile does not send audio or text to a network service.</li>
+        <li>A cloud profile uses the endpoint and key you configure. It is not "nothing ever leaves the machine."</li>
+        <li>Model files are checked against compile-time sizes and SHA-256 values before they load.</li>
+      </ul>
+    </section>
+
+    <section class="download" id="download">
+      <h2>A better way to get words on screen.</h2>
+      <a class="btn primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/KeyReed-Setup-x64.exe">Download KeyReed for Windows</a>
+      <dl>
+        <div><dt>Version</dt><dd>0.1.0</dd></div>
+        <div><dt>Architecture</dt><dd>Windows x64</dd></div>
+        <div><dt>Installer</dt><dd>1,023,920,942 bytes</dd></div>
+        <div><dt>Portable archive</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/KeyReed-Portable-x64.zip">1,041,840,773 bytes</a></dd></div>
+        <div><dt>Checksums</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.0/SHA256SUMS.txt">SHA256SUMS.txt</a></dd></div>
+        <div><dt>Source</dt><dd><a href="https://github.com/Shanmukh-l33t/keyreed">github.com/Shanmukh-l33t/keyreed</a></dd></div>
+        <div><dt>Signing</dt><dd>Unsigned. SmartScreen was not observed for this file.</dd></div>
+      </dl>
+    </section>
+
+    <section class="faq" id="faq">
+      <h2>Questions</h2>
+      <details open>
+        <summary>What is KeyReed?</summary>
+        <p>A Windows tray application. It records while you hold a shortcut, transcribes, corrects, and leaves the text on the clipboard.</p>
+      </details>
+      <details>
+        <summary>How does Push-to-Talk work?</summary>
+        <p>Hold the shortcut, speak, release. The default key is Right Ctrl. You can change it in Settings. Toggle-to-talk is a separate activation mode.</p>
+      </details>
+      <details>
+        <summary>Does it work in every Windows application?</summary>
+        <p>The finished text is copied to the clipboard. Paste with Ctrl+V in the application that has focus. That is not a promise that every program accepts a paste the same way.</p>
+      </details>
+      <details>
+        <summary>Does it correct grammar?</summary>
+        <p>Yes, after transcription, in the modes that use correction. It is meant to keep the meaning. It is not a claim of perfect transcription.</p>
+      </details>
+      <details>
+        <summary>Does it work offline?</summary>
+        <p>The installer includes the default local speech model and the default local grammar model. The offline profile does not call a cloud service. The other five speech models are not in the installer.</p>
+      </details>
+      <details>
+        <summary>Can I change the shortcut?</summary>
+        <p>Yes. Settings has the shortcut, hold or toggle, microphone, writing mode, and output mode.</p>
+      </details>
+      <details>
+        <summary>Does it need a GPU?</summary>
+        <p>No. The packaged build runs the local models on CPU.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    <img src="assets/logo.png" alt="KeyReed. Voice it. Everywhere." width="280">
+    <p>Voice it. Everywhere.</p>
+    <p class="foot-links">
+      <a href="#download">Download</a>
+      <a href="https://github.com/Shanmukh-l33t/keyreed">GitHub</a>
+      <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/README.md">Install notes</a>
+      <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT">MIT</a>
+      <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE">Apache-2.0</a>
+    </p>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "framework": null,
+  "installCommand": "",
+  "buildCommand": "mkdir -p public && cp -a website/. public/",
+  "outputDirectory": "public"
+}
