@@ -1,6 +1,6 @@
 {
   "framework": null,
   "installCommand": "",
-  "buildCommand": "mkdir -p public && cp -a website/. public/",
+  "buildCommand": "mkdir -p public && if [ -d website ]; then cp -a website/. public/; elif [ -f index.html ]; then cp -a . public/; else echo \"cwd=$(pwd)\" && ls -la && exit 1; fi",
   "outputDirectory": "public"
 }
