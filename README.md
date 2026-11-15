@@ -1,96 +1,181 @@
+<div align="center">
+  <br />
+  <a href="https://keyreed-website.vercel.app">
+    <img src="assets/branding/banner.png" alt="KeyReed: your voice, your words, your machine. Open-source, local-first voice dictation for Windows." width="100%" />
+  </a>
+  <br /><br />
+  <p>
+    <a href="https://github.com/Shanmukh-l33t/keyreed/releases/latest"><img src="https://img.shields.io/github/v/release/Shanmukh-l33t/keyreed?style=flat-square&label=release&color=10b981" alt="Latest release" /></a>
+    <a href="https://github.com/Shanmukh-l33t/keyreed/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Shanmukh-l33t/keyreed/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status" /></a>
+    <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-0b3b2c?style=flat-square" alt="Dual licensed MIT or Apache-2.0" />
+    <img src="https://img.shields.io/badge/platform-Windows%20x64-34d399?style=flat-square" alt="Windows x64" />
+    <img src="https://img.shields.io/badge/built%20with-Rust-0f5a3f?style=flat-square" alt="Built with Rust" />
+  </p>
+  <p>
+    <a href="https://keyreed-website.vercel.app"><strong>Website</strong></a> ·
+    <a href="https://github.com/Shanmukh-l33t/keyreed/releases/latest"><strong>Download</strong></a> ·
+    <a href="docs/installation.md"><strong>Install guide</strong></a> ·
+    <a href="docs/architecture.md"><strong>Architecture</strong></a> ·
+    <a href="docs/troubleshooting.md"><strong>Troubleshooting</strong></a> ·
+    <a href="CONTRIBUTING.md"><strong>Contribute</strong></a>
+  </p>
+</div>
+
+---
+
 # KeyReed
 
-Voice it. Everywhere.
+**KeyReed is an open-source, local-first voice dictation app for Windows.** Hold a shortcut, speak, release. KeyReed transcribes on your own CPU, cleans the text up, and hands it to whatever application you were using.
 
-KeyReed is a system-wide Windows voice input application. Hold a shortcut, speak, release, and paste the corrected text into the application you were using.
+It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-The Windows build in this release is unsigned. Windows SmartScreen may warn before you run it. Signing does not by itself create SmartScreen reputation, and this release has not been observed in SmartScreen.
+> **Status:** early release (0.1.x). The Windows build is unsigned and has had limited testing on physical hardware. Read [Known limits](#known-limits) before you rely on it.
 
-## Download
+## Quick start
 
-| File | Size | SHA-256 |
+1. Download **`KeyReed-Setup-x64.exe`** from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+2. Run it. Windows SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
+3. Open the KeyReed tray icon and choose **Download default speech model** (about 460 MB, once).
+4. Open **Settings** from the tray and pick your microphone.
+5. Hold **Right Ctrl**, speak, release.
+6. Click where you want the text and press **Ctrl+V**.
+
+No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `KeyReed-Full-x64.zip`, which already contains the default speech and grammar models.
+
+## Why KeyReed
+
+| | |
+| --- | --- |
+| **Open source** | A public Rust workspace under MIT or Apache-2.0, your choice. |
+| **Local by default** | The default profile, Maximum Privacy (100% Offline), makes no network call for audio or text. |
+| **System-wide** | A global shortcut that works in any application, not a plugin for one editor. |
+| **Six writing modes** | Smart, Exact, Professional, Casual, Technical and Terminal / Code. |
+| **CPU only** | Speech and grammar models run on the processor. No dedicated GPU required. |
+| **Checked models** | Every model file is verified against a compile-time size and SHA-256 before it loads. |
+
+## What it looks like
+
+<p align="center">
+  <img src="assets/screenshots/settings.png" alt="The KeyReed Settings window on Windows 11 showing shortcut, activation, output, writing mode, privacy and speech engine options" width="46%" />
+  &nbsp;&nbsp;
+  <img src="assets/screenshots/floating-pill.png" alt="The KeyReed floating microphone pill on the Windows desktop" width="46%" />
+</p>
+<p align="center"><sub>Real captures from KeyReed 0.1.1 on Windows 11. Some Settings labels show an underscore where an ampersand belongs; this is a known cosmetic issue.</sub></p>
+
+The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow. It is an illustration, not a recording.
+
+## Features
+
+- **Hold-to-talk or toggle-to-talk.** Right Ctrl by default; the shortcut is a preset list in Settings. Escape cancels a recording.
+- **Writing modes.** See [below](#writing-modes). Cycle them with Ctrl+Shift+Space, or let automatic app-context adaptation choose.
+- **Grammar correction.** Deterministic Tier 0 rules first (fillers, stutters, spoken self-corrections, casing, your vocabulary), then an optional local grammar model, then guards that fall back to Tier 0 if the model output drifts.
+- **Personal vocabulary.** Teach it names and jargon in Settings.
+- **Output choice.** Clipboard (default), Auto Insert (types into the focused field, falls back to the clipboard for password fields or elevated windows), or Ask before inserting.
+- **Microphone selection**, a floating mic pill, audio cues, and optional startup with Windows (off by default).
+- **Six speech models**, one downloaded by default. See [docs/architecture.md](docs/architecture.md#speech-models).
+- **Optional cloud profiles** (Balanced, Maximum Accuracy) for people who bring their own API key.
+
+## Writing modes
+
+| Mode | What it does | Chosen automatically for |
 | --- | --- | --- |
-| [KeyReed-Setup-x64.exe](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Setup-x64.exe) | 32,600,120 bytes | `cba942e7e6e7236f6201ca9e8f77fd9e9798bfb66d8de3c235bb4355fa46ab10` |
-| [KeyReed-Full-x64.zip](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/KeyReed-Full-x64.zip) | 1,041,930,575 bytes | `63767c3cf0a46561ae84ad5a49785a29852ec7d00af1d2fbc7f75e2bc872fcc5` |
+| **Smart** (default) | Natural, clear sentences. Removes fillers, resolves self-corrections. | Documents, notes |
+| **Exact** | Casing and punctuation only. No rephrasing. | Password-protected windows |
+| **Professional** | Concise, workplace tone. | Mail |
+| **Casual** | Relaxed chat tone, keeps contractions. | Chat |
+| **Technical** | Preserves identifiers, acronyms, versions, paths and numbers. | Code editors |
+| **Terminal / Code** | Compiles spoken flags, pipes and paths into command syntax. Warns before destructive commands. | Terminals |
 
-The setup file is the small installer. It does not include speech models. After launch, use the tray menu item Download default speech model. The zip is the full offline package, with the default speech model and the default grammar model. Checksums are also in [SHA256SUMS.txt](https://github.com/Shanmukh-l33t/keyreed/releases/download/v0.1.1/SHA256SUMS.txt).
+Spoken symbols such as "forward slash" apply only in Terminal / Code. Without the local grammar model installed, Smart, Professional, Casual and Technical use deterministic rules only.
 
-## Install
+## Usage
 
-1. Download `KeyReed-Setup-x64.exe`.
-2. Double-click it. Windows may show an unknown-publisher prompt because the file is unsigned.
-3. Choose the install folder. The default is `C:\Program Files\KeyReed`.
-4. Finish. Leave "Launch KeyReed" checked if you want it to start now.
-5. KeyReed stays in the system tray. A Start Menu shortcut is created. A desktop shortcut is optional.
+| Action | Default |
+| --- | --- |
+| Record | Hold **Right Ctrl**, release to finish |
+| Cancel a recording | **Esc** |
+| Cycle writing mode | **Ctrl+Shift+Space** |
+| Paste the result | **Ctrl+V** |
 
-You do not need Rust, Python, Visual Studio, or a command line.
+Recordings are capped at 120 seconds. A lost key release or the cap discards the audio instead of pasting something partial.
 
-## Uninstall
+Useful command-line flags for `keyreed.exe`: `--help`, `--version`, `--settings`, `--list-models`, `--download-model <id>`, `--print-foreground`.
 
-Use Settings, Apps, KeyReed, or the Start Menu entry "Uninstall KeyReed".
+## Privacy and architecture
 
-Uninstall removes the program files, including the models that the installer placed under the install folder. It does not delete `%LOCALAPPDATA%\Keyreed`, which holds your settings.
+```mermaid
+flowchart LR
+    M["Microphone<br/>opens while you hold the key"] --> A["Local speech model<br/>sherpa-onnx, CPU"]
+    A --> T["Tier 0 rules"]
+    T --> G["Optional local grammar model<br/>+ guards"]
+    G --> O["Clipboard or Auto Insert<br/>active application"]
+    A -. "only if you enable a cloud profile<br/>and store an API key" .-> C(["Your configured cloud endpoint"])
+    G -. "same condition" .-> C
+```
 
-## First use
+- The default profile makes no network call for audio or text. A unit test in the source holds it to that.
+- The network is used to download a speech model, and by the cloud profiles if you turn them on.
+- Audio is kept in memory, is not written to a file on the normal path, and is wiped after decoding.
+- Cloud API keys are stored DPAPI-encrypted. KeyReed ships no key.
+- The finished text stays on the clipboard until you replace it. You can exclude it from Windows Clipboard History in Settings (off by default).
+- No independent network capture of the offline profile has been published yet.
 
-1. Launch KeyReed from the Start Menu. It runs from the tray.
-2. Open Settings from the tray icon.
-3. Choose a microphone and confirm the shortcut. The default shortcut is Right Ctrl, hold to talk.
-4. Hold the shortcut, speak, and release.
-5. When the tray says the text is ready, click the place you want it and press Ctrl+V.
+Details: [docs/architecture.md](docs/architecture.md).
 
-The installer does not include the speech models. Open the tray menu and choose Download default speech model. That download checks the compile-time size and SHA-256 pins before the model is activated. The other five speech models stay available through `keyreed.exe --download-model <id>`. None of them download unless you ask.
+## System requirements
 
-Startup with Windows is off unless you turn it on in Settings.
+| | |
+| --- | --- |
+| OS | 64-bit Windows 11 (packaged and launched). Windows 10 is an intended target and was not re-tested. |
+| CPU | x64, no GPU required. Local inference threads default to 4. |
+| Disk | About 33 MB for the installer plus about 460 MB for the default speech model. The full archive is about 1 GB. |
+| RAM | On a 3-core, 4 GB test VM the app and local grammar runtime used roughly 1.6 GB together. More free memory is safer. An 8 GB PC has not been benchmarked. |
+| Other | A microphone that desktop apps may use. |
 
-## What it does
+## Build from source
 
-- Global hold-to-talk, and toggle-to-talk if you switch the activation mode.
-- Six writing modes: Smart, Exact, Professional, Casual, Technical, and Terminal / Code.
-- Grammar correction after transcription. Tier 0 is local and deterministic. A local model can run after that when it is installed.
-- Clipboard is the default output. You paste with Ctrl+V. Direct insertion is a separate output setting.
-- Local processing is the default. Cloud processing is optional and is not used by the offline profile.
-- Microphone selection, custom vocabulary, and configurable shortcuts are in Settings.
-- A second launch does not start another listener. It asks the running copy to show a tray notice.
+```powershell
+git clone https://github.com/Shanmukh-l33t/keyreed.git
+cd keyreed
+cargo test --workspace
+cargo build --release -p vi-app
+```
 
-Spoken punctuation such as "forward slash" is applied in Terminal / Code mode, not in Smart or Professional mode. Focusing a code editor does not by itself select Terminal / Code. Code editors are classified as Technical.
-
-## Hardware
-
-Packaged and launched on 64-bit Windows 11. Windows 10 is an intended target and was not re-tested for this package.
-
-The packaging machine's Windows guest had 3 logical cores and 4 GB of RAM. That is a measurement of the build guest, not a claim that 4 GB is comfortable, and not a measurement of an 8 GB computer. A machine with more free memory than that guest is a safer choice. No dedicated GPU is required for the packaged CPU build.
-
-## Privacy
-
-- The microphone is opened when a recording starts, and closed when the recording stops, is cancelled, or hits the time limit.
-- A lost key release, or the 120 second cap, discards the audio. That path does not transcribe and does not change the clipboard.
-- Audio is kept in memory for the recording. It is not written to a file by the normal dictation path.
-- The default profile does not send audio or text to a cloud service.
-- A cloud profile uses the endpoint you configure, and only if you have stored a key. Do not describe the product as "nothing ever leaves the machine" if that profile is on.
-- Model files are checked against compile-time sizes and SHA-256 values before they are loaded. A partial download is not activated.
-- The clipboard receives the finished text and is left there for you to paste. KeyReed does not restore the previous clipboard contents after dictation.
-
-## Troubleshooting
-
-Microphone missing. Windows is reporting no capture device, or the app has no permission. Settings, Privacy, Microphone, allow desktop apps. Then pick the device in KeyReed Settings.
-
-Shortcut does nothing. Another program may own Right Ctrl. Change the shortcut in Settings.
-
-Model will not load. Do not copy a half-extracted model folder into place. Use the installer models, or `keyreed.exe --download-model`. A failed install is quarantined and is not loaded.
-
-Paste is empty. KeyReed copies the finished text. Click the target application first, then Ctrl+V. If the target ignores the clipboard, that is a target-application issue, not proof that every Windows app accepts the paste.
-
-Offline. The default models are already in the install folder. Cloud options stay off unless you switch the processing profile and add a key.
-
-## Licence
-
-Source is dual licensed under MIT or Apache-2.0, as declared in `Cargo.toml`. See `LICENSE-MIT` and `LICENSE-APACHE`.
+Rust 1.80 or newer. The Windows package is assembled by `scripts/package-win.sh` and `scripts/keyreed.nsi`. Full instructions: [docs/development.md](docs/development.md).
 
 ## Known limits
 
-- The Windows executable, bundled runtimes, and installer are unsigned.
-- SmartScreen behaviour for this download has not been observed.
-- A physical microphone dictation loop on a desktop outside the packaging guest has not been recorded in this repository.
-- Hindi transcription accuracy has not been scored.
-- Do not treat one clip, or a text-only rewrite check, as a word error rate.
+- The Windows executable, bundled runtimes and installer are **unsigned**. SmartScreen behaviour has not been observed for this download.
+- A full dictation loop with a physical microphone on a desktop outside the packaging VM has not been recorded in this repository.
+- Auto Insert was not replayed into Notepad on a physical desktop.
+- Hindi transcription accuracy is unscored. Do not treat one clip, or a text-only rewrite check, as a word error rate.
+- Windows 10 was not re-tested, and a 4-core, 8 GB machine was not measured.
+
+The full audit trail is in [docs/release](docs/release).
+
+## Roadmap
+
+This is a list of open items taken from the release audits, not a promise of dates.
+
+| Status | Item |
+| --- | --- |
+| Done | Installer without bundled models, checked model downloads, tray GUI build (0.1.1) |
+| Done | Hold and toggle activation, six writing modes, Tier 0 rules, local grammar model, guards |
+| Open | Code signing and SmartScreen reputation |
+| Open | Physical-desktop validation: microphone loop, paste read-back, app-context rows |
+| Open | Windows 10 test pass and an 8 GB hardware benchmark |
+| Open | Scored Hindi accuracy |
+
+## Contributing
+
+Small, tested pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Licence
+
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option, as declared in `Cargo.toml`. Speech and grammar models are downloaded separately and carry their own licences. Website fonts (Geist, Instrument Serif) are under the SIL OFL 1.1.
+
+## Links
+
+[Website](https://keyreed-website.vercel.app) · [Releases](https://github.com/Shanmukh-l33t/keyreed/releases) · [Issues](https://github.com/Shanmukh-l33t/keyreed/issues) · [Changelog](CHANGELOG.md)
+
+KeyReed is an independent project and is not affiliated with Wispr or any other company named here.
