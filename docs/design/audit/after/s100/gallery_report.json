@@ -1,0 +1,364 @@
+{
+  "generated_by": "keyreed --ui-gallery",
+  "idle_animation_timer_running": false,
+  "idle_frames_painted_in_2s": 0,
+  "scale_percent": 100,
+  "shots": [
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 5,
+      "kind": "listener",
+      "note": "Idle: icon only",
+      "shot": "pill_01_idle",
+      "window_px": {
+        "h": 44,
+        "w": 44
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 10,
+      "kind": "listener",
+      "note": "Intentional hover: writing mode + shortcut",
+      "shot": "pill_02_hover",
+      "window_px": {
+        "h": 44,
+        "w": 157
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 63,
+      "kind": "listener",
+      "note": "Listening: bars follow the RMS values passed to sync() (synthetic levels in this gallery)",
+      "shot": "pill_03_listening",
+      "window_px": {
+        "h": 44,
+        "w": 107
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 84,
+      "kind": "listener",
+      "note": "Listening with silence: bars rest at the floor",
+      "shot": "pill_04_listening_silence",
+      "window_px": {
+        "h": 44,
+        "w": 107
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 95,
+      "kind": "listener",
+      "note": "Processing (ASR)",
+      "shot": "pill_05_processing",
+      "window_px": {
+        "h": 44,
+        "w": 128
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 106,
+      "kind": "listener",
+      "note": "Processing (grammar polish)",
+      "shot": "pill_06_polishing",
+      "window_px": {
+        "h": 44,
+        "w": 108
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 112,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_07_done_inserted",
+      "window_px": {
+        "h": 44,
+        "w": 121
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 117,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_08_done_copied",
+      "window_px": {
+        "h": 44,
+        "w": 164
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 122,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_09_review_command",
+      "window_px": {
+        "h": 44,
+        "w": 162
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 127,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_10_discarded",
+      "window_px": {
+        "h": 44,
+        "w": 115
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 132,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_11_nothing_heard",
+      "window_px": {
+        "h": 44,
+        "w": 157
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 137,
+      "kind": "listener",
+      "note": "Error: raw WASAPI text is hidden; plain message shown",
+      "shot": "pill_12_error_mic",
+      "window_px": {
+        "h": 44,
+        "w": 164
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 142,
+      "kind": "listener",
+      "note": "Error: transcription failure",
+      "shot": "pill_13_error_transcribe",
+      "window_px": {
+        "h": 44,
+        "w": 184
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 147,
+      "kind": "listener",
+      "note": "Paused (app disabled)",
+      "shot": "pill_14_paused",
+      "window_px": {
+        "h": 44,
+        "w": 44
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 153,
+      "kind": "listener",
+      "note": "Mode switched by shortcut: brief hint instead of a notification",
+      "shot": "pill_15_mode_hint",
+      "window_px": {
+        "h": 44,
+        "w": 193
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 158,
+      "kind": "listener",
+      "note": "Hint collapses back to idle by itself",
+      "shot": "pill_16_hint_expired",
+      "window_px": {
+        "h": 44,
+        "w": 44
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_01_general",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_02_dictation",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_03_writing",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_04_output",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_05_microphone",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_06_models",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_07_processing",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_08_privacy",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_09_about",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_1",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_2",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_3",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_4",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Download in progress (injected state)",
+      "shot": "models_downloading",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Checksum verification + extraction (injected state)",
+      "shot": "models_verifying",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Download failure (injected state)",
+      "shot": "models_failed",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test running (injected level)",
+      "shot": "mic_testing",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_good",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_low",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_silent",
+      "window_px": {
+        "h": 692,
+        "w": 942
+      }
+    }
+  ]
+}

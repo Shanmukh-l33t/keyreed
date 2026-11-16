@@ -135,6 +135,8 @@ struct Theme {
     sidebar: u32,
     surface: u32,
     border: u32,
+    /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
+    control_border: u32,
     divider: u32,
     text: u32,
     text2: u32,
@@ -188,6 +190,7 @@ fn theme() -> Theme {
                 sidebar: win,
                 surface: win,
                 border: txt,
+                control_border: txt,
                 divider: gray,
                 text: txt,
                 text2: txt,
@@ -217,13 +220,15 @@ fn theme() -> Theme {
         sidebar: rgb(0xEE, 0xF3, 0xF0),
         surface: rgb(0xFF, 0xFF, 0xFF),
         border: rgb(0xDD, 0xE5, 0xE1),
+        control_border: rgb(0x7F, 0x8F, 0x87),
         divider: rgb(0xEA, 0xEF, 0xEC),
         text: rgb(0x0E, 0x1A, 0x14),
         text2: rgb(0x4A, 0x5A, 0x52),
-        text3: rgb(0x74, 0x84, 0x7C),
-        accent: rgb(0x04, 0x78, 0x57),
-        accent_fill: rgb(0x05, 0x96, 0x69),
-        accent_press: rgb(0x04, 0x78, 0x57),
+        // text3 >= 4.5:1 on every surface it is drawn on (was 3.4-3.9). accent_fill carries white text at 5.5:1 (was 3.8).
+        text3: rgb(0x5B, 0x6B, 0x63),
+        accent: rgb(0x06, 0x5F, 0x46),
+        accent_fill: rgb(0x04, 0x78, 0x57),
+        accent_press: rgb(0x06, 0x4E, 0x3B),
         accent_soft: rgb(0xE0, 0xF2, 0xE9),
         hover: rgb(0xE4, 0xEB, 0xE7),
         hover_card: rgb(0xF3, 0xF7, 0xF5),
@@ -1698,7 +1703,9 @@ unsafe fn paint(st: &St, hdc: HDC) {
     cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
 
     // Status chip at the bottom of the sidebar
-    if let Some(m) = snapshot() {
+    // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
+    let nav_bottom = s(92 + NAV.len() as i32 * 38);
+    if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
         let (label, dot) = status_chip(&m);
         let y = rc.bottom - s(52);
         cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, t.surface, 1.0);
@@ -1915,8 +1922,8 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 (BtnStyle::Subtle, true) => (None, None, t.text3),
                 (_, true) => (Some(t.disabled_bg), None, t.text3),
                 (BtnStyle::Primary, _) => (Some(if pressed { t.accent_press } else if hot { t.accent } else { t.accent_fill }), None, t.on_accent),
-                (BtnStyle::Secondary, _) => (Some(if pressed { t.hover } else if hot { t.hover_card } else { t.surface }), Some(t.border), t.text),
-                (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.border), t.err_fg),
+                (BtnStyle::Secondary, _) => (Some(if pressed { t.hover } else if hot { t.hover_card } else { t.surface }), Some(t.control_border), t.text),
+                (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.control_border), t.err_fg),
                 (BtnStyle::Subtle, _) => (if hot || pressed { Some(t.hover) } else { None }, None, t.accent),
             };
             if let Some(f) = fill {
