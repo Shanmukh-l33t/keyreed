@@ -8,7 +8,7 @@ Checks: fresh install, silent upgrade over an existing install (files replaced, 
 reinstall after uninstall, cancel, and a failed install into an unwritable folder. It also records the real
 KeyReed's config, registry values and shortcuts before and after and fails if any of them changed.
 """
-import hashlib, json, os, subprocess, sys, time
+import hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,6 +20,8 @@ INST = HOME / "KeyReedInstallerTest"
 SM = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/KeyReed (installer test)"
 REAL_CFG = HOME / "keyreed" / "config.json"
 results = []
+# Expected version comes from the installer script itself, so a release bump cannot leave this test stale.
+APP_VERSION = re.search(r'!define APP_VERSION "([^"]+)"', (Path(__file__).parent.parent / "keyreed.nsi").read_text(encoding="utf-8")).group(1)
 
 
 def ps(cmd):
@@ -103,7 +105,7 @@ def main():
     check("installed files match the payload byte for byte", got == payload_files, f"{len(got)} vs {len(payload_files)} files")
     check("Uninstall.exe written", (INST / "Uninstall.exe").exists())
     u = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\KeyReedInstallerTest"
-    check("uninstall entry: DisplayName/Publisher/Version", (reg(u, "DisplayName"), reg(u, "Publisher"), reg(u, "DisplayVersion")) == ("KeyReed", "KeyReed", "0.4.0"), str((reg(u, 'DisplayName'), reg(u, 'Publisher'), reg(u, 'DisplayVersion'))))
+    check("uninstall entry: DisplayName/Publisher/Version", (reg(u, "DisplayName"), reg(u, "Publisher"), reg(u, "DisplayVersion")) == ("KeyReed", "KeyReed", APP_VERSION), str((reg(u, 'DisplayName'), reg(u, 'Publisher'), reg(u, 'DisplayVersion'))))
     check("uninstall entry: icon + quiet uninstall point into the install dir", reg(u, "DisplayIcon") == str(INST / "keyreed.exe") and "Uninstall.exe" in reg(u, "QuietUninstallString"))
     lnk = ps(f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{SM}\\KeyReed.lnk'); $s.TargetPath + '|' + $s.IconLocation")
     check("Start menu shortcut targets keyreed.exe with its icon", lnk.lower().startswith(str(INST / "keyreed.exe").lower() + "|" + str(INST / "keyreed.exe").lower()), lnk)
