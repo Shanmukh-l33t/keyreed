@@ -157,6 +157,7 @@
       setText('[data-bind="full-size"]', fmtSize(full.size));
       const dlFull = $('#dl-full');
       if (dlFull && full.name) dlFull.href = `https://github.com/${REPO}/releases/latest/download/${full.name}`;
+      setText('#full-name', full.name);
       if (full.digest && /^sha256:[0-9a-f]{64}$/.test(full.digest)) setText('#sha-full', full.digest.slice(7));
     }
   }

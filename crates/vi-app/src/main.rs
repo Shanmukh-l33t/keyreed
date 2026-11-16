@@ -2576,3 +2576,15 @@ fn main() -> Result<()> {
         );
     }
 }
+
+#[cfg(test)]
+mod catalog_parity_tests {
+    /// Settings shows download sizes from the UI catalog; they must match the pinned download catalog.
+    #[test]
+    fn settings_download_sizes_match_pinned_catalog() {
+        for ui in vi_win32::ui::ASR_UI_CATALOG.iter() {
+            let spec = vi_asr::catalog::find_model_spec(ui.id).expect(ui.id);
+            assert_eq!(ui.download_mb, spec.approx_download_mb, "{}", ui.id);
+        }
+    }
+}

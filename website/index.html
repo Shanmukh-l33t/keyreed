@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>KeyReed: open-source, local-first voice dictation for Windows</title>
-  <meta name="description" content="Open-source, local-first voice dictation for Windows. Hold a shortcut, speak, and get polished text in any app. Six writing modes, CPU-only, MIT or Apache-2.0.">
+  <meta name="description" content="Free, open-source voice dictation for Windows. Hold a key, speak, let go: clean text appears in the app you are typing in. Runs on your PC, no account.">
   <link rel="canonical" href="https://keyreed-website.vercel.app/">
   <meta name="theme-color" content="#f6f9f6">
   <meta name="color-scheme" content="light dark">
@@ -44,8 +44,9 @@
         "@id": "https://keyreed-website.vercel.app/#app",
         "name": "KeyReed",
         "applicationCategory": "UtilitiesApplication",
-        "operatingSystem": "Windows 11 (x64)",
-        "description": "Open-source, local-first voice dictation for Windows. Hold a shortcut, speak, and paste polished text into any application.",
+        "operatingSystem": "Windows 10, Windows 11 (x64)",
+        "softwareVersion": "0.5.0",
+        "description": "Open-source, local-first voice dictation for Windows. Hold a shortcut, speak, and get clean text typed into the application you are using.",
         "url": "https://keyreed-website.vercel.app/",
         "downloadUrl": "https://github.com/Shanmukh-l33t/keyreed/releases/latest",
         "license": "https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT",
@@ -58,9 +59,10 @@
         "@type": "FAQPage",
         "mainEntity": [
           { "@type": "Question", "name": "Is KeyReed free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. KeyReed is free, open-source software under the MIT or Apache-2.0 licenses, with no subscription. The optional cloud profiles use an API key you supply, and that provider's own pricing applies." } },
-          { "@type": "Question", "name": "Does KeyReed work offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, once a speech model is installed. The default profile does not call any network service. The small installer downloads the default speech model once from the tray menu, and the full offline archive already includes it." } },
+          { "@type": "Question", "name": "Does KeyReed work offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, once a speech model is installed. The default profile does not call any network service. The installer's first-run setup downloads the default speech model once, and the full offline archive already includes it." } },
           { "@type": "Question", "name": "Does KeyReed send audio to the cloud?", "acceptedAnswer": { "@type": "Answer", "text": "Not by default. The default profile, Maximum Privacy (100% Offline), keeps audio and text on your computer. Audio or text can only leave your machine if you switch to a hybrid or cloud profile and store an API key for an endpoint you choose." } },
-          { "@type": "Question", "name": "Does KeyReed require a GPU?", "acceptedAnswer": { "@type": "Answer", "text": "No. The packaged Windows build runs its local speech and grammar models on the CPU. No dedicated GPU is required." } }
+          { "@type": "Question", "name": "Do I need an account to use KeyReed?", "acceptedAnswer": { "@type": "Answer", "text": "No. There is no sign-up, login or licence key, and KeyReed does not send usage data. The only network traffic in the default profile is the one-time speech model download you start yourself." } },
+          { "@type": "Question", "name": "Does KeyReed require a GPU?", "acceptedAnswer": { "@type": "Answer", "text": "No. Speech recognition runs on the CPU. The optional local grammar model uses a GPU through Vulkan when one is available and falls back to the CPU otherwise." } }
         ]
       }
     ]
@@ -130,14 +132,13 @@
       </div>
       <div class="wrap hero-copy">
         <a class="pill" id="release-pill" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest" rel="noopener">
-          <span class="dot"></span><span id="pill-ver">KeyReed 0.4.0</span><span class="sep"></span><span>MIT or Apache-2.0</span><svg class="ic"><use href="#i-arrow"/></svg>
+          <span class="dot"></span><span id="pill-ver">KeyReed 0.5.0</span><span class="sep"></span><span>MIT or Apache-2.0</span><svg class="ic"><use href="#i-arrow"/></svg>
         </a>
         <h1 class="h-hero" aria-label="Your voice. Your words. Your machine.">
-          <span class="w" style="--i:0">Your</span> <span class="w" style="--i:1">voice.</span><br>
-          <span class="w" style="--i:2">Your</span> <span class="w" style="--i:3">words.</span><br>
+          <span class="w" style="--i:0">Your</span> <span class="w" style="--i:1">voice.</span> <span class="w" style="--i:2">Your</span> <span class="w" style="--i:3">words.</span><br>
           <span class="w serif" style="--i:4">Your</span> <span class="w serif" style="--i:5">machine.</span>
         </h1>
-        <p class="lede rise" style="--d:.35s">Open-source voice dictation for Windows. Speak naturally, turn your words into polished text, and use it anywhere you work.</p>
+        <p class="lede rise" style="--d:.35s">Hold a key, speak, let go. KeyReed turns what you said into clean text and types it into whatever app you are using. Free, open source, and it runs on your own PC.</p>
         <div class="cta-row rise" style="--d:.45s">
           <a class="btn btn-primary btn-lg" id="hero-download" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe">
             <svg class="ic"><use href="#i-windows"/></svg>Download for Windows<svg class="ic arrow"><use href="#i-arrow"/></svg>
@@ -147,14 +148,14 @@
           </a>
         </div>
         <ul class="chips rise" style="--d:.55s" aria-label="Highlights">
-          <li>Open source</li><li>Local-first</li><li>Windows x64</li><li>Six writing modes</li><li>No dedicated GPU required</li>
+          <li>Free, no account</li><li>Open source</li><li>Works offline</li><li>Windows 10 and 11</li><li>No GPU required</li>
         </ul>
-        <p class="fine rise" style="--d:.6s">Installer <span data-bind="installer-size">17.8 MB</span>. The speech model (about 460 MB) downloads once from Settings or the tray after install. The build is unsigned, so Windows SmartScreen may warn. <a href="#smartscreen">What that means</a>.</p>
+        <p class="fine rise" style="--d:.6s"><span data-bind="installer-size">23.0 MB</span> installer. Setup downloads the speech model (about 460 MB) once. Unsigned build, so SmartScreen may warn: <a href="#smartscreen">why</a>.</p>
       </div>
 
       <!-- Product scene: an illustration, not a live recording -->
       <div class="wrap stage-wrap rise" style="--d:.5s">
-        <div class="stage lit keep-dark" id="scene" data-state="idle" role="img" aria-label="Animated illustration: hold Right Ctrl, speak, release, then paste polished text. It is not a recording of the app.">
+        <div class="stage lit keep-dark" id="scene" data-state="idle" role="img" aria-label="Animated illustration: hold Right Ctrl, speak, release, and the cleaned-up text is typed into the email. It is not a recording of the app.">
           <div class="stage-glow" aria-hidden="true"></div>
           <div class="desk" aria-hidden="true">
             <div class="win">
@@ -166,7 +167,7 @@
                 <div class="mail-row"><span>To</span><em>Maya Rao</em></div>
                 <div class="mail-row"><span>Subject</span><em>Launch timing</em></div>
                 <div class="mail-body" id="mail-body">
-                  <span class="ph" id="mail-ph">Click here, then paste with Ctrl+V</span>
+                  <span class="ph" id="mail-ph">Your cursor is here</span>
                   <span class="pasted" id="mail-text"></span><span class="caret"></span>
                 </div>
               </div>
@@ -177,12 +178,12 @@
               <div class="rail-step" data-step="1"><b>1</b><span>Hold</span></div>
               <div class="rail-step" data-step="2"><b>2</b><span>Speak</span></div>
               <div class="rail-step" data-step="3"><b>3</b><span>Release</span></div>
-              <div class="rail-step" data-step="4"><b>4</b><span>Paste</span></div>
+              <div class="rail-step" data-step="4"><b>4</b><span>Typed</span></div>
             </div>
 
             <div class="keys">
               <div class="key" id="key-ctrl"><kbd>Right Ctrl</kbd><small>hold to talk</small></div>
-              <div class="key paste" id="key-paste"><span><kbd>Ctrl</kbd><kbd>V</kbd></span><small>paste</small></div>
+              <div class="key paste" id="key-paste"><kbd>Esc</kbd><small>cancel</small></div>
             </div>
             </div>
 
@@ -212,7 +213,7 @@
       <div class="wrap strip-in" data-stagger>
         <div><strong>MIT or Apache-2.0</strong><span>Dual licensed, source on GitHub</span></div>
         <div><strong>Local by default</strong><span>No network call in the default profile</span></div>
-        <div><strong>CPU only</strong><span>Speech and grammar models run on your processor</span></div>
+        <div><strong>No GPU needed</strong><span>Speech runs on your CPU; a GPU only speeds up grammar</span></div>
         <div><strong>Pinned models</strong><span>Size and SHA-256 checked before load</span></div>
       </div>
     </section>
@@ -222,7 +223,7 @@
       <div class="wrap">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">How it works</p>
-          <h2>Hold. Speak. Release. <span class="serif">Paste.</span></h2>
+          <h2>Hold. Speak. Release. Done.</h2>
           <p class="sec-sub">One shortcut sits between your thought and the text field. Nothing to switch to, nothing to open.</p>
         </header>
         <ol class="steps" id="steps">
@@ -242,13 +243,13 @@
             <span class="step-n">03</span>
             <div class="step-vis"><ul class="mini-chain" aria-hidden="true"><li>Speech model</li><li>Rules</li><li>Grammar model</li></ul></div>
             <h3>KeyReed transcribes and processes</h3>
-            <p>A local speech model transcribes. Deterministic rules and an optional local grammar model clean it up.</p>
+            <p>A local speech model transcribes while you are still talking, so a long dictation is not decoded from scratch after you let go. Rules and an optional grammar model clean it up.</p>
           </li>
           <li class="step" data-reveal style="--d:.24s">
             <span class="step-n">04</span>
-            <div class="step-vis"><div class="keycap two"><kbd>Ctrl</kbd><kbd>V</kbd></div></div>
-            <h3>Paste it anywhere</h3>
-            <p>The finished text lands on your clipboard. Turn on Auto Insert if you want it typed for you.</p>
+            <div class="step-vis"><div class="keycap"><kbd>Aa</kbd></div></div>
+            <h3>It appears where you type</h3>
+            <p>KeyReed types the finished text into the field you were in. Password fields and admin windows get the clipboard instead.</p>
           </li>
         </ol>
       </div>
@@ -299,12 +300,37 @@
       </div>
     </section>
 
+    <!-- ============ THE REAL APP (actual screenshots) ============ -->
+    <section class="sec" id="app">
+      <div class="wrap">
+        <header class="sec-head" data-reveal>
+          <p class="eyebrow">The real app</p>
+          <h2>Small on screen. Clear when it matters.</h2>
+          <p class="sec-sub">A quiet listener sits at the edge of your screen and only grows when it has something to tell you. Everything else lives in one settings window. These are actual screenshots of KeyReed 0.5.0, not mockups.</p>
+        </header>
+        <div class="real" data-reveal>
+          <figure class="real-shot">
+            <img class="th-light" src="assets/app/settings-writing-light.webp" width="1200" height="867" loading="lazy" decoding="async" alt="KeyReed Settings, Writing page in the light theme: six writing modes and a 'You say' and 'KeyReed writes' example.">
+            <img class="th-dark" src="assets/app/settings-writing-dark.webp" width="1200" height="867" loading="lazy" decoding="async" alt="KeyReed Settings, Writing page in the dark theme: six writing modes and a 'You say' and 'KeyReed writes' example.">
+          </figure>
+          <ol class="states keep-dark" aria-label="Floating listener states, actual screenshots">
+            <li><img src="assets/app/listener-idle.png" width="36" height="36" loading="lazy" alt="Idle listener: the KeyReed mark in a small circle."><b>Idle</b><span>Just the mark. It paints nothing while idle.</span></li>
+            <li><img src="assets/app/listener-listening.png" width="99" height="36" loading="lazy" alt="Listening: green waveform bars beside the KeyReed mark."><b>Listening</b><span>Bars follow your real microphone level.</span></li>
+            <li><img src="assets/app/listener-transcribing.png" width="116" height="36" loading="lazy" alt="Transcribing, in amber text."><b>Transcribing</b><span>Says what it is doing, not just a spinner.</span></li>
+            <li><img src="assets/app/listener-inserted.png" width="110" height="36" loading="lazy" alt="Inserted, with a green check mark."><b>Inserted</b><span>Confirms your words landed.</span></li>
+            <li><img src="assets/app/listener-hover.png" width="141" height="36" loading="lazy" alt="Hover state showing the writing mode Smart and the shortcut Right Ctrl."><b>Hover</b><span>Shows the active mode and shortcut.</span></li>
+          </ol>
+        </div>
+        <p class="fine center" data-reveal>Captured from the running app with its built-in <code>--ui-gallery</code> mode. Settings follows your Windows light or dark app mode.</p>
+      </div>
+    </section>
+
     <!-- ============ FEATURES ============ -->
     <section class="sec" id="features">
       <div class="wrap">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">Features</p>
-          <h2>Built for the way you <span class="serif">already work.</span></h2>
+          <h2>Built for the way you already work.</h2>
           <p class="sec-sub">Every capability below exists in the current source. Each one is here because of what it changes for you.</p>
         </header>
 
@@ -313,7 +339,7 @@
             <p class="eyebrow sm">System-wide dictation</p>
             <h3>It follows your cursor, not a window.</h3>
             <p>KeyReed lives in the system tray and listens for a global shortcut, so dictation works in whatever you are typing into. With automatic app-context adaptation on, it picks a writing mode to match the app in front of you.</p>
-            <p class="muted">Output goes to the clipboard by default. Auto Insert types into the focused field instead, and falls back to the clipboard for password fields or elevated windows.</p>
+            <p class="muted">Text is typed into the focused field by default. If the field is a password box, an administrator window, or focus moved while KeyReed was working, it goes to the clipboard instead and nothing is typed anywhere else.</p>
           </div>
           <div class="feat-vis">
             <div class="ctx lit" id="ctx" data-stagger>
@@ -334,13 +360,13 @@
             <p class="eyebrow sm">Push-to-talk and toggle</p>
             <h3>Hold to talk, or tap to start and stop.</h3>
             <p>Hold Right Ctrl, speak, release. Prefer hands-free for longer thoughts? Switch to toggle-to-talk and press once to start, once to finish. The shortcut is a preset you pick in Settings.</p>
-            <p class="muted">Escape cancels a recording. A lost key release or the 120 second cap discards the audio instead of pasting something half-captured.</p>
+            <p class="muted">Escape cancels a recording. A single dictation can run up to 30 minutes; a lost key release or the cap discards the audio instead of typing something half-captured.</p>
           </div>
           <div class="feat-vis">
             <div class="keyboard lit" id="keyboard" data-stagger>
               <div class="kb-row"><div class="kb-key big"><kbd>Right Ctrl</kbd><small>Hold to talk</small></div></div>
               <div class="kb-row"><div class="kb-key"><kbd>Esc</kbd><small>Cancel</small></div><div class="kb-key wide"><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></span><small>Cycle writing mode</small></div></div>
-              <div class="kb-row"><div class="kb-key"><span><kbd>Ctrl</kbd><kbd>V</kbd></span><small>Paste the result</small></div></div>
+              <div class="kb-row"><div class="kb-key"><span><kbd>Ctrl</kbd><kbd>V</kbd></span><small>Paste again, or in clipboard mode</small></div></div>
             </div>
           </div>
         </article>
@@ -349,7 +375,7 @@
           <div class="feat-copy">
             <p class="eyebrow sm">Local transcription</p>
             <h3>Speech recognition that runs on your CPU.</h3>
-            <p>KeyReed uses sherpa-onnx to run speech models on the processor you already have. NVIDIA Parakeet TDT is the English default. Lighter and multilingual models are one command away, and nothing downloads unless you ask.</p>
+            <p>KeyReed uses sherpa-onnx to run speech models on the processor you already have. NVIDIA Parakeet TDT is the English default. Lighter and multilingual models are one click away in Settings, and nothing downloads unless you ask.</p>
             <p class="muted">Every model file is checked against a compile-time size and SHA-256 before it loads. A half-finished download is never activated.</p>
           </div>
           <div class="feat-vis">
@@ -377,9 +403,9 @@
             <ol class="pipe lit" id="pipe" data-stagger>
               <li><b>Raw transcript</b><span>from the local speech model</span></li>
               <li><b>Tier 0 rules</b><span>fillers, stutters, self-repairs, casing, your vocabulary</span></li>
-              <li><b>Local grammar model</b><span>optional, Qwen3.5 0.8B, runs on CPU</span></li>
+              <li><b>Local grammar model</b><span>optional, Qwen3.5 0.8B; uses your GPU when present, CPU otherwise. Skipped when the sentence is already clean</span></li>
               <li class="guard"><b>Guards</b><span>reject chatter, number changes and runaway length, then fall back to Tier 0</span></li>
-              <li class="end"><b>Finished text</b><span>on your clipboard</span></li>
+              <li class="end"><b>Finished text</b><span>typed into your app</span></li>
             </ol>
           </div>
         </article>
@@ -389,25 +415,12 @@
             <p class="eyebrow sm">Your controls</p>
             <h3>Yours to tune.</h3>
             <p>Teach KeyReed your names and jargon with a personal vocabulary. Choose the microphone, the shortcut, how text is delivered and which speech engine runs. Choose how private you want it, from fully offline to a hybrid that can use your own cloud key.</p>
-            <p class="muted">Settings are stored in <code>%LOCALAPPDATA%\Keyreed</code>. Startup with Windows is off until you turn it on.</p>
+            <p class="muted">Settings are stored in <code>%LOCALAPPDATA%\keyreed</code>. Startup with Windows is off until you turn it on.</p>
           </div>
           <div class="feat-vis">
-            <div class="settings lit" role="img" aria-label="Illustration of the KeyReed settings fields. Not a screenshot." id="settings">
-              <div class="set-bar"><span>Keyreed Settings</span><span class="win-ctl"><b></b><b></b><b></b></span></div>
-              <div class="set-body">
-                <div class="set-row"><label>Push-to-Talk Shortcut</label><div class="sel">Right Ctrl</div></div>
-                <div class="set-row"><label>Activation Behaviour</label><div class="sel">Hold to Talk (Release to Finish)</div></div>
-                <div class="set-row"><label>Output Delivery</label><div class="sel">Clipboard only (Ctrl+V)</div></div>
-                <div class="set-row"><label>Default Writing Mode</label><div class="sel">Smart Writing</div></div>
-                <div class="set-row"><label>Privacy &amp; Processing</label><div class="sel ok">Maximum Privacy (100% Offline)</div></div>
-                <div class="set-row"><label>Local Speech Engine</label><div class="sel">Parakeet TDT 0.6B v2 (INT8)</div></div>
-                <div class="set-check on"><i></i>Automatic App-Context Writing Adaptation</div>
-                <div class="set-check on"><i></i>Show Non-Activating Floating Microphone Pill</div>
-                <div class="set-check"><i></i>Launch Quietly in System Tray at Windows Login</div>
-                <div class="set-row col"><label>Personal Dictionary (comma-separated)</label><div class="sel mono">KeyReed, sherpa-onnx, Parakeet</div></div>
-              </div>
-              <p class="set-note">Illustration of the settings fields. Not a screenshot.</p>
-            </div>
+            <figure class="real-shot">
+              <img src="assets/app/dictation-light.webp" width="1200" height="867" loading="lazy" decoding="async" alt="KeyReed Settings, Dictation page: push-to-talk shortcut drop-down, a switch to listen for the shortcut, and a choice between hold to talk and press to start and stop.">
+            </figure>
           </div>
         </article>
       </div>
@@ -430,7 +443,7 @@
             <i class="wire" aria-hidden="true"></i>
             <div class="node"><svg class="ic"><use href="#i-check"/></svg><b>Text correction</b><span>rules, then optional local model</span></div>
             <i class="wire" aria-hidden="true"></i>
-            <div class="node"><svg class="ic"><use href="#i-windows"/></svg><b>Active application</b><span>clipboard, or Auto Insert</span></div>
+            <div class="node"><svg class="ic"><use href="#i-windows"/></svg><b>Active application</b><span>typed in, or clipboard</span></div>
           </div>
           <div class="flow-cloud">
             <div class="cloud-label"><svg class="ic"><use href="#i-lock"/></svg>Optional cloud route</div>
@@ -440,11 +453,11 @@
 
         <div class="facts" data-stagger>
           <div class="fact"><h3>Local by default</h3><p>The default profile, Maximum Privacy (100% Offline), makes no network call for audio or text. A unit test in the source holds it to that.</p></div>
-          <div class="fact"><h3>One setup download</h3><p>The small installer fetches a speech model once, over HTTPS, from the tray. The full offline archive ships with it and needs no download.</p></div>
+          <div class="fact"><h3>One setup download</h3><p>After the small installer, first-run setup fetches a speech model once, over HTTPS. The full offline archive ships with it and needs no download.</p></div>
           <div class="fact"><h3>Audio stays in memory</h3><p>Recordings are kept in RAM, are not written to a file on the normal path, and are wiped after decoding. Cancelled and timed-out recordings are discarded.</p></div>
           <div class="fact"><h3>Verified models</h3><p>Model files are checked against compile-time size and SHA-256 pins before they load. A partial or mismatched download is not activated.</p></div>
           <div class="fact"><h3>Network, precisely</h3><p>Needed to download a model, and for the cloud profiles. Not needed to dictate once a model is installed. Cloud keys are stored DPAPI-encrypted.</p></div>
-          <div class="fact"><h3>Know the clipboard</h3><p>Finished text stays on the clipboard until you replace it. You can exclude it from Windows Clipboard History in Settings. That option is off by default.</p></div>
+          <div class="fact"><h3>Know the clipboard</h3><p>When KeyReed falls back to the clipboard, the text stays there until you replace it. You can exclude it from Windows Clipboard History in Settings. That option is off by default.</p></div>
         </div>
         <p class="fine center" data-reveal>Don't take our word for it: the source is public. We have not published an independent network capture of the offline profile yet, so read the code or run your own.</p>
       </div>
@@ -455,7 +468,7 @@
       <div class="wrap oss">
         <div class="oss-copy" data-reveal>
           <p class="eyebrow">Open source</p>
-          <h2>Not a black box. <span class="serif">Open source by design.</span></h2>
+          <h2>Not a black box. Open source by design.</h2>
           <p class="sec-sub">KeyReed gives you control over your voice input. Explore the source, inspect the implementation, contribute improvements and make it your own.</p>
           <ul class="oss-list">
             <li><svg class="ic"><use href="#i-check"/></svg><span>Public repository with an inspectable Rust workspace</span></li>
@@ -491,7 +504,7 @@
       <div class="wrap">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">Compared</p>
-          <h2>Love voice typing? <span class="serif">Want more control?</span></h2>
+          <h2>KeyReed or Wispr Flow?</h2>
           <p class="sec-sub">Meet the open-source alternative to Wispr Flow for Windows. Wispr Flow is a polished, mature product. This is how the two differ, and where it is ahead.</p>
         </header>
 
@@ -510,14 +523,15 @@
               <tr><th scope="row">Writing styles</th><td class="us">Six selectable modes plus per-app adaptation</td><td>Auto-edits and AI commands</td></tr>
               <tr><th scope="row">Customisation</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Vocabulary, shortcut, model choice, build from source</td><td>Dictionary, snippets, custom shortcuts</td></tr>
               <tr><th scope="row">Price</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Free. Cloud profiles use your own key</td><td>Free for 2,000 words a week. Pro $15/mo, or $12/mo billed yearly</td></tr>
-              <tr class="theirs"><th scope="row">Platforms</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Windows 11 x64 (Windows 10 intended)</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Mac, Windows, iPhone, Android</td></tr>
+              <tr class="theirs"><th scope="row">Platforms</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Windows 10 and 11, x64</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Mac, Windows, iPhone, Android</td></tr>
               <tr class="theirs"><th scope="row">Languages</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>English by default, more via optional models</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>100+ languages</td></tr>
-              <tr class="theirs"><th scope="row">Maturity and team features</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Early 0.1.x release, individual use</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Team plans, admin controls, SOC 2 Type II</td></tr>
+              <tr class="theirs"><th scope="row">Maturity and team features</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Young project (0.5), individual use, unsigned builds</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Team plans, admin controls, SOC 2 Type II</td></tr>
             </tbody>
           </table>
         </div>
         <div class="cmp-foot" data-reveal>
           <p><strong>Open source. Local-first. Windows-focused. Yours to inspect and improve.</strong> KeyReed does not claim feature parity with Wispr Flow. The last three rows are where Wispr Flow is the stronger choice today.</p>
+          <p><a class="link-arrow" href="/vs-wispr-flow">Read the full comparison<svg class="ic arrow"><use href="#i-arrow"/></svg></a></p>
           <p class="fine">Wispr Flow details come from its own pages, checked in November 2026: <a href="https://wisprflow.ai/pricing" rel="noopener">pricing</a>, <a href="https://wisprflow.ai/privacy" rel="noopener">privacy</a>, <a href="https://docs.wisprflow.ai/articles/2772472373-what-is-flow" rel="noopener">what is Flow</a>. KeyReed is an independent project and is not affiliated with Wispr.</p>
         </div>
       </div>
@@ -528,7 +542,7 @@
       <div class="wrap">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">Download</p>
-          <h2>Get KeyReed for <span class="serif">Windows.</span></h2>
+          <h2>Get KeyReed for Windows.</h2>
           <p class="sec-sub">Start with the small installer. Choose the full archive only if you want everything in one offline download.</p>
         </header>
 
@@ -536,19 +550,19 @@
           <div class="dl-main lit" data-reveal>
             <div class="dl-tag"><svg class="ic"><use href="#i-windows"/></svg>Recommended</div>
             <h3>Windows x64 installer</h3>
-            <p class="dl-meta"><span id="dl-ver">Version 0.4.0</span><span class="sep"></span><span data-bind="installer-size">17.9 MB</span><span class="sep"></span><span>KeyReed-Setup-x64.exe</span></p>
+            <p class="dl-meta"><span id="dl-ver">Version 0.5.0</span><span class="sep"></span><span data-bind="installer-size">23.0 MB</span><span class="sep"></span><span>KeyReed-Setup-x64.exe</span></p>
             <p>Installs KeyReed and its runtimes. It does not include speech models: after launch, the 4-step first-run setup guides you through downloading the default speech model (about 460 MB, once, verified against compile-time SHA-256 pins).</p>
             <a class="btn btn-primary btn-lg" id="dl-installer" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe"><svg class="ic"><use href="#i-download"/></svg>Download installer<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-            <div class="sha"><span>SHA-256</span><code id="sha-installer">f81da5b3530d7581d01f3f41fdda41231b4f2a68d7e22e2b4b291556d7722812</code><button class="copy" type="button" data-copy-from="sha-installer" aria-label="Copy installer SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+            <div class="sha"><span>SHA-256</span><code id="sha-installer">31bf2897d636e4a1d5c8919d87454bce80a82b99466e490caa2ed7ee49fed786</code><button class="copy" type="button" data-copy-from="sha-installer" aria-label="Copy installer SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
           </div>
 
           <div class="dl-side" data-reveal style="--d:.08s">
             <div class="dl-alt lit">
               <h3>Full offline archive</h3>
-              <p class="dl-meta"><span data-bind="full-size">1.56 GB</span><span class="sep"></span><span>keyreed-0.4.0-windows-x64-full-offline.zip</span></p>
+              <p class="dl-meta"><span data-bind="full-size">1.38 GB</span><span class="sep"></span><span id="full-name">keyreed-0.5.0-windows-x64-full-offline.zip</span></p>
               <p>Includes the speech models and the local grammar model, so it works with no setup download. Extract it and run <code>keyreed.exe</code>.</p>
-              <a class="link-arrow" id="dl-full" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/keyreed-0.4.0-windows-x64-full-offline.zip">Download full archive<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-              <div class="sha"><span>SHA-256</span><code id="sha-full">a75ba1b69c752b37db517689b97d1e7279bb138bfe96b905464415680aa0f97e</code><button class="copy" type="button" data-copy-from="sha-full" aria-label="Copy full archive SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+              <a class="link-arrow" id="dl-full" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/keyreed-0.5.0-windows-x64-full-offline.zip">Download full archive<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
+              <div class="sha"><span>SHA-256</span><code id="sha-full">19a65ff4c245129658cbbf5d859097776dbbdbd618e0f07e03fdac893cffdd06</code><button class="copy" type="button" data-copy-from="sha-full" aria-label="Copy full archive SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
             </div>
             <ul class="dl-links">
               <li><a href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/SHA256SUMS.txt" rel="noopener">SHA256SUMS.txt<svg class="ic arrow"><use href="#i-arrow"/></svg></a></li>
@@ -568,9 +582,9 @@
           <div class="note" data-reveal style="--d:.08s">
             <h3>Requirements</h3>
             <ul>
-              <li>64-bit Windows 11 (packaged and launched). Windows 10 is an intended target and was not re-tested for this release.</li>
+              <li>64-bit Windows 11 (built and tested). Windows 10 64-bit is supported by the code but was not re-tested for this release.</li>
               <li>A microphone that desktop apps are allowed to use.</li>
-              <li>No dedicated GPU. Models run on the CPU.</li>
+              <li>No dedicated GPU needed. Speech runs on the CPU; the optional grammar model uses a Vulkan-capable GPU if you have one.</li>
               <li>Memory: on a 4 GB test machine the app and its local grammar runtime used about 1.6 GB together during a session. More free RAM is safer. An 8 GB PC has not been benchmarked.</li>
             </ul>
           </div>
@@ -583,21 +597,23 @@
       <div class="wrap narrow">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">FAQ</p>
-          <h2>Questions, <span class="serif">answered straight.</span></h2>
+          <h2>Questions, answered straight.</h2>
         </header>
         <div class="faq" id="faq-list" data-reveal>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a1" id="q1">What is KeyReed?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a1" role="region" aria-labelledby="q1"><div><p>KeyReed is a Windows tray application for voice dictation. You hold a shortcut, speak, and release. It transcribes your speech, corrects it, and puts the finished text on your clipboard, or types it into the focused field if you turn on Auto Insert.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a1" id="q1">What is KeyReed?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a1" role="region" aria-labelledby="q1"><div><p>KeyReed is a Windows tray application for voice dictation. You hold a shortcut, speak, and release. It transcribes your speech on your PC, cleans it up, and types the finished text into the field you were in. Where typing is unsafe, such as a password field, it puts the text on the clipboard instead.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a2" id="q2">Is KeyReed free?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a2" role="region" aria-labelledby="q2"><div><p>Yes. It is free, open-source software with no subscription. The optional cloud profiles use an API key you provide, and that provider's own pricing applies.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a3" id="q3">Is it open source?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a3" role="region" aria-labelledby="q3"><div><p>Yes. The whole application is a public Rust workspace on <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>, dual licensed under <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT</a> or <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>. You may use it under either license. The speech and grammar models it downloads have their own licenses.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a4" id="q4">How is it different from Wispr Flow?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a4" role="region" aria-labelledby="q4"><div><p>KeyReed is open source, Windows-only, and transcribes on your own PC by default. Wispr Flow is a mature commercial product on Mac, Windows, iPhone and Android with 100+ languages, and its documentation says transcription happens in its cloud. If you need those platforms, languages or team features today, Wispr Flow is the stronger choice. If you want to inspect the code and keep audio local, KeyReed is built for that. See the <a href="#compare">comparison</a>.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a5" id="q5">Does it work offline?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a5" role="region" aria-labelledby="q5"><div><p>Yes, once a speech model is installed. The small installer needs a one-time internet connection to download the default speech model from the tray. The full offline archive already contains it. The default profile makes no network calls for dictation.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a6" id="q6">Does it require a GPU?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a6" role="region" aria-labelledby="q6"><div><p>No. The packaged Windows build runs its speech and grammar models on the CPU. A dedicated GPU is not required, and GPU performance has not been measured.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a6" id="q6">Does it require a GPU?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a6" role="region" aria-labelledby="q6"><div><p>No. Speech recognition runs on the CPU. The optional grammar model uses a GPU through Vulkan when one is present, measured 2.7 to 6 times faster than the CPU on one test laptop with a Quadro P2000, and falls back to the CPU automatically.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a7" id="q7">Does it send audio to the cloud?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a7" role="region" aria-labelledby="q7"><div><p>Not by default. The default profile, Maximum Privacy (100% Offline), keeps audio and text on your computer. Only if you switch to Balanced or Maximum Accuracy <em>and</em> store an API key can audio or text go to the endpoint you configured. The endpoint fields are pre-filled with Groq's OpenAI-compatible API and are editable. KeyReed does not ship a key.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a8" id="q8">Which Windows versions are supported?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a8" role="region" aria-labelledby="q8"><div><p>The package was built and launched on 64-bit Windows 11. Windows 10 (64-bit) is an intended target but was not re-tested for this release. There are no 32-bit, ARM, macOS or Linux builds.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a9" id="q9">How do I install it?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a9" role="region" aria-labelledby="q9"><div><p>Download <code>KeyReed-Setup-x64.exe</code> and run it. Windows may warn because the file is unsigned. Install, then open the tray icon and choose <em>Download default speech model</em>. Pick your microphone in Settings, hold Right Ctrl, speak, release, and press Ctrl+V. The full steps are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">installation guide</a>.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a10" id="q10">How do I change the shortcut?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a10" role="region" aria-labelledby="q10"><div><p>Open Settings from the tray icon and choose a different option under <em>Push-to-Talk Shortcut</em>. Under <em>Activation Behaviour</em> you can switch between hold-to-talk and toggle-to-talk. Escape cancels a recording, and Ctrl+Shift+Space cycles the writing mode.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a8" id="q8">Which Windows versions are supported?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a8" role="region" aria-labelledby="q8"><div><p>The package is built and tested on 64-bit Windows 11. Windows 10 (64-bit) is supported by the code but was not re-tested for this release. There are no 32-bit, ARM, macOS or Linux builds.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a9" id="q9">How do I install it?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a9" role="region" aria-labelledby="q9"><div><p>Download <code>KeyReed-Setup-x64.exe</code> and run it. It installs for your user account only, so it does not ask for administrator rights. Windows may warn because the file is unsigned. On first launch a four-step setup picks your shortcut, tests your microphone, downloads the speech model and lets you try a dictation. After that, hold Right Ctrl in any app, speak, and let go. The full steps are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">installation guide</a>.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a10" id="q10">How do I change the shortcut?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a10" role="region" aria-labelledby="q10"><div><p>Open Settings from the tray icon and go to <em>Dictation</em> to pick a different shortcut, or switch between holding the key and pressing once to start and once to stop. Escape cancels a recording, and Ctrl+Shift+Space cycles the writing mode.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a13" id="q13">Do I need an account?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a13" role="region" aria-labelledby="q13"><div><p>No. There is no sign-up, no login and no licence key. KeyReed does not send usage data anywhere. The only network traffic in the default profile is the one-time model download you start yourself.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a14" id="q14">How fast is it?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a14" role="region" aria-labelledby="q14"><div><p>Speech is transcribed while you talk. On a 2018 laptop CPU (Intel i7-8850H), a 47-second dictation was ready 0.5 to 0.7 seconds after the key was released, using the default speech model in Exact mode, without the grammar model. When the grammar model rewrites a long dictation it adds time: a 60-second dictation typed into another window took about 7 seconds from release to fully typed, 3.5 seconds of it the rewrite. These numbers come from an automated test with synthetic speech; your PC will differ. The <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/research/08-e2e-speed-accuracy-worklog.md" rel="noopener">method and raw numbers</a> are public.</p></div></div></div>
           <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a11" id="q11">How can I contribute?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a11" role="region" aria-labelledby="q11"><div><p>Read <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">CONTRIBUTING.md</a>, then open an issue or a small, tested pull request. Open an issue first for anything large. Bug reports with your Windows version and steps are very welcome.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a12" id="q12">What are the current limitations?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a12" role="region" aria-labelledby="q12"><div><p>This is an early release. The Windows files are unsigned. A full dictation loop on a physical desktop with a real microphone has not been recorded in the repository yet. Hindi accuracy is unscored, and Auto Insert was not replayed into Notepad on a physical desktop. The details are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/release/06-known-limitations-and-blockers.md" rel="noopener">release documentation</a>.</p></div></div></div>
+          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a12" id="q12">What are the current limitations?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a12" role="region" aria-labelledby="q12"><div><p>KeyReed is a young, independent project (version 0.5). The Windows files are unsigned. It is Windows-only, with no mobile app. It has no AI command mode and no team features. Speed and accuracy figures come from one test laptop, mostly with synthetic speech; live microphone dictation with real voices in noisy rooms has not been benchmarked yet. Typing into a plain text box runs at about 600 characters per second. The details are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/research/08-e2e-speed-accuracy-worklog.md" rel="noopener">verification matrix</a>.</p></div></div></div>
         </div>
       </div>
     </section>
@@ -626,7 +642,7 @@
       </div>
       <nav class="foot-col" aria-label="Product">
         <h4>Product</h4>
-        <a href="#how">How it works</a><a href="#features">Features</a><a href="#privacy">Privacy</a><a href="#compare">Compared</a><a href="#download">Download</a><a href="#faq">FAQ</a>
+        <a href="#how">How it works</a><a href="#features">Features</a><a href="#privacy">Privacy</a><a href="#compare">Compared</a><a href="/vs-wispr-flow">KeyReed vs Wispr Flow</a><a href="#download">Download</a><a href="#faq">FAQ</a>
       </nav>
       <nav class="foot-col" aria-label="Project">
         <h4>Project</h4>

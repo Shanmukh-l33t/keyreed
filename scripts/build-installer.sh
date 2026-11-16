@@ -26,4 +26,4 @@ i686-w64-mingw32-clang -shared -O2 -s -DUNICODE -D_UNICODE -I"$NSIS_DIR/Examples
   -Wl,--kill-at -lgdi32 -luser32 -lm
 mkdir -p dist
 python3 scripts/installer/gen_art.py
-(cd scripts && makensis -V2 "${DEFS[@]}" keyreed.nsi)
+(cd scripts && makensis -V2 -INPUTCHARSET UTF8 "${DEFS[@]}" keyreed.nsi)

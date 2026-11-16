@@ -316,6 +316,7 @@ enum F {
     Caption,
     CaptionSemi,
     Icon,
+    IconSmall,
     IconLarge,
     Mono,
     Brand,
@@ -344,6 +345,7 @@ impl Fonts {
                 (F::Caption, mk(face, 12.0, 400)),
                 (F::CaptionSemi, mk(face, 12.0, 600)),
                 (F::Icon, mk(icon_face, 16.0, 400)),
+                (F::IconSmall, mk(icon_face, 12.0, 400)),
                 (F::IconLarge, mk(icon_face, 24.0, 400)),
                 (F::Mono, mk("Cascadia Mono", 13.0, 400)),
                 (F::Brand, mk(display_face, 17.0, 600)),
@@ -431,7 +433,9 @@ enum Item {
     Group { r: R },
     Card { r: R },
     Divider { x: i32, y: i32, w: i32 },
-    Badge { x: i32, y: i32, s: String, tone: Tone },
+    /// Pill label. With `after`, it is placed 10 dp after that text (measured in BodySemi at paint
+    /// time) instead of at `x`; badges sharing the same `after` and `y` line up one after another.
+    Badge { x: i32, y: i32, s: String, tone: Tone, after: Option<String> },
     Meter { r: R, level: f32, active: bool },
     Progress { r: R, frac: Option<f32> },
     Glyph { r: R, ch: char, font: F, color: C },
@@ -453,6 +457,8 @@ enum BtnStyle {
     Secondary,
     Subtle,
     Danger,
+    /// Not an action: a state shown in the action column (check mark + label), e.g. the model in use.
+    Status,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -589,7 +595,8 @@ impl Builder {
     fn combo_row(&mut self, id: i32, label: &str, desc: &str, desc_color: C, items: Vec<String>, sel: usize, w: i32) {
         let wrap = desc.chars().count() as i32 * 6 > CW - 2 * PAD - w - 20;
         let (y0, h) = self.row_ex(label, desc, desc_color, w, wrap);
-        self.ctrl(id, Kind::Combo { items, sel }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, label);
+        let name = format!("{label}: {}", items.get(sel).map(String::as_str).unwrap_or(""));
+        self.ctrl(id, Kind::Combo { items, sel }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &name);
     }
 
     fn choice(&mut self, id: i32, rr: R, title: &str, desc: &str, selected: bool) {
@@ -629,6 +636,23 @@ struct St {
     scroll: i32,
     /// Logical client height.
     view_h: i32,
+    /// Toggles sliding to a new state: (control id, start). Empty unless a switch was just flipped.
+    anims: Vec<(i32, Instant)>,
+}
+
+const IDT_ANIM: usize = 9002;
+const TOGGLE_MS: f32 = 150.0;
+
+/// 0..1 progress of a toggle slide, eased out (cubic). 1.0 when no slide is running.
+fn toggle_progress(st: &St, id: i32) -> f32 {
+    st.anims
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, t0)| {
+            let p = (t0.elapsed().as_secs_f32() * 1000.0 / TOGGLE_MS).clamp(0.0, 1.0);
+            1.0 - (1.0 - p).powi(3)
+        })
+        .unwrap_or(1.0)
 }
 
 thread_local! {
@@ -915,9 +939,9 @@ fn mic_items(m: &SharedUiModel) -> (Vec<String>, usize) {
 fn activation_choices(b: &mut Builder, m: &SharedUiModel, id_hold: i32, id_toggle: i32) {
     let w = (CW - 12) / 2;
     let hold = m.config.activation_mode == ActivationMode::HoldToTalk;
-    b.choice(id_hold, r(X0, b.y, w, 72), "Hold to talk", ActivationMode::HoldToTalk.description(), hold);
-    b.choice(id_toggle, r(X0 + w + 12, b.y, w, 72), "Press to start and stop", ActivationMode::ToggleToTalk.description(), !hold);
-    b.y += 84;
+    b.choice(id_hold, r(X0, b.y, w, 78), "Hold to talk", ActivationMode::HoldToTalk.description(), hold);
+    b.choice(id_toggle, r(X0 + w + 12, b.y, w, 78), "Press to start and stop", ActivationMode::ToggleToTalk.description(), !hold);
+    b.y += 90;
 }
 
 fn mic_test_block(b: &mut Builder, m: &SharedUiModel, test_id: i32) {
@@ -982,7 +1006,7 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             for (i, (t, d)) in cards.iter().enumerate() {
                 let x = X0 + i as i32 * (w + 12);
                 b.items.push(Item::Card { r: r(x, y, w, 128) });
-                b.items.push(Item::Badge { x: x + 14, y: y + 14, s: format!("{}", i + 1), tone: Tone::Info });
+                b.items.push(Item::Badge { x: x + 14, y: y + 14, s: format!("{}", i + 1), tone: Tone::Info, after: None });
                 match i {
                     0 => b.items.push(Item::Keycap { x: x + 14, y: y + 46, s: hk.clone() }),
                     1 => b.items.push(Item::Glyph { r: r(x + 14, y + 44, 32, 32), ch: '\u{E720}', font: F::IconLarge, color: C::Accent }),
@@ -1122,10 +1146,10 @@ fn page_writing(b: &mut Builder, m: &SharedUiModel) {
     let y0 = b.y;
     for (i, mode) in WritingMode::ALL.iter().enumerate() {
         let x = X0 + (i as i32 % 2) * (w + 10);
-        let y = y0 + (i as i32 / 2) * 76;
-        b.choice(W_MODE + i as i32, r(x, y, w, 68), mode.label(), mode.description(), *mode == c.default_writing_mode);
+        let y = y0 + (i as i32 / 2) * 82;
+        b.choice(W_MODE + i as i32, r(x, y, w, 74), mode.label(), mode.description(), *mode == c.default_writing_mode);
     }
-    b.y = y0 + 3 * 76 + 4;
+    b.y = y0 + 3 * 82 + 4;
     let mode = c.default_writing_mode;
     let (said, wrote) = mode.example();
     b.group();
@@ -1159,8 +1183,8 @@ fn page_output(b: &mut Builder, m: &SharedUiModel) {
         .enumerate()
     {
         let title = if i == 0 { format!("{} (recommended)", mode.title()) } else { mode.title().to_string() };
-        b.choice(*id, r(X0, b.y, CW, 68), &title, mode.description(), m.config.output_mode == *mode);
-        b.y += 76;
+        b.choice(*id, r(X0, b.y, CW, 74), &title, mode.description(), m.config.output_mode == *mode);
+        b.y += 82;
     }
     b.y += 4;
     b.section("Clipboard");
@@ -1194,16 +1218,13 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
     let other_active = m.download.as_ref().map(|d| d.is_active() && !d.model_id.eq_ignore_ascii_case(info.id)).unwrap_or(false);
 
     b.text(r(X0 + PAD, y + 10, 260, 20), info.name, F::BodySemi, C::Text, DT_SINGLELINE);
-    // Badges are positioned after the measured name at paint time (x is a logical estimate here).
-    let mut bx = X0 + PAD + (info.name.chars().count() as i32 * 8) + 14;
-    let mut badge = |b: &mut Builder, s: &str, tone: Tone| {
-        b.items.push(Item::Badge { x: bx, y: y + 10, s: s.into(), tone });
-        bx += s.chars().count() as i32 * 7 + 26;
+    // Badges follow the model name; their x is measured at paint time.
+    let badge = |b: &mut Builder, s: &str, tone: Tone| {
+        b.items.push(Item::Badge { x: X0 + PAD, y: y + 10, s: s.into(), tone, after: Some(info.name.to_string()) });
     };
     let downloading = dl.map(|d| d.is_active()).unwrap_or(false);
-    if active && installed && !downloading {
-        badge(b, "In use", Tone::Ok);
-    } else if installed && !downloading {
+    // The model in use is marked once, in the action column (BtnStyle::Status), not with a second badge.
+    if installed && !downloading && !active {
         badge(b, "Installed", Tone::Info);
     }
     if info.recommended {
@@ -1219,7 +1240,7 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
         Some(DownloadStage::Starting) | Some(DownloadStage::Downloading) => ("Cancel", BtnStyle::Secondary, true),
         Some(DownloadStage::Verifying) => ("Verifying…", BtnStyle::Secondary, false),
         Some(DownloadStage::Failed(_)) if !installed => ("Retry", BtnStyle::Primary, !other_active),
-        _ if active && installed => ("In use", BtnStyle::Subtle, false),
+        _ if active && installed => ("In use", BtnStyle::Status, false),
         _ if installed => ("Use", BtnStyle::Secondary, true),
         _ => ("Download", if info.recommended { BtnStyle::Primary } else { BtnStyle::Secondary }, !other_active),
     };
@@ -1357,14 +1378,7 @@ fn page_about(b: &mut Builder, _m: &SharedUiModel) {
 // So the `ST` RefCell is never borrowed across such calls: compute under the borrow, release it,
 // then talk to Win32.
 
-const CB_ADDSTRING: u32 = 0x0143;
-const CB_RESETCONTENT: u32 = 0x014B;
-const CB_SETCURSEL: u32 = 0x014E;
-const CB_GETCURSEL: u32 = 0x0147;
-const CB_SETITEMHEIGHT: u32 = 0x0153;
-const CB_GETDROPPEDSTATE: u32 = 0x0157;
 const EM_SETCUEBANNER: u32 = 0x1501;
-const EM_SETMARGINS: u32 = 0x00D3;
 const TTM_ADDTOOLW: u32 = 0x0432;
 const TTM_DELTOOLW: u32 = 0x0433;
 const TTM_SETMAXTIPWIDTH: u32 = 0x0418;
@@ -1409,16 +1423,26 @@ fn ctx_of(st: &St) -> Ctx {
     }
 }
 
+/// Where the child window goes. Text boxes are inset into the field painted around them (see `paint`),
+/// so the border, hover and focus ring are drawn by KeyReed instead of the 3D system edge.
+fn child_rect(c: &Ctrl) -> R {
+    match &c.kind {
+        Kind::Edit { multiline: true, .. } => r(c.r.x + 12, c.r.y + 10, c.r.w - 24, c.r.h - 20),
+        Kind::Edit { .. } => r(c.r.x + 12, c.r.y + (c.r.h - 20) / 2, c.r.w - 24, 20),
+        _ => c.r,
+    }
+}
+
 unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     let hinst = GetModuleHandleW(std::ptr::null());
     let d = cx.dpi;
     let dy = if matches!(c.kind, Kind::Nav { .. }) { 0 } else { cx.scroll };
-    let (x, y, w, h) = (sc(c.r.x, d), sc(c.r.y - dy, d), sc(c.r.w, d), sc(c.r.h, d));
+    let cr = child_rect(c);
+    let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - dy, d), sc(cr.w, d), sc(cr.h, d));
     let (cls, style, ex, text): (&str, u32, u32, String) = match &c.kind {
-        Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } => {
+        Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } | Kind::Combo { .. } => {
             ("BUTTON", 0x0B /* BS_OWNERDRAW */ | WS_TABSTOP, 0, c.name.clone())
         }
-        Kind::Combo { .. } => ("COMBOBOX", 0x0003 /* CBS_DROPDOWNLIST */ | WS_VSCROLL | WS_TABSTOP, 0, String::new()),
         Kind::Edit { text, password, multiline, .. } => {
             let mut s = WS_TABSTOP | 0x0080 /* ES_AUTOHSCROLL */;
             if *password {
@@ -1428,44 +1452,29 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
                 s = WS_TABSTOP | 0x0004 /* ES_MULTILINE */ | 0x0040 /* ES_AUTOVSCROLL */ | 0x1000 /* ES_WANTRETURN */;
             }
             let initial = if *multiline { cx.practice_text.clone() } else if *password { cx.key_draft.clone() } else { text.clone() };
-            ("EDIT", s, WS_EX_CLIENTEDGE, initial)
+            ("EDIT", s, 0, initial)
         }
     };
     let clsw = to_wide(cls);
     let tw = to_wide(&text);
-    // Combo height includes the drop-down list.
-    let ch = if matches!(c.kind, Kind::Combo { .. }) { h + sc(240, d) } else { h };
     // Created hidden + disabled-state applied first so no half-initialised control ever paints.
-    let hwnd = CreateWindowExW(ex, clsw.as_ptr(), tw.as_ptr(), WS_CHILD | style, x, y, w, ch, cx.hwnd, c.id as isize as HMENU, hinst, std::ptr::null());
+    let hwnd = CreateWindowExW(ex, clsw.as_ptr(), tw.as_ptr(), WS_CHILD | style, x, y, w, h, cx.hwnd, c.id as isize as HMENU, hinst, std::ptr::null());
     if hwnd.is_null() {
         return hwnd;
     }
     SendMessageW(hwnd, WM_SETFONT, cx.body as WPARAM, 0);
-    match &c.kind {
-        Kind::Combo { .. } => theme_native_control(hwnd, "ComboBox"),
-        Kind::Edit { .. } => theme_native_control(hwnd, "Edit"),
-        _ => {}
+    if matches!(c.kind, Kind::Edit { .. }) {
+        theme_native_control(hwnd, "Edit");
     }
     match &c.kind {
-        Kind::Combo { items, sel } => {
-            for it in items {
-                let w = to_wide(it);
-                SendMessageW(hwnd, CB_ADDSTRING, 0, w.as_ptr() as LPARAM);
-            }
-            SendMessageW(hwnd, CB_SETCURSEL, *sel, 0);
-            SendMessageW(hwnd, CB_SETITEMHEIGHT, usize::MAX, (h - sc(8, d)) as LPARAM);
-            SendMessageW(hwnd, CB_SETITEMHEIGHT, 0, sc(26, d) as LPARAM);
-        }
         Kind::Edit { cue, .. } => {
-            let m = sc(8, d) as usize;
-            SendMessageW(hwnd, EM_SETMARGINS, 3, (m | (m << 16)) as LPARAM);
             if !cue.is_empty() {
                 let w = to_wide(cue);
                 SendMessageW(hwnd, EM_SETCUEBANNER, 1, w.as_ptr() as LPARAM);
             }
         }
         _ => {
-            SetWindowSubclass(hwnd, Some(btn_subclass), 1, 0);
+            SetWindowSubclass(hwnd, Some(btn_subclass), 1, matches!(c.kind, Kind::Combo { .. }) as usize);
         }
     }
     if !c.enabled {
@@ -1619,8 +1628,7 @@ fn rebuild(focus_first: bool) {
 enum Op {
     Enable(HWND, bool),
     Title(HWND, String),
-    ComboReset(HWND, Vec<String>, usize),
-    ComboSel(HWND, usize),
+    Animate,
     Invalidate(HWND),
 }
 
@@ -1657,15 +1665,15 @@ fn refresh() {
             if new.enabled != old.enabled {
                 ops.push(Op::Enable(*h, new.enabled));
             }
-            if new.name != old.name && !matches!(new.kind, Kind::Edit { .. } | Kind::Combo { .. }) {
-                ops.push(Op::Title(*h, new.name.clone()));
-            }
-            if let (Kind::Combo { items: ni, sel: ns }, Kind::Combo { items: oi, sel: os }) = (&new.kind, &old.kind) {
-                if ni != oi {
-                    ops.push(Op::ComboReset(*h, ni.clone(), *ns));
-                } else if ns != os {
-                    ops.push(Op::ComboSel(*h, *ns));
+            if let (Kind::Toggle { on: a }, Kind::Toggle { on: b }) = (&new.kind, &old.kind) {
+                if a != b && !crate::ui::win_gui::reduced_motion() {
+                    st.anims.retain(|(i, _)| *i != new.id);
+                    st.anims.push((new.id, Instant::now()));
+                    ops.push(Op::Animate);
                 }
+            }
+            if new.name != old.name && !matches!(new.kind, Kind::Edit { .. }) {
+                ops.push(Op::Title(*h, new.name.clone()));
             }
             ops.push(Op::Invalidate(*h));
             *old = new;
@@ -1689,26 +1697,15 @@ fn refresh() {
                     let w = to_wide(&t);
                     SetWindowTextW(h, w.as_ptr());
                 }
-                Op::ComboReset(h, items, sel) => {
-                    SendMessageW(h, CB_RESETCONTENT, 0, 0);
-                    for it in items {
-                        let w = to_wide(&it);
-                        SendMessageW(h, CB_ADDSTRING, 0, w.as_ptr() as LPARAM);
-                    }
-                    SendMessageW(h, CB_SETCURSEL, sel, 0);
-                }
-                Op::ComboSel(h, sel) => {
-                    if SendMessageW(h, CB_GETDROPPEDSTATE, 0, 0) == 0 {
-                        SendMessageW(h, CB_SETCURSEL, sel, 0);
-                    }
-                }
                 Op::Invalidate(h) => {
                     InvalidateRect(h, std::ptr::null(), 0);
+                }
+                Op::Animate => {
+                    SetTimer(parent, IDT_ANIM, 16, None);
                 }
             }
         }
     }
-    let _ = parent;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1779,6 +1776,8 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let off = st.scroll;
     let s = |v: i32| sc(v, d);
     let sy = |v: i32| sc(v - off, d);
+    // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
+    let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
         match it {
             Item::Text { r: rr, s: txt, font, color: c, flags } => {
@@ -1790,11 +1789,23 @@ unsafe fn paint(st: &St, hdc: HDC) {
                 cv.round_rect_stroke(x, y, w, h, s(8) as f32, 1.0, t.border, 1.0);
             }
             Item::Divider { x, y, w } => cv.rect(s(*x), sy(*y), s(*w), 1, t.divider),
-            Item::Badge { x, y, s: txt, tone } => {
+            Item::Badge { x, y, s: txt, tone, after } => {
                 let (fg, bg, _) = tone_colors(&t, *tone);
                 let f = st.fonts.get(F::CaptionSemi);
                 let tw = text_width(txt, f);
-                let (bx, by, bw, bh) = (s(*x), sy(*y), tw + s(16), s(20));
+                let bw = tw + s(16);
+                let bx = match after {
+                    Some(a) => {
+                        let start = match badge_x {
+                            Some((pa, py, nx)) if pa == a.as_str() && py == *y => nx,
+                            _ => s(*x) + text_width(a, st.fonts.get(F::BodySemi)) + s(10),
+                        };
+                        badge_x = Some((a.as_str(), *y, start + bw + s(6)));
+                        start
+                    }
+                    None => s(*x),
+                };
+                let (by, bh) = (sy(*y), s(20));
                 cv.round_rect(bx as f32, by as f32, bw as f32, bh as f32, (bh / 2) as f32, bg, 1.0);
                 let fgc = if *tone == Tone::Info { t.text2 } else { fg };
                 cv.text(txt, bx, by, bw, bh, f, fgc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
@@ -1857,6 +1868,20 @@ unsafe fn paint(st: &St, hdc: HDC) {
                 cv.text(&glyph.to_string(), x + s(14), y + s(10), s(20), s(20), st.fonts.get(F::Icon), gc, DT_SINGLELINE);
                 cv.text(title, x + s(44), y + s(8), w - s(56), s(20), st.fonts.get(F::BodySemi), if *tone == Tone::Info { t.text } else { fg }, DT_SINGLELINE | DT_END_ELLIPSIS);
                 cv.text(body, x + s(44), y + s(29), w - s(56), h - s(30), st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+        }
+    }
+    // Text-box fields: recessed fill, 3:1 boundary, 2 px accent ring while the box has keyboard focus.
+    let focus = GetFocus();
+    for (c, h) in &st.ctrls {
+        if let Kind::Edit { .. } = c.kind {
+            let (x, y, w, hh) = (s(c.r.x) as f32, sy(c.r.y) as f32, s(c.r.w) as f32, s(c.r.h) as f32);
+            let rad = s(6) as f32;
+            cv.round_rect(x, y, w, hh, rad, t.bg, 1.0);
+            if *h == focus {
+                cv.round_rect_stroke(x, y, w, hh, rad, 2.0_f32.max(s(2) as f32), t.accent_fill, 1.0);
+            } else {
+                cv.round_rect_stroke(x, y, w, hh, rad, 1.0, t.control_border, 1.0);
             }
         }
     }
@@ -1948,17 +1973,24 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             let sy = (hf - sh) / 2.0;
             let label = if *on { "On" } else { "Off" };
             cv.text(label, 0, 0, (sx as i32) - s(10), h, st.fonts.get(F::Body), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
-            if *on {
-                let fill = if disabled { t.track } else if pressed || hot { t.accent_press } else { t.accent_fill };
-                cv.round_rect(sx, sy, sw, sh, sh / 2.0, fill, 1.0);
-                cv.circle(sx + sw - sh / 2.0, sy + sh / 2.0, s(7) as f32, t.surface, 1.0);
-            } else {
+            // amount = 0 fully off .. 1 fully on; between the two only while a slide is running.
+            let p = toggle_progress(st, c.id);
+            let amount = if *on { p } else { 1.0 - p };
+            let fill = if disabled { t.track } else if pressed || hot { t.accent_press } else { t.accent_fill };
+            if amount < 1.0 {
                 if hot {
                     cv.round_rect(sx, sy, sw, sh, sh / 2.0, t.hover_card, 1.0);
                 }
                 cv.round_rect_stroke(sx, sy, sw, sh, sh / 2.0, 1.0_f32.max(s(1) as f32), if disabled { t.track } else { t.text3 }, 1.0);
-                cv.circle(sx + sh / 2.0, sy + sh / 2.0, s(5) as f32, if disabled { t.track } else { t.text2 }, 1.0);
             }
+            if amount > 0.0 {
+                cv.round_rect(sx, sy, sw, sh, sh / 2.0, fill, amount);
+            }
+            let kx = sx + sh / 2.0 + (sw - sh) * amount;
+            let kr = s(5) as f32 + (s(7) - s(5)) as f32 * amount;
+            let off_knob = if disabled { t.track } else { t.text2 };
+            cv.circle(kx, sy + sh / 2.0, kr, off_knob, 1.0 - amount);
+            cv.circle(kx, sy + sh / 2.0, kr, t.surface, amount);
             focus_rect = (sx - s(3) as f32, sy - s(3) as f32, sw + s(6) as f32, sh + s(6) as f32, (sh + s(6) as f32) / 2.0);
         }
         Kind::Choice { title, desc, selected } => {
@@ -1981,6 +2013,7 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
         }
         Kind::Button { style, label } => {
             let (fill, stroke, fg) = match (style, disabled) {
+                (BtnStyle::Status, _) => (None, None, t.ok_fg),
                 (BtnStyle::Subtle, true) => (None, None, t.text3),
                 (_, true) => (Some(t.disabled_bg), None, t.text3),
                 (BtnStyle::Primary, _) => (Some(if pressed { t.accent_press } else if hot { t.accent } else { t.accent_fill }), None, t.on_accent),
@@ -1994,12 +2027,32 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             if let Some(sc_) = stroke {
                 cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, sc_, 1.0);
             }
-            let f = if *style == BtnStyle::Primary { F::BodySemi } else { F::Body };
-            cv.text(label, 0, 0, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            if *style == BtnStyle::Status {
+                // Check mark + label, right-aligned with the buttons in the rows above and below.
+                let f = st.fonts.get(F::BodySemi);
+                let tw = text_width(label, f);
+                let x = w - tw - s(4);
+                cv.text("\u{E73E}", x - s(22), 0, s(18), h, st.fonts.get(F::Icon), fg, DT_SINGLELINE | DT_VCENTER);
+                cv.text(label, x, 0, tw + s(4), h, f, fg, DT_SINGLELINE | DT_VCENTER);
+            } else {
+                let f = if *style == BtnStyle::Primary { F::BodySemi } else { F::Body };
+                cv.text(label, 0, 0, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            }
+        }
+        Kind::Combo { items, sel } => {
+            let fill = if disabled { t.disabled_bg } else if pressed { t.hover } else if hot { t.hover_card } else { t.bg };
+            cv.round_rect(0.0, 0.0, wf, hf, rad, fill, 1.0);
+            cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, if disabled { t.border } else { t.control_border }, 1.0);
+            let fg = if disabled { t.text3 } else { t.text };
+            let label = items.get(*sel).map(String::as_str).unwrap_or("");
+            cv.text(label, s(12), 0, w - s(44), h, st.fonts.get(F::Body), fg, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            // Chevron (Segoe Fluent Icons / MDL2 ChevronDown), nudged down while pressed.
+            let nudge = if pressed { s(1) } else { 0 };
+            cv.text("\u{E70D}", w - s(32), nudge, s(20), h, st.fonts.get(F::IconSmall), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
         _ => {}
     }
-    if focus && !matches!(c.kind, Kind::Nav { .. }) || focus && matches!(c.kind, Kind::Nav { .. }) {
+    if focus {
         let (x, y, fw, fh, fr) = focus_rect;
         cv.round_rect_stroke(x, y, fw, fh, fr, 2.0_f32.max(s(2) as f32), t.focus, 1.0);
     }
@@ -2025,7 +2078,10 @@ fn scroll_by(delta: i32) {
             .ctrls
             .iter()
             .filter(|(c, _)| !matches!(c.kind, Kind::Nav { .. }))
-            .map(|(c, h)| (*h, sc(c.r.x, st.dpi), sc(c.r.y - new, st.dpi)))
+            .map(|(c, h)| {
+                let cr = child_rect(c);
+                (*h, sc(cr.x, st.dpi), sc(cr.y - new, st.dpi))
+            })
             .collect();
         Some((st.hwnd, moves))
     });
@@ -2039,9 +2095,62 @@ fn scroll_by(delta: i32) {
     }
 }
 
+fn combo_of(id: i32) -> Option<(HWND, Vec<String>, usize)> {
+    ST.with(|s| {
+        let b = s.try_borrow().ok()?;
+        b.as_ref()?.ctrls.iter().find_map(|(c, h)| match &c.kind {
+            Kind::Combo { items, sel } if c.id == id => Some((*h, items.clone(), *sel)),
+            _ => None,
+        })
+    })
+}
+
 fn combo_sel(id: i32) -> usize {
-    let h = hwnd();
-    unsafe { SendMessageW(GetDlgItem(h, id), CB_GETCURSEL, 0, 0) as usize }
+    combo_of(id).map(|(_, _, sel)| sel).unwrap_or(0)
+}
+
+/// Selects `new` in drop-down `id` and runs the same handler a system combo box would (CBN_SELCHANGE).
+fn set_combo_sel(id: i32, new: usize) {
+    let changed = ST.with(|s| {
+        let mut b = s.try_borrow_mut().ok()?;
+        let (c, h) = b.as_mut()?.ctrls.iter_mut().find(|(c, _)| c.id == id)?;
+        match &mut c.kind {
+            Kind::Combo { items, sel } if *sel != new && new < items.len() => {
+                *sel = new;
+                Some(*h)
+            }
+            _ => None,
+        }
+    });
+    if let Some(h) = changed {
+        unsafe { InvalidateRect(h, std::ptr::null(), 0) };
+        on_command(id, 1 /* CBN_SELCHANGE */);
+    }
+}
+
+/// Opens the choices of drop-down `id` as a native popup menu under the field (keyboard, screen
+/// readers and the Windows 11 menu style come from the system). The current choice is checked.
+fn open_select(id: i32) {
+    let Some((h, items, sel)) = combo_of(id) else { return };
+    let pick = unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        for (i, it) in items.iter().enumerate() {
+            let w = to_wide(it);
+            AppendMenuW(menu, MF_STRING | if i == sel { MF_CHECKED } else { 0 }, i + 1, w.as_ptr());
+        }
+        let mut rc: RECT = std::mem::zeroed();
+        GetWindowRect(h, &mut rc);
+        let tpm = TPMPARAMS { cbSize: std::mem::size_of::<TPMPARAMS>() as u32, rcExclude: rc };
+        let pick = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_VERTICAL, rc.left, rc.bottom, hwnd(), &tpm);
+        DestroyMenu(menu);
+        pick
+    };
+    if pick > 0 {
+        set_combo_sel(id, pick as usize - 1);
+    }
 }
 
 fn open_url(url: &str) {
@@ -2089,7 +2198,15 @@ fn on_command(id: i32, code: u32) {
     const BN_DOUBLECLICKED: u32 = 5;
     const CBN_SELCHANGE: u32 = 1;
     const EN_KILLFOCUS: u32 = 0x0200;
+    const EN_SETFOCUS: u32 = 0x0100;
     let click = code == BN_CLICKED || code == BN_DOUBLECLICKED;
+    if code == EN_SETFOCUS || code == EN_KILLFOCUS {
+        unsafe { InvalidateRect(hwnd(), std::ptr::null(), 0) };
+    }
+    if click && combo_of(id).is_some() {
+        open_select(id);
+        return;
+    }
     let Some(m) = snapshot() else { return };
     let c = &m.config;
 
@@ -2296,7 +2413,32 @@ fn finish_setup(finished: bool) {
 // Window procedures
 // ------------------------------------------------------------------------------------------------
 
-unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, is_select: usize) -> LRESULT {
+    const VK_UP: usize = 0x26;
+    const VK_DOWN: usize = 0x28;
+    const VK_F4: usize = 0x73;
+    if is_select != 0 {
+        let id = GetDlgCtrlID(hwnd);
+        match msg {
+            WM_GETDLGCODE => return DefSubclassProc(hwnd, msg, wparam, lparam) | DLGC_WANTARROWS as LRESULT,
+            WM_KEYDOWN if wparam == VK_UP || wparam == VK_DOWN => {
+                if let Some((_, items, sel)) = combo_of(id) {
+                    let new = if wparam == VK_UP { sel.saturating_sub(1) } else { (sel + 1).min(items.len().saturating_sub(1)) };
+                    set_combo_sel(id, new);
+                }
+                return 0;
+            }
+            WM_KEYDOWN if wparam == VK_F4 => {
+                open_select(id);
+                return 0;
+            }
+            WM_SYSKEYDOWN if wparam == VK_DOWN => {
+                open_select(id);
+                return 0;
+            }
+            _ => {}
+        }
+    }
     match msg {
         WM_MOUSEMOVE => {
             let id = GetDlgCtrlID(hwnd);
@@ -2345,7 +2487,6 @@ unsafe fn theme_native_control(ctl: HWND, class: &str) {
     let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) && !high_contrast_on();
     let name = match (dark, class) {
         (false, _) => None,
-        (true, "ComboBox") => Some("DarkMode_CFD"),
         (true, _) => Some("DarkMode_Explorer"),
     };
     match name {
@@ -2358,13 +2499,34 @@ unsafe extern "system" fn retheme_child(h: HWND, _: LPARAM) -> i32 {
     let mut buf = [0u16; 32];
     let n = GetClassNameW(h, buf.as_mut_ptr(), 32) as usize;
     let class = String::from_utf16_lossy(&buf[..n]);
-    if class == "ComboBox" || class == "Edit" || class == "tooltips_class32" {
+    if class == "Edit" || class == "tooltips_class32" {
         theme_native_control(h, &class);
     }
     1
 }
 
+/// Popup menus (drop-down lists, tray menu) follow the Settings theme. Uses uxtheme's
+/// SetPreferredAppMode/FlushMenuThemes (ordinals 135/136, Windows 10 1903+); missing exports are skipped.
+unsafe fn apply_menu_theme() {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    let lib = to_wide("uxtheme.dll");
+    let m = LoadLibraryW(lib.as_ptr());
+    if m.is_null() {
+        return;
+    }
+    let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) && !high_contrast_on();
+    if let Some(f) = GetProcAddress(m, 135 as *const u8) {
+        let set_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+        set_mode(if dark { 2 /* ForceDark */ } else { 3 /* ForceLight */ });
+    }
+    if let Some(f) = GetProcAddress(m, 136 as *const u8) {
+        let flush: unsafe extern "system" fn() = std::mem::transmute(f);
+        flush();
+    }
+}
+
 unsafe fn apply_window_chrome(hwnd: HWND) {
+    apply_menu_theme();
     let t = theme();
     // Windows 11: tint the caption to match the sidebar and use the brand border. Ignored on Windows 10.
     let caption: u32 = t.sidebar;
@@ -2396,7 +2558,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let page = PENDING_PAGE.with(|c| c.get());
             EDIT_BRUSH.with(|b| {
                 if b.get() == 0 {
-                    b.set(CreateSolidBrush(theme().surface) as isize);
+                    b.set(CreateSolidBrush(theme().bg) as isize);
                 }
             });
             ST.with(|s| {
@@ -2416,6 +2578,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     last_page: page,
                     scroll: 0,
                     view_h: WIN_H,
+                    anims: Vec::new(),
                 })
             });
             apply_window_chrome(hwnd);
@@ -2447,11 +2610,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             });
             1
         }
-        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+        WM_CTLCOLOREDIT => {
             let t = theme();
             let hdc = wparam as HDC;
             SetTextColor(hdc, t.text);
-            SetBkColor(hdc, t.surface);
+            SetBkColor(hdc, t.bg);
             EDIT_BRUSH.with(|b| b.get() as LRESULT)
         }
         WM_COMMAND => {
@@ -2487,6 +2650,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_TIMER => {
+            if wparam == IDT_ANIM {
+                let (hs, done) = ST.with(|s| {
+                    let Ok(mut b) = s.try_borrow_mut() else { return (Vec::new(), false) };
+                    let Some(st) = b.as_mut() else { return (Vec::new(), true) };
+                    let hs: Vec<HWND> = st.anims.iter().filter_map(|(id, _)| st.ctrls.iter().find(|(c, _)| c.id == *id).map(|(_, h)| *h)).collect();
+                    st.anims.retain(|(_, t0)| t0.elapsed().as_secs_f32() * 1000.0 < TOGGLE_MS);
+                    (hs, st.anims.is_empty())
+                });
+                for h in hs {
+                    InvalidateRect(h, std::ptr::null(), 0);
+                }
+                if done {
+                    KillTimer(hwnd, IDT_ANIM);
+                }
+                return 0;
+            }
             if wparam == IDT_SAVED {
                 KillTimer(hwnd, IDT_SAVED);
                 ST.with(|s| {
@@ -2520,7 +2699,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 if b.get() != 0 {
                     DeleteObject(b.get() as _);
                 }
-                b.set(CreateSolidBrush(theme().surface) as isize);
+                b.set(CreateSolidBrush(theme().bg) as isize);
             });
             apply_window_chrome(hwnd);
             rebuild(false);
