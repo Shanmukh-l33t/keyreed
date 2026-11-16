@@ -174,3 +174,23 @@ Measured (bench/results, gitignored; rerun with bench/run_bench.py + score_bench
 - Real Windows E2E (`--win32-e2e-test <60s wav>`): direct typing into external window, text exact match, 2 paragraphs, release-to-ready ~7.2 s with SLM on (3.5 s of it SLM rewrite).
 
 Not verified: full 120/300/600 s matrix on v0.5.0 for all six models, noisy/quiet real-human speech, live human mic dictation, installer/zip build, release publish. Tier-0 ref-match rate is not a quality claim (references are stylistic).
+
+## Release-candidate verification matrix (2026-11-16/17)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Unit tests (83) | Verified | `cargo test --workspace` |
+| 47 s dictation release-to-text 0.5-0.7 s | Verified, synthetic TTS | bench/results/v0.5.0-r1 |
+| 80/215/446 s synthetic clips, 4 models, post-release < 2.4 s, no repeats, 0-3 words lost | Verified, synthetic TTS, 3 clips/model | bench/results/v0.5.0-long |
+| Real human speech (LibriSpeech + CMU Arctic Indian English), 12 clips | Partially verified | Parakeet v2 2.85% WER vs Moonshine Base 4.94%; Indian English 6.25% vs 11.03%; small sample |
+| Grammar eval, 88 + 30 cases | Partially verified | 30-case set was used to add rules, so it is a dev set; no independent held-out number |
+| GPU grammar rewrite | Verified on Quadro P2000 only | warm p50 0.6-0.8 s vs 2.1-3.9 s CPU; fallback tested with a fake device; not tested without a Vulkan driver |
+| External-window insertion, exact match, 2 paragraphs | Verified (automated UI test, plain EDIT control) | bench/results/v0.5.0-r5/e2e_*.json |
+| Focus change during processing | Partially verified | one run fell back to clipboard with text preserved and nothing typed elsewhere (`foreground_window_changed_during_processing`); stale-HWND case in e2e matrix |
+| 30 short + 20 long consecutive dictations | Partially verified | identical output every run, memory flat; latency noisy (CPU contention or throttling, not separated) |
+| Packaged app runs with no dev tools on PATH, blank user profile | Verified (this machine) | extracted full-offline zip, all 59 files match CHECKSUMS.sha256 |
+| Install / upgrade / uninstall of the NSIS installer | **Not verified** | installer kills keyreed.exe and rewrites the real install's registry keys; no VM or sandbox available |
+| Clean machine without Vulkan driver | **Not verified** | |
+| Live microphone human dictation; noisy/quiet human speech | **Not verified** | |
+| Typing speed into a plain EDIT control | Known limit | about 600 key events/s; 750 characters take 2.5-3.6 s |
+| 120/300/600 s runs for Whisper and Moonshine Tiny/SenseVoice on real speech | Not run / partial | Whisper skipped (16 s post-release on 47 s) |

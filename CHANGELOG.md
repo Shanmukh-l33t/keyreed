@@ -1,3 +1,15 @@
+## 0.5.0 (unreleased release candidate)
+
+Speed and accuracy work on the whole dictation path. Measured on an i7-8850H laptop (CPU) with a Quadro P2000; see `docs/research/08-e2e-speed-accuracy-worklog.md` for method, raw numbers and what is not verified.
+
+- **Streaming recognition**: speech is decoded while you are still talking, so a 47 s dictation is ready 0.5-0.7 s after release (v0.4.0: 9.8-26 s). A 7.4 min synthetic dictation finishes in under 2.4 s after release.
+- **Paragraphs**: long dictation is split into paragraphs from pauses and topic openers instead of one block of text.
+- **Dictation limit** raised from 2 to 30 minutes (longer recordings were silently discarded before).
+- **Grammar model**: runs on a discrete GPU (Vulkan) when one is present, measured 2.7-6x faster than CPU, falls back to CPU automatically; skipped for mixed-language text and already-clean sentences. `KEYREED_SLM_DEVICE=cpu` disables the GPU.
+- **Tier-0 rules** for common Indian-English constructions; precompiled regexes (about 0.3 ms per dictation).
+- **Model readiness**: selected speech model prepared in the background at startup; integrity results cached per process; idle unload lengthened when RAM allows. SHA-256 checks are unchanged.
+- **Build**: `scripts/build-release.sh` (the build now fails if `windres` is missing instead of producing a broken exe).
+
 # Changelog
 
 ## 0.4.0 (2026-11-16)
