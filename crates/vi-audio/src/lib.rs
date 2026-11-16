@@ -17,7 +17,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
-#[cfg(windows)]
 use zeroize::Zeroize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
