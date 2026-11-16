@@ -268,7 +268,7 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
             model_id: target.into(),
             stage: DownloadStage::Downloading,
             done_bytes: 141 * 1024 * 1024,
-            total_bytes: Some(375 * 1024 * 1024),
+            total_bytes: vi_asr::catalog::find_model_spec(target).map(|m| m.approx_download_mb as u64 * 1024 * 1024),
         }),
         None,
     );
