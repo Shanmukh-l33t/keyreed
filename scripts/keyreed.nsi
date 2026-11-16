@@ -109,10 +109,14 @@ Section "KeyReed" SecApp
   nsExec::Exec 'taskkill /F /IM llama-server.exe'
 !endif
   DetailPrint "Installing application files"
+  ClearErrors
   SetDetailsPrint listonly
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD_DIR}\*.*"
   SetDetailsPrint both
+  IfErrors 0 +3
+    SetErrorLevel 2
+    Abort "Could not write the application files into $INSTDIR (check folder permissions or disk space)."
   DetailPrint "Registering the uninstaller"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${REG_APP}" "InstallDir" "$INSTDIR"
