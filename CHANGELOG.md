@@ -1,4 +1,6 @@
-## 0.5.0 (unreleased release candidate)
+# Changelog
+
+## 0.5.0 (2026-11-17)
 
 Speed and accuracy work on the whole dictation path. Measured on an i7-8850H laptop (CPU) with a Quadro P2000; see `docs/research/08-e2e-speed-accuracy-worklog.md` for method, raw numbers and what is not verified.
 
@@ -9,8 +11,9 @@ Speed and accuracy work on the whole dictation path. Measured on an i7-8850H lap
 - **Tier-0 rules** for common Indian-English constructions; precompiled regexes (about 0.3 ms per dictation).
 - **Model readiness**: selected speech model prepared in the background at startup; integrity results cached per process; idle unload lengthened when RAM allows. SHA-256 checks are unchanged.
 - **Build**: `scripts/build-release.sh` (the build now fails if `windres` is missing instead of producing a broken exe).
+- **Settings dark and light themes**: follows Windows *Choose your default app mode* (`AppsUseLightTheme`), including dark title bar and dark native drop-downs/text boxes; high-contrast mode still uses system colours. WCAG 2.2 AA contrast enforced by unit test across both palettes; sidebar status-chip overlap fixed on short windows.
+- **Branded Windows installer**: official KeyReed icon artwork on welcome/header/finish pages and a lightweight native GDI waveform progress view (`KeyReedWave.dll`) driven by real NSIS progress; aborts cleanly with a non-zero exit code if file extraction fails.
 
-# Changelog
 
 ## 0.4.0 (2026-11-16)
 
