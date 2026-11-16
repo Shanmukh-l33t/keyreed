@@ -133,6 +133,24 @@ model becomes a product dependency before it is benchmarked here.
 
 ## Next steps, in order
 
+0. BLOCKER FIRST: `cargo build --release -p vi-app` from a plain shell "finishes" but the exe
+   segfaults on start (even `--version`). Cause: no `windres`/gcc/clang on PATH, so rustc links with its
+   bundled linker instead of the llvm-mingw UCRT toolchain the working v0.4.0 exe was built with.
+   The toolchain is probably under `C:\Users\ImMandatory\.local\toolchain` (look for `windres.exe`);
+   put its `bin` first on PATH (and check the `libgcc.a`/`libgcc_eh.a` aliases described in the
+   `windows-desktop-app-dev` skill), rebuild, confirm `target/release/keyreed.exe --version` runs.
+   The vi-asr code itself is NOT known to be at fault: it has never executed.
+   Run dev builds with `KEYREED_RUNTIME_ROOT=C:/Users/ImMandatory/keyreed/dist/keyreed-win-x64`.
+   Then sanity: `--transcribe-wav bench/corpus/tts/tts_060s_david.wav --llm-model none --mode exact --repeat 2`.
+
+New since the first commit: `crates/vi-rewrite/src/paragraphs.rs` (written with tests, NOT yet added to
+`vi-rewrite/src/lib.rs` as `pub mod paragraphs;`, never compiled) and `bench/score_bench.py` (works).
+Scored baseline (7 TTS clips, 13.9 min, loaded machine): WER 0.44 %, sentence P/R 1.0/0.994,
+paragraph recall 0.0, warm release-to-text p50 14.8 s, p95 93.9 s, cold p50 26.3 s.
+Hermes delegation is now `backend: default`, `model: gemini-4-carbon`, `provider: surplus` (was
+`profile_routes`, which ignored the model pin). Two research briefs (ASR models, datasets) finished
+on the old setting; their text arrives as a completion message, and the grammar brief is the file named in F.
+
 1. Finish A, make `cargo test --workspace` pass.
 2. B + LiveAsr + coordinator wiring + CLI `--live`; compare text of live vs one-shot on the corpus.
 3. G metrics, then run `bench/run_bench.py --exe target/release/keyreed.exe --tag v0.5.0-r1 --live`.
