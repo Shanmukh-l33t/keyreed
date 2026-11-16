@@ -310,6 +310,7 @@ pub struct SherpaApi {
     pub vad_pop: unsafe extern "C" fn(*const SherpaOnnxVoiceActivityDetector),
     pub vad_flush: unsafe extern "C" fn(*const SherpaOnnxVoiceActivityDetector),
     pub vad_reset: unsafe extern "C" fn(*const SherpaOnnxVoiceActivityDetector),
+    pub vad_detected: unsafe extern "C" fn(*const SherpaOnnxVoiceActivityDetector) -> i32,
     pub destroy_speech_segment: unsafe extern "C" fn(*const SherpaOnnxSpeechSegment),
 }
 
@@ -380,6 +381,7 @@ impl SherpaApi {
                 vad_pop: sym!(b"SherpaOnnxVoiceActivityDetectorPop\0"),
                 vad_flush: sym!(b"SherpaOnnxVoiceActivityDetectorFlush\0"),
                 vad_reset: sym!(b"SherpaOnnxVoiceActivityDetectorReset\0"),
+                vad_detected: sym!(b"SherpaOnnxVoiceActivityDetectorDetected\0"),
                 destroy_speech_segment: sym!(b"SherpaOnnxDestroySpeechSegment\0"),
                 _onnx_lib: onnx_lib,
                 _lib: lib,
