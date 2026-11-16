@@ -84,6 +84,32 @@ pub fn build_mode_prefix(mode: WritingMode, _category: AppCategory, _glossary: &
     ]
 }
 
+/// Picks a discrete GPU from `llama-server --list-devices` output (`  Vulkan1: Quadro P2000 (4221 MiB, 3619 MiB free)`).
+/// Integrated GPUs (Intel UHD/Iris, AMD "Radeon Graphics") were measured slower than the CPU, so they are never chosen.
+/// shortcut: name-keyword heuristic, replace with a measured micro-benchmark if misclassifications are reported.
+pub fn pick_discrete_gpu(list_devices_output: &str) -> Option<String> {
+    const DISCRETE: &[&str] = &["nvidia", "geforce", "quadro", "rtx", "gtx", "radeon rx", "radeon pro", "arc a", "arc(tm) a"];
+    for line in list_devices_output.lines() {
+        let line = line.trim();
+        let Some((id, rest)) = line.split_once(':') else { continue };
+        if !id.starts_with("Vulkan") {
+            continue;
+        }
+        let low = rest.to_ascii_lowercase();
+        let free_mib = low
+            .rsplit('(')
+            .next()
+            .and_then(|t| t.split(" mib free").next())
+            .and_then(|t| t.rsplit(' ').next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        if DISCRETE.iter().any(|k| low.contains(k)) && !low.contains("intel") && free_mib >= 1500 {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
 /// Supervises a local loopback `llama-server` worker process (`127.0.0.1:<port>`).
 /// Supports automatic idle unload so background RAM returns to ~0 MB when the user stops dictating!
 pub struct LlamaServerSupervisor {
@@ -92,6 +118,10 @@ pub struct LlamaServerSupervisor {
     threads: usize,
     port: u16,
     child: Option<Child>,
+    /// Discrete GPU id detected in the background (`None` until detection finishes or when there is none).
+    gpu: std::sync::Arc<std::sync::OnceLock<Option<String>>>,
+    using_gpu: bool,
+    gpu_disabled: bool,
     last_used: Instant,
     startup_failed_permanently: bool,
     /// Set once /health answered for the current child process.
@@ -105,12 +135,39 @@ impl LlamaServerSupervisor {
             .unwrap_or(4);
         let phys = (avail / 2).clamp(2, 6);
         let capped_threads = threads.max(phys).min(avail.saturating_sub(1).max(1)).clamp(1, 8);
+        let gpu = std::sync::Arc::new(std::sync::OnceLock::new());
+        // KEYREED_SLM_DEVICE: `cpu` disables the GPU; a device id such as `Vulkan1` forces that device.
+        let dev_env = std::env::var("KEYREED_SLM_DEVICE").unwrap_or_default();
+        let gpu_disabled = dev_env.eq_ignore_ascii_case("cpu");
+        if dev_env.starts_with("Vulkan") {
+            let _ = gpu.set(Some(dev_env.clone()));
+        } else if !gpu_disabled {
+            // Device enumeration takes ~1 s; do it off the hotkey path. Until it finishes, the CPU path is used.
+            let (cell, bin) = (gpu.clone(), server_bin.clone());
+            let _ = std::thread::Builder::new().name("keyreed-gpu-detect".into()).spawn(move || {
+                let mut cmd = Command::new(&bin);
+                cmd.arg("--list-devices").stdin(Stdio::null()).stderr(Stdio::null());
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x0800_0000);
+                }
+                let picked = cmd
+                    .output()
+                    .ok()
+                    .and_then(|o| pick_discrete_gpu(&String::from_utf8_lossy(&o.stdout)));
+                let _ = cell.set(picked);
+            });
+        }
         Self {
             server_bin,
             gguf_path,
             threads: capped_threads,
             port: 0,
             child: None,
+            gpu,
+            using_gpu: false,
+            gpu_disabled,
             last_used: Instant::now(),
             startup_failed_permanently: false,
             healthy: false,
@@ -212,9 +269,13 @@ impl LlamaServerSupervisor {
             .timeout_read(Duration::from_millis(250))
             .build();
 
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // First-ever GPU launch compiles shaders (~22 s measured); later launches take ~4.5 s.
+        let deadline = Instant::now() + Duration::from_secs(if self.using_gpu { 45 } else { 15 });
         while Instant::now() < deadline {
             if !self.is_running() {
+                if self.using_gpu {
+                    return self.retry_on_cpu("llama-server exited during GPU initialization");
+                }
                 self.startup_failed_permanently = true;
                 bail!("llama-server process exited prematurely during initialization");
             }
@@ -228,8 +289,21 @@ impl LlamaServerSupervisor {
             std::thread::sleep(Duration::from_millis(80));
         }
         self.stop();
+        if self.using_gpu {
+            return self.retry_on_cpu("GPU llama-server health check timed out");
+        }
         self.startup_failed_permanently = true;
         bail!("llama-server health check timed out on port {}", port)
+    }
+
+    /// A GPU backend that fails to come up (driver issue, VRAM taken) must never cost the user the rewrite:
+    /// disable the GPU for this session and start the normal CPU server instead.
+    fn retry_on_cpu(&mut self, why: &str) -> Result<u16> {
+        log::warn!("{why}; falling back to CPU for this session");
+        self.stop();
+        self.gpu_disabled = true;
+        self.using_gpu = false;
+        self.ensure_started()
     }
 
     /// Spawns the llama-server child (loopback only) and records its port. Does not wait.
@@ -247,39 +321,38 @@ impl LlamaServerSupervisor {
         }
 
         let port = Self::pick_ephemeral_port()?;
+        let gpu = if self.gpu_disabled {
+            None
+        } else {
+            // Detection started in `new()`; give it a moment so the very first start doesn't race it.
+            let t = Instant::now();
+            while self.gpu.get().is_none() && t.elapsed() < Duration::from_secs(4) {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            self.gpu.get().cloned().flatten()
+        };
+        self.using_gpu = gpu.is_some();
         let mut cmd = Command::new(&self.server_bin);
         // A dictation app issues one completion at a time, so a single slot (-np 1) is correct:
         // it halves resident KV memory and avoids the multi-slot ggml_backend_sched assertion
         // observed on the Windows llama.cpp build (`-np 2` => sched->n_inputs failed).
-        cmd.args([
-            "-fit",
-            "off",
-            "-m",
-            &self.gguf_path.to_string_lossy(),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "-c",
-            "2048",
-            "-t",
-            &self.threads.to_string(),
-            "-tb",
-            &self.threads.to_string(),
-            "-np",
-            "1",
-            // Single-backend CPU scheduling. The Windows llama.cpp build aborts in
-            // ggml_backend_sched_set_tensor_backend (assertion sched->n_inputs > 0) when the
-            // scheduler is set up for split/tensor-parallel multi-backend mode. `-sm none`
-            // forces one backend, `-ngl 0` keeps every layer on CPU (no CUDA backend to split
-            // across). Both are no-ops on a CPU-only box but they stabilise the scheduler init.
-            "-sm",
-            "none",
-            "-ngl",
-            "0",
-            "--reasoning-budget",
-            "0",
-        ])
+        let mut args: Vec<String> = [
+            "-fit", "off", "-m", &self.gguf_path.to_string_lossy(), "--host", "127.0.0.1", "--port", &port.to_string(),
+            "-c", "2048", "-np", "1", "--reasoning-budget", "0",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        match gpu {
+            // Discrete GPU: measured ~6x faster rewrites than CPU and it leaves the CPU free for ASR.
+            Some(dev) => args.extend(["-ngl", "99", "--device", &dev, "-t", "2", "-tb", "2"].map(String::from)),
+            // CPU: `-sm none -ngl 0` forces one backend; the Windows llama.cpp build aborts in
+            // ggml_backend_sched_set_tensor_backend when the scheduler is set up for split mode.
+            None => args.extend(
+                ["-t", &self.threads.to_string(), "-tb", &self.threads.to_string(), "-sm", "none", "-ngl", "0"].map(String::from),
+            ),
+        }
+        cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -422,5 +495,24 @@ impl LlamaServerSupervisor {
 impl Drop for LlamaServerSupervisor {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    use super::pick_discrete_gpu;
+
+    #[test]
+    fn picks_discrete_gpu_never_integrated_or_tiny() {
+        let both = "Available devices:
+  Vulkan0: Intel(R) UHD Graphics 630 (32643 MiB, 32643 MiB free)
+  Vulkan1: Quadro P2000 (4221 MiB, 3619 MiB free)
+";
+        assert_eq!(pick_discrete_gpu(both).as_deref(), Some("Vulkan1"));
+        assert_eq!(pick_discrete_gpu("  Vulkan0: Intel(R) UHD Graphics 630 (32643 MiB, 32643 MiB free)"), None);
+        assert_eq!(pick_discrete_gpu("  Vulkan0: AMD Radeon(TM) Graphics (2048 MiB, 2000 MiB free)"), None);
+        assert_eq!(pick_discrete_gpu("  Vulkan0: NVIDIA GeForce GTX 1050 (2048 MiB, 900 MiB free)"), None);
+        assert_eq!(pick_discrete_gpu("  Vulkan0: NVIDIA GeForce RTX 3060 (12288 MiB, 11000 MiB free)").as_deref(), Some("Vulkan0"));
+        assert_eq!(pick_discrete_gpu(""), None);
     }
 }
