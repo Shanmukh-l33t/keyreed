@@ -19,3 +19,5 @@ acceptance/
 id_vm
 scripts/KeyReed-Setup-x64.exe
 scripts/payload/
+scripts/installer/plugins/
+scripts/installer/*_preview.png
