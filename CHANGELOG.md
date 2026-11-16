@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 (2026-11-17)
+
+Speed and accuracy work on the whole dictation path. Measured on an i7-8850H laptop (CPU) with a Quadro P2000; see `docs/research/08-e2e-speed-accuracy-worklog.md` for method, raw numbers and what is not verified.
+
+- **Streaming recognition**: speech is decoded while you are still talking, so a 47 s dictation is ready 0.5-0.7 s after release (v0.4.0: 9.8-26 s). A 7.4 min synthetic dictation finishes in under 2.4 s after release.
+- **Paragraphs**: long dictation is split into paragraphs from pauses and topic openers instead of one block of text.
+- **Dictation limit** raised from 2 to 30 minutes (longer recordings were silently discarded before).
+- **Grammar model**: runs on a discrete GPU (Vulkan) when one is present, measured 2.7-6x faster than CPU, falls back to CPU automatically; skipped for mixed-language text and already-clean sentences. `KEYREED_SLM_DEVICE=cpu` disables the GPU.
+- **Tier-0 rules** for common Indian-English constructions; precompiled regexes (about 0.3 ms per dictation).
+- **Model readiness**: selected speech model prepared in the background at startup; integrity results cached per process; idle unload lengthened when RAM allows. SHA-256 checks are unchanged.
+- **Build**: `scripts/build-release.sh` (the build now fails if `windres` is missing instead of producing a broken exe).
+- **Settings dark and light themes**: follows Windows *Choose your default app mode* (`AppsUseLightTheme`), including dark title bar and dark native drop-downs/text boxes; high-contrast mode still uses system colours. WCAG 2.2 AA contrast enforced by unit test across both palettes; sidebar status-chip overlap fixed on short windows.
+- **Branded Windows installer**: official KeyReed icon artwork on welcome/header/finish pages and a lightweight native GDI waveform progress view (`KeyReedWave.dll`) driven by real NSIS progress; aborts cleanly with a non-zero exit code if file extraction fails.
+
+
 ## 0.4.0 (2026-11-16)
 
 - **Compact Icon-First Floating Listener (`overlay.rs`, `ui.rs`, `icon_data.rs`)**: Replaced the permanent `196×40` text banner with a quiet, non-activating (`WS_EX_LAYERED | WS_EX_NOACTIVATE`) icon-first capsule derived from the brand palette. At 100% scaling the idle listener is a `36×36` logical (`44×44 px` window) circle showing only the cropped, premultiplied KeyReed mark over a subtle lifted well (`palette::WELL`). It expands smoothly around its horizontal center only when communicating state: `98×36` logical (`107×44 px`) during recording with an 11-bar waveform driven by measured microphone RMS levels, `157×44 px` on deliberate 380 ms hover dwell (showing active writing mode and shortcut), `128×44 px` during transcription (`Loading model` on cold start, `Transcribing` when warm, `Polishing` during Tier-1 grammar rewrite), and distinct semantic completion/attention/notice/error capsules (`Inserted`, `Copied`, amber `Review · Ctrl+V`, neutral `Discarded` / `Nothing heard`, and plain-language rose error badges).

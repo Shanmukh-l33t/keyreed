@@ -1,0 +1,180 @@
+{
+  "_comment": "Reference text for the synthetic (TTS) part of the KeyReed speech benchmark. Each document is one dictation; each inner list is one paragraph (one thought); each string is one sentence. Paragraph boundaries are the ground truth for paragraph-formatting evaluation. Written for KeyReed; licensed with the repository (MIT OR Apache-2.0).",
+  "documents": [
+    {
+      "id": "update_email",
+      "style": "professional",
+      "paragraphs": [
+        [
+          "Hi Priya, thanks for sending the revised plan yesterday evening.",
+          "I went through it this morning and I think the overall direction is right.",
+          "The new timeline is much more realistic than the one we discussed last week.",
+          "I especially like that testing now starts before the design work is finished.",
+          "That should save us from the last minute surprises we had on the previous release."
+        ],
+        [
+          "There are two things I would still like to change.",
+          "First, the migration should not happen on a Friday, because nobody wants to debug a broken database over the weekend.",
+          "Second, we need a clear owner for the customer communication.",
+          "Right now three different people believe that somebody else is writing the announcement.",
+          "Can you ask Rahul whether his team can take that on?"
+        ],
+        [
+          "On the budget side, I spoke with finance and they are comfortable with the extra contractor.",
+          "They only asked that we send the purchase request before the end of the month.",
+          "I will prepare the form today and share it with you for review.",
+          "If everything looks fine, we can submit it tomorrow and still have a few days to spare."
+        ],
+        [
+          "Finally, let us move the weekly review to Tuesday afternoon.",
+          "Mondays are full of meetings and people arrive unprepared.",
+          "A Tuesday slot gives everyone time to update their tasks and read the notes in advance.",
+          "Please let me know if that works for you, and I will send the new invitation.",
+          "Thanks again for all the effort you put into this."
+        ]
+      ]
+    },
+    {
+      "id": "incident_note",
+      "style": "technical",
+      "paragraphs": [
+        [
+          "Here is a summary of the outage we had last night.",
+          "At around eleven thirty the checkout service started returning errors for roughly one in five requests.",
+          "The dashboard showed that response times had climbed from two hundred milliseconds to almost four seconds.",
+          "The on call engineer was paged within three minutes and joined the incident channel immediately."
+        ],
+        [
+          "The root cause was a connection pool that was too small for the new traffic pattern.",
+          "After the marketing campaign went live, the number of open connections reached the limit of fifty.",
+          "Every additional request then waited in a queue until it timed out.",
+          "The database itself was healthy the whole time, which is why our first alerts looked normal.",
+          "We only noticed the real problem when we looked at the application logs."
+        ],
+        [
+          "To fix it, we increased the pool size to two hundred and restarted the service one instance at a time.",
+          "Error rates dropped back to zero within ten minutes of the change.",
+          "We also added an alert that fires when the pool is more than eighty percent full.",
+          "That alert would have warned us at least half an hour before customers were affected."
+        ],
+        [
+          "There are three follow up actions.",
+          "We need a load test that simulates a campaign before the next launch.",
+          "We should document the pool settings in the service handbook, because nobody remembered why the old value was chosen.",
+          "And we should review the other services that share the same default configuration.",
+          "I will create the tickets today and assign them during the planning meeting."
+        ]
+      ]
+    },
+    {
+      "id": "weekend_story",
+      "style": "casual",
+      "paragraphs": [
+        [
+          "So you will not believe what happened on our trip last weekend.",
+          "We left early on Saturday because we wanted to reach the hills before lunch.",
+          "The road was empty, the weather was perfect, and everybody was in a great mood.",
+          "Then about an hour in, the car started making a strange rattling noise."
+        ],
+        [
+          "We pulled over at a tiny tea stall and tried to figure out what was wrong.",
+          "None of us knows anything about engines, so we just stood there staring at it.",
+          "The man who runs the stall walked over, listened for a few seconds, and laughed.",
+          "It turned out a plastic bottle had rolled under the seat and was hitting the metal frame.",
+          "We felt pretty silly, but at least the tea was excellent."
+        ],
+        [
+          "The rest of the drive was beautiful.",
+          "We stopped at a viewpoint where you can see the whole valley, and we stayed there for almost an hour.",
+          "My sister took about two hundred photos and I think she posted most of them.",
+          "By the time we reached the guest house it was already getting dark."
+        ],
+        [
+          "Anyway, we are planning to go again next month, and you should definitely come with us.",
+          "There is plenty of room in the car, and I promise we will check under the seats this time.",
+          "Let me know which weekend suits you and I will book the rooms.",
+          "It would be really good to catch up properly."
+        ]
+      ]
+    },
+    {
+      "id": "planning_notes",
+      "style": "smart",
+      "paragraphs": [
+        [
+          "These are my notes from the planning session this afternoon.",
+          "We agreed that the mobile app is the top priority for the next quarter.",
+          "The web dashboard will only receive bug fixes until the app reaches feature parity.",
+          "Everyone accepted that this means some customer requests will have to wait."
+        ],
+        [
+          "The first milestone is a private beta with twenty customers.",
+          "Anita will choose the customers and contact them by the end of next week.",
+          "We want a mix of small teams and large companies, so that we hear about different problems.",
+          "The beta should run for four weeks, and we will collect feedback every Friday."
+        ],
+        [
+          "Pricing was the longest discussion.",
+          "Sales wants a free tier, because it makes the first conversation much easier.",
+          "Finance is worried that support costs will grow faster than revenue.",
+          "In the end we decided to offer a thirty day trial instead, and to look at the numbers again in three months.",
+          "Nobody was completely happy, which probably means it is a fair compromise."
+        ],
+        [
+          "Before the next session I need to do three things.",
+          "I have to write the beta invitation and get it approved by legal.",
+          "I should check whether the analytics pipeline can separate trial users from paying users.",
+          "And I want to talk to two customers who cancelled recently, to understand what went wrong.",
+          "I will share an update on all of this on Thursday."
+        ]
+      ]
+    },
+    {
+      "id": "howto_backup",
+      "style": "technical",
+      "paragraphs": [
+        [
+          "I want to explain how our backup process works, because several new people have asked about it.",
+          "Every night a scheduled job takes a snapshot of the production database.",
+          "The snapshot is compressed, encrypted, and copied to a storage bucket in a different region.",
+          "The whole job usually finishes in under twenty minutes."
+        ],
+        [
+          "A backup is only useful if you can restore it, so we test that as well.",
+          "Once a week another job restores the latest snapshot into an empty test environment.",
+          "It then runs a set of checks that compare row counts and a few important totals with production.",
+          "If any check fails, the job sends a message to the platform team and marks the backup as suspect."
+        ],
+        [
+          "We keep daily snapshots for two weeks, weekly snapshots for three months, and monthly snapshots for one year.",
+          "Older files are deleted automatically, so storage costs stay predictable.",
+          "If you need a snapshot to be kept for longer, add a label to it and the cleanup job will skip it.",
+          "Please remove the label when you no longer need the data."
+        ],
+        [
+          "To restore a single table, you do not need to bring back the whole database.",
+          "Start a temporary instance from the snapshot, export the table you need, and import it into a staging schema.",
+          "After you have verified the data, copy the rows you want into production inside a transaction.",
+          "Always ask a second engineer to review the final step, because mistakes at that point are very hard to undo.",
+          "The full procedure with screenshots is in the handbook."
+        ]
+      ]
+    }
+  ],
+  "short_items": [
+    {"id": "s_plain_1", "category": "plain", "text": "Please send me the final report before the meeting tomorrow morning.", "must_keep": ["report", "tomorrow"]},
+    {"id": "s_plain_2", "category": "plain", "text": "I think we should wait until everyone has read the proposal, and then decide together.", "must_keep": ["proposal"]},
+    {"id": "s_question", "category": "punctuation", "text": "Did you get a chance to look at the contract? If not, could you review it today?", "must_keep": ["contract", "today"]},
+    {"id": "s_numbers", "category": "numbers", "text": "The invoice total is 4,250 dollars, and it is due on March 15, 2027.", "must_keep": ["4,250", "15", "2027"]},
+    {"id": "s_time", "category": "numbers", "text": "Let us meet at 3:30 PM on Thursday in conference room 12.", "must_keep": ["3:30", "Thursday", "12"]},
+    {"id": "s_percent", "category": "numbers", "text": "Revenue grew by 18 percent, while costs went down by 7 percent.", "must_keep": ["18", "7"]},
+    {"id": "s_tech_1", "category": "technical", "text": "The Kubernetes pod keeps restarting because the health check on port 8080 fails.", "must_keep": ["Kubernetes", "8080"]},
+    {"id": "s_tech_2", "category": "technical", "text": "We upgraded PostgreSQL from version 14 to version 16 and the query planner got faster.", "must_keep": ["PostgreSQL", "14", "16"]},
+    {"id": "s_tech_3", "category": "technical", "text": "Please restart the nginx service and check the error log for timeout messages.", "must_keep": ["nginx", "timeout"]},
+    {"id": "s_tech_4", "category": "technical", "text": "The API returns a JSON response with a status code of 404 when the user is not found.", "must_keep": ["API", "JSON", "404"]},
+    {"id": "s_acronyms", "category": "technical", "text": "Our CI pipeline builds the Docker image and pushes it to the AWS registry.", "must_keep": ["CI", "Docker", "AWS"]},
+    {"id": "s_selfcorrect", "category": "self_correction", "text": "Schedule the call for Tuesday, no wait, Wednesday at ten.", "must_keep": ["Wednesday"]},
+    {"id": "s_names", "category": "names", "text": "Rahul and Ananya will present the results to the team in Bengaluru next week.", "must_keep": ["Rahul", "Bengaluru"]},
+    {"id": "s_long_sentence", "category": "plain", "text": "Although the first version was slower than we had hoped, the team found three simple changes that together made the application start almost twice as fast.", "must_keep": ["three", "twice"]}
+  ]
+}

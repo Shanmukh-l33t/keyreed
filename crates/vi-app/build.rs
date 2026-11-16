@@ -19,20 +19,14 @@ fn main() {
 
     if target_env == "gnu" {
         let obj_path = out_dir.join("keyreed_res.o");
+        // A binary without the embedded manifest/resources (common controls v6, DPI awareness, UTF-8
+        // code page, icon) is broken, so a missing windres must fail the build, never skip silently.
         let status = Command::new("windres")
             .current_dir(&manifest_dir)
-            .args([
-                rc_path.to_str().unwrap(),
-                "-O",
-                "coff",
-                "-o",
-                obj_path.to_str().unwrap(),
-            ])
-            .status();
-        if let Ok(s) = status {
-            if s.success() && obj_path.exists() {
-                println!("cargo:rustc-link-arg-bins={}", obj_path.display());
-            }
-        }
+            .args([rc_path.to_str().unwrap(), "-O", "coff", "-o", obj_path.to_str().unwrap()])
+            .status()
+            .expect("windres not found on PATH: build with scripts/build-release.sh (llvm-mingw UCRT toolchain)");
+        assert!(status.success() && obj_path.exists(), "windres failed to compile keyreed.rc");
+        println!("cargo:rustc-link-arg-bins={}", obj_path.display());
     }
 }
