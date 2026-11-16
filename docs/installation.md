@@ -14,9 +14,9 @@ Both files are on the [latest release](https://github.com/Shanmukh-l33t/keyreed/
 
 | File | Use it when | Notes |
 | --- | --- | --- |
-| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `17.9 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
-| `keyreed-0.4.0-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `30.9 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
-| `keyreed-0.4.0-windows-x64-full-offline.zip` | You want everything offline in one download. | `1.56 GB` archive containing `keyreed.exe`, runtimes, `Parakeet TDT 0.6B v2`, `Moonshine Base`, `Moonshine Tiny`, and `Qwen3.5-0.8B-Q4_K_M`. Extract and run `keyreed.exe`. |
+| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `23.0 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
+| `keyreed-0.5.0-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `45.6 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
+| `keyreed-0.5.0-windows-x64-full-offline.zip` | You want everything offline in one download. | `1.38 GB` archive containing `keyreed.exe`, runtimes, `Parakeet TDT 0.6B v2`, `Moonshine Base`, `Moonshine Tiny`, and `Qwen3.5-0.8B-Q4_K_M`. Extract and run `keyreed.exe`. |
 | `SHA256SUMS.txt` | You want to verify a download. | Checksums for the files above. |
 
 ## Install
@@ -42,12 +42,12 @@ The Windows files are not code-signed, so check the hash against the one publish
 Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256
 ```
 
-For release 0.4.0:
+For release 0.5.0:
 
 ```text
-f81da5b3530d7581d01f3f41fdda41231b4f2a68d7e22e2b4b291556d7722812  KeyReed-Setup-x64.exe
-a21dc95cac2b4038ee3738f28c2875c642977160745f6a280f6b3b4ac474460f  keyreed-0.4.0-windows-x86_64-portable.zip
-a75ba1b69c752b37db517689b97d1e7279bb138bfe96b905464415680aa0f97e  keyreed-0.4.0-windows-x64-full-offline.zip
+31bf2897d636e4a1d5c8919d87454bce80a82b99466e490caa2ed7ee49fed786  KeyReed-Setup-x64.exe
+bd894fda2bcf9fc57e24950e15599d2562adda3408300b28e2162d87a7c8c94d  keyreed-0.5.0-windows-x86_64-portable.zip
+19a65ff4c245129658cbbf5d859097776dbbdbd618e0f07e03fdac893cffdd06  keyreed-0.5.0-windows-x64-full-offline.zip
 ```
 
 A SmartScreen prompt on an unsigned file is expected. It is not a verdict on the file, but it is a good reason to compare the hash or build from source ([development guide](development.md)).

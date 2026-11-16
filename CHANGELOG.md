@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+In the source on `main`; not in a downloadable release yet.
+
+- **Settings controls**: drop-downs and text boxes are drawn by KeyReed instead of the 3D system controls. A drop-down opens the native Windows menu under the field (Up/Down change the value, Alt+Down or F4 open it). Popup menus follow the dark or light theme. Toggles slide (150 ms; instant when Windows animations are off).
+- **Speech models page**: SenseVoice and Whisper showed 240 MB and 375 MB downloads; the real archives are 999 MB and 606 MB. A test now keeps the page in line with the pinned catalog. The model in use is marked once, and badges are spaced from the measured name.
+- **Listener**: 5 dp gap between the logo and the label or waveform.
+- **Installer**: version info is compiled as UTF-8 (the description's em dash was garbled).
+- **CI**: Linux build fixed (`zeroize` import), website excerpts regenerated.
+
 ## 0.5.0 (2026-11-17)
 
 Speed and accuracy work on the whole dictation path. Measured on an i7-8850H laptop (CPU) with a Quadro P2000; see `docs/research/08-e2e-speed-accuracy-worklog.md` for method, raw numbers and what is not verified.

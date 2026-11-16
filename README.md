@@ -25,21 +25,21 @@
 
 # KeyReed
 
-**KeyReed is an open-source, local-first voice dictation app for Windows.** Hold a shortcut, speak, release. KeyReed transcribes on your own CPU, cleans the text up, and hands it to whatever application you were using.
+**KeyReed is an open-source, local-first voice dictation app for Windows.** Hold a shortcut, speak, release. KeyReed transcribes on your own PC, cleans the text up, and types it into whatever application you were using.
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** release **0.4.0** (Windows 11 x64 verified). The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** release **0.5.0** (built and tested on Windows 11 x64). The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`17.9 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
-2. Run it. Windows SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
+1. Download **`KeyReed-Setup-x64.exe`** (`23.0 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
 5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.4.0-windows-x64-full-offline.zip`, which already contains the speech and grammar models.
+No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.5.0-windows-x64-full-offline.zip` (1.38 GB), which already contains the speech and grammar models.
 
 ## Why KeyReed
 
@@ -49,27 +49,31 @@ No Rust, Python, Visual Studio or command line needed. Prefer one offline downlo
 | **Local by default** | The default profile, Maximum Privacy (100% Offline), makes no network call for audio or text. |
 | **System-wide** | A global shortcut that works in any application, not a plugin for one editor. |
 | **Six writing modes** | Smart, Exact, Professional, Casual, Technical and Terminal / Code. |
-| **CPU only** | Speech and grammar models run on the processor. No dedicated GPU required. |
+| **No GPU needed** | Speech recognition runs on the CPU. The optional grammar model uses a Vulkan GPU when present and falls back to the CPU. |
+| **Streams while you talk** | Speech is decoded during the recording, so a 47 s dictation was ready 0.5-0.7 s after release on a 2018 laptop CPU (synthetic test audio, [method](docs/research/08-e2e-speed-accuracy-worklog.md)). |
 | **Checked models** | Every model file is verified against a compile-time size and SHA-256 before it loads. |
 
 ## What it looks like
 
 <p align="center">
-  <img src="assets/screenshots/settings.png" alt="The KeyReed Settings window on Windows 11 showing shortcut, activation, output, writing mode, privacy and speech engine options" width="46%" />
-  &nbsp;&nbsp;
-  <img src="assets/screenshots/floating-pill.png" alt="The KeyReed floating microphone pill on the Windows desktop" width="46%" />
+  <img src="assets/screenshots/settings.png" alt="KeyReed Settings, Writing page: six writing modes and a 'You say' / 'KeyReed writes' example" width="80%" />
 </p>
-<p align="center"><sub>Real captures from KeyReed 0.4.0 on Windows 11.</sub></p>
+<p align="center">
+  <img src="assets/screenshots/listener-states.png" alt="The floating listener in five states: idle, listening with a waveform, transcribing, inserted, and hover showing the writing mode and shortcut" width="80%" />
+</p>
+<p align="center"><sub>Real captures from KeyReed 0.5.0 on Windows 11. Settings follows the Windows light or dark app mode.</sub></p>
 
-The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow. It is an illustration, not a recording.
+The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow (an illustration, not a recording) and an honest [KeyReed vs Wispr Flow](https://keyreed-website.vercel.app/vs-wispr-flow) comparison.
 
 ## Features
 
 - **Hold-to-talk or toggle-to-talk.** Right Ctrl by default; the shortcut is a preset list in Settings. Escape cancels a recording.
 - **Compact icon-first floating listener.** `36×36` logical pixels at idle (with zero background timer activity), expanding smoothly to `98×36` with an 11-bar measured microphone RMS waveform while recording, deliberate 380 ms hover expansion, quiet 1.6 s mode-switch hints, and Per-Monitor-v2 DPI scaling across multi-monitor setups.
+- **Dark and light Settings** that follow the Windows app mode, with WCAG 2.2 AA contrast checked by a unit test.
 - **10-page instant-apply Settings & 4-step guided onboarding.** Organised sidebar navigation (`Get started`, `General`, `Dictation`, `Writing`, `Output`, `Microphone`, `Speech models`, `Processing`, `Privacy`, `About`) where every toggle, choice card, dropdown, and personal dictionary entry saves immediately.
 - **Writing modes.** See [below](#writing-modes). Cycle them with Ctrl+Shift+Space, or let automatic app-context adaptation choose.
-- **Grammar correction.** Deterministic Tier 0 rules first (fillers, stutters, spoken self-corrections, casing, your vocabulary), then an optional local grammar model, then guards that fall back to Tier 0 if the model output drifts.
+- **Grammar correction.** Deterministic Tier 0 rules first (fillers, stutters, spoken self-corrections, casing, your vocabulary), then an optional local grammar model (skipped when the sentence is already clean), then guards that fall back to Tier 0 if the model output drifts.
+- **Long dictation.** Up to 30 minutes per recording, decoded while you talk and split into paragraphs from your pauses.
 - **Personal vocabulary.** Teach it names and jargon in Settings (used both for Sherpa transducer hotword biasing and Tier 0 casing).
 - **Output choice.** Auto Insert (default: types into the focused field, falls back to the clipboard for password fields or elevated windows), Clipboard Only, or Ask Before Inserting (3-option `Yes` / `No` / `Cancel` dialog).
 - **Microphone selection & diagnostics**, live level meter and plain-language health verdicts (`Sounds good`, `Quiet`, `No sound`, `Too loud`), automatic fallback to the default microphone when a device is unplugged, audio cues, **Reset to defaults**, and optional startup with Windows (off by default).
@@ -96,9 +100,9 @@ Spoken symbols such as "forward slash" apply only in Terminal / Code. Without th
 | Record | Hold **Right Ctrl**, release to finish |
 | Cancel a recording | **Esc** |
 | Cycle writing mode | **Ctrl+Shift+Space** |
-| Paste the result | **Ctrl+V** |
+| Paste again (or in Clipboard Only mode) | **Ctrl+V** |
 
-Recordings are capped at 120 seconds. A lost key release or the cap discards the audio instead of pasting something partial.
+Recordings are capped at 30 minutes. A lost key release or the cap discards the audio instead of typing something partial.
 
 Useful command-line flags for `keyreed.exe`: `--help`, `--version`, `--settings`, `--list-models`, `--download-model <id>`, `--print-foreground`.
 
@@ -106,10 +110,10 @@ Useful command-line flags for `keyreed.exe`: `--help`, `--version`, `--settings`
 
 ```mermaid
 flowchart LR
-    M["Microphone<br/>opens while you hold the key"] --> A["Local speech model<br/>sherpa-onnx, CPU"]
+    M["Microphone<br/>opens while you hold the key"] --> A["Local speech model<br/>sherpa-onnx, CPU, streaming"]
     A --> T["Tier 0 rules"]
     T --> G["Optional local grammar model<br/>+ guards"]
-    G --> O["Clipboard or Auto Insert<br/>active application"]
+    G --> O["Typed into the active app<br/>(clipboard fallback)"]
     A -. "only if you enable a cloud profile<br/>and store an API key" .-> C(["Your configured cloud endpoint"])
     G -. "same condition" .-> C
 ```
@@ -118,7 +122,7 @@ flowchart LR
 - The network is used to download a speech model, and by the cloud profiles if you turn them on.
 - Audio is kept in memory, is not written to a file on the normal path, and is wiped after decoding.
 - Cloud API keys are stored DPAPI-encrypted. KeyReed ships no key.
-- The finished text stays on the clipboard until you replace it. You can exclude it from Windows Clipboard History in Settings (off by default).
+- When KeyReed falls back to the clipboard, the text stays there until you replace it. You can exclude it from Windows Clipboard History in Settings (off by default).
 - No independent network capture of the offline profile has been published yet.
 
 Details: [docs/architecture.md](docs/architecture.md).
@@ -127,9 +131,9 @@ Details: [docs/architecture.md](docs/architecture.md).
 
 | | |
 | --- | --- |
-| OS | 64-bit Windows 11 (packaged and launched). Windows 10 is an intended target and was not re-tested. |
-| CPU | x64, no GPU required. Local inference threads default to 4. |
-| Disk | About 33 MB for the installer plus about 460 MB for the default speech model. The full archive is about 1 GB. |
+| OS | 64-bit Windows 11 (built and tested). Windows 10 64-bit is supported by the code but was not re-tested for 0.5.0. |
+| CPU / GPU | x64, no GPU required. The optional grammar model uses a Vulkan GPU if present (`KEYREED_SLM_DEVICE=cpu` turns that off). |
+| Disk | A 23 MB installer plus about 460 MB for the default speech model. The full offline archive is 1.38 GB. |
 | RAM | On a 3-core, 4 GB test VM the app and local grammar runtime used roughly 1.6 GB together. More free memory is safer. An 8 GB PC has not been benchmarked. |
 | Other | A microphone that desktop apps may use. |
 
@@ -142,13 +146,14 @@ cargo test --workspace
 cargo build --release -p vi-app
 ```
 
-Rust 1.80 or newer. The Windows package is assembled by `scripts/package-win.sh` and `scripts/keyreed.nsi`. Full instructions: [docs/development.md](docs/development.md).
+Rust 1.80 or newer. Release builds: `scripts/build-release.sh`; installer: `scripts/build-installer.sh` (NSIS, with `--test` for a sandboxed QA build checked by `scripts/installer/test_installer.py`). Full instructions: [docs/development.md](docs/development.md).
 
 ## Known limits
 
 - The Windows executable, bundled runtimes and installer are **unsigned**. SmartScreen behaviour has not been observed for this download.
-- A full dictation loop with a physical microphone on a desktop outside the packaging VM has not been recorded in this repository.
-- Auto Insert was not replayed into Notepad on a physical desktop.
+- Speed and accuracy figures come from one laptop (i7-8850H, Quadro P2000), mostly with synthetic speech. Live microphone dictation with real voices in noisy rooms has not been benchmarked.
+- Auto Insert types at about 600 characters per second into a plain text box, so very long dictations take a few seconds to appear.
+- The GPU grammar path was tested on one NVIDIA card only, and not on a machine without a Vulkan driver.
 - Hindi transcription accuracy is unscored. Do not treat one clip, or a text-only rewrite check, as a word error rate.
 - Windows 10 was not re-tested, and a 4-core, 8 GB machine was not measured.
 

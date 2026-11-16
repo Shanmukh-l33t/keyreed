@@ -17,7 +17,7 @@ flowchart TD
 ```
 
 1. **Hotkey.** A low-level keyboard hook on its own thread watches the configured trigger, Escape and the mode-cycle shortcut. Key repeat is ignored. Minimum hold is 110 ms.
-2. **Capture.** The microphone opens when recording starts and closes when it stops, is cancelled or hits the 120 second cap. Audio stays in memory and is zeroized after decode.
+2. **Capture.** The microphone opens when recording starts and closes when it stops, is cancelled or hits the 30 minute cap. Audio stays in memory and is zeroized after decode.
 3. **Transcription.** sherpa-onnx runs the selected speech model on the CPU. Hotwords come from your personal vocabulary.
 4. **Tier 0.** Fillers, stutters and spoken self-corrections are removed, casing and your vocabulary are applied, and Terminal / Code mode compiles spoken flags and paths into commands. Likely silence hallucinations are dropped.
 5. **Grammar model.** If installed, a small local model polishes Smart, Professional, Casual and Technical text. Exact and Terminal / Code do not rephrase.
