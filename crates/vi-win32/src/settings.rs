@@ -135,6 +135,8 @@ struct Theme {
     sidebar: u32,
     surface: u32,
     border: u32,
+    /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
+    control_border: u32,
     divider: u32,
     text: u32,
     text2: u32,
@@ -173,6 +175,31 @@ fn high_contrast_on() -> bool {
     }
 }
 
+static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Re-reads which colour scheme Settings should use: Windows "Choose your default app mode"
+/// (HKCU\...\Themes\Personalize\AppsUseLightTheme). If the value is missing or unreadable the
+/// light theme is used. `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
+fn refresh_dark_mode() {
+    let forced = std::env::var("KEYREED_UI_THEME").ok();
+    let dark = match forced.as_deref() {
+        Some("dark") => true,
+        Some("light") => false,
+        _ => system_apps_use_dark(),
+    };
+    DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn system_apps_use_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let key = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let val = to_wide("AppsUseLightTheme");
+    let mut data: u32 = 1;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut len) };
+    rc == 0 && data == 0
+}
+
 fn theme() -> Theme {
     if high_contrast_on() {
         use windows_sys::Win32::Graphics::Gdi::GetSysColor;
@@ -188,6 +215,7 @@ fn theme() -> Theme {
                 sidebar: win,
                 surface: win,
                 border: txt,
+                control_border: txt,
                 divider: gray,
                 text: txt,
                 text2: txt,
@@ -212,18 +240,52 @@ fn theme() -> Theme {
             };
         }
     }
+    if DARK.load(std::sync::atomic::Ordering::Relaxed) {
+        // Same emerald identity on the listener's dark green-black. Every text/control pair is checked
+        // against WCAG 2.2 AA (text 4.5:1, control boundaries 3:1); see docs/design/02-dark-theme.md.
+        return Theme {
+            bg: rgb(0x0F, 0x17, 0x13),
+            sidebar: rgb(0x0B, 0x12, 0x0F),
+            surface: rgb(0x17, 0x23, 0x1D),
+            border: rgb(0x26, 0x35, 0x2D),
+            control_border: rgb(0x6F, 0x84, 0x79),
+            divider: rgb(0x1F, 0x2C, 0x25),
+            text: rgb(0xE8, 0xF1, 0xEC),
+            text2: rgb(0xA9, 0xBB, 0xB2),
+            text3: rgb(0x8D, 0xA3, 0x98),
+            accent: rgb(0x5E, 0xE0, 0xB0),
+            accent_fill: rgb(0x34, 0xD3, 0x99),
+            accent_press: rgb(0x10, 0xB9, 0x81),
+            accent_soft: rgb(0x14, 0x3C, 0x2E),
+            hover: rgb(0x22, 0x32, 0x2A),
+            hover_card: rgb(0x1C, 0x2B, 0x24),
+            on_accent: rgb(0x04, 0x24, 0x1A),
+            warn_fg: rgb(0xF8, 0xCE, 0x85),
+            warn_bg: rgb(0x3B, 0x2C, 0x10),
+            err_fg: rgb(0xFD, 0xA4, 0xAF),
+            err_bg: rgb(0x3E, 0x17, 0x22),
+            ok_fg: rgb(0x7B, 0xE8, 0xBC),
+            ok_bg: rgb(0x10, 0x34, 0x26),
+            track: rgb(0x3A, 0x4B, 0x42),
+            disabled_bg: rgb(0x14, 0x1E, 0x19),
+            focus: rgb(0xE8, 0xF1, 0xEC),
+            hc: false,
+        };
+    }
     Theme {
         bg: rgb(0xF7, 0xF9, 0xF8),
         sidebar: rgb(0xEE, 0xF3, 0xF0),
         surface: rgb(0xFF, 0xFF, 0xFF),
         border: rgb(0xDD, 0xE5, 0xE1),
+        control_border: rgb(0x7F, 0x8F, 0x87),
         divider: rgb(0xEA, 0xEF, 0xEC),
         text: rgb(0x0E, 0x1A, 0x14),
         text2: rgb(0x4A, 0x5A, 0x52),
-        text3: rgb(0x74, 0x84, 0x7C),
-        accent: rgb(0x04, 0x78, 0x57),
-        accent_fill: rgb(0x05, 0x96, 0x69),
-        accent_press: rgb(0x04, 0x78, 0x57),
+        // text3 >= 4.5:1 on every surface it is drawn on (was 3.4-3.9). accent_fill carries white text at 5.5:1 (was 3.8).
+        text3: rgb(0x5B, 0x6B, 0x63),
+        accent: rgb(0x06, 0x5F, 0x46),
+        accent_fill: rgb(0x04, 0x78, 0x57),
+        accent_press: rgb(0x06, 0x4E, 0x3B),
         accent_soft: rgb(0xE0, 0xF2, 0xE9),
         hover: rgb(0xE4, 0xEB, 0xE7),
         hover_card: rgb(0xF3, 0xF7, 0xF5),
@@ -1380,6 +1442,11 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     }
     SendMessageW(hwnd, WM_SETFONT, cx.body as WPARAM, 0);
     match &c.kind {
+        Kind::Combo { .. } => theme_native_control(hwnd, "ComboBox"),
+        Kind::Edit { .. } => theme_native_control(hwnd, "Edit"),
+        _ => {}
+    }
+    match &c.kind {
         Kind::Combo { items, sel } => {
             for it in items {
                 let w = to_wide(it);
@@ -1698,7 +1765,9 @@ unsafe fn paint(st: &St, hdc: HDC) {
     cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
 
     // Status chip at the bottom of the sidebar
-    if let Some(m) = snapshot() {
+    // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
+    let nav_bottom = s(92 + NAV.len() as i32 * 38);
+    if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
         let (label, dot) = status_chip(&m);
         let y = rc.bottom - s(52);
         cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, t.surface, 1.0);
@@ -1915,8 +1984,8 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 (BtnStyle::Subtle, true) => (None, None, t.text3),
                 (_, true) => (Some(t.disabled_bg), None, t.text3),
                 (BtnStyle::Primary, _) => (Some(if pressed { t.accent_press } else if hot { t.accent } else { t.accent_fill }), None, t.on_accent),
-                (BtnStyle::Secondary, _) => (Some(if pressed { t.hover } else if hot { t.hover_card } else { t.surface }), Some(t.border), t.text),
-                (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.border), t.err_fg),
+                (BtnStyle::Secondary, _) => (Some(if pressed { t.hover } else if hot { t.hover_card } else { t.surface }), Some(t.control_border), t.text),
+                (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.control_border), t.err_fg),
                 (BtnStyle::Subtle, _) => (if hot || pressed { Some(t.hover) } else { None }, None, t.accent),
             };
             if let Some(f) = fill {
@@ -2269,11 +2338,39 @@ unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
     DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
+/// Gives the system-drawn controls (drop-downs, text boxes, tooltips) the matching light or dark
+/// visual style. Unknown style names are ignored by Windows, so older builds simply keep the light look.
+unsafe fn theme_native_control(ctl: HWND, class: &str) {
+    use windows_sys::Win32::UI::Controls::SetWindowTheme;
+    let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) && !high_contrast_on();
+    let name = match (dark, class) {
+        (false, _) => None,
+        (true, "ComboBox") => Some("DarkMode_CFD"),
+        (true, _) => Some("DarkMode_Explorer"),
+    };
+    match name {
+        Some(n) => { let w = to_wide(n); SetWindowTheme(ctl, w.as_ptr(), std::ptr::null()); }
+        None => { SetWindowTheme(ctl, std::ptr::null(), std::ptr::null()); }
+    }
+}
+
+unsafe extern "system" fn retheme_child(h: HWND, _: LPARAM) -> i32 {
+    let mut buf = [0u16; 32];
+    let n = GetClassNameW(h, buf.as_mut_ptr(), 32) as usize;
+    let class = String::from_utf16_lossy(&buf[..n]);
+    if class == "ComboBox" || class == "Edit" || class == "tooltips_class32" {
+        theme_native_control(h, &class);
+    }
+    1
+}
+
 unsafe fn apply_window_chrome(hwnd: HWND) {
     let t = theme();
     // Windows 11: tint the caption to match the sidebar and use the brand border. Ignored on Windows 10.
     let caption: u32 = t.sidebar;
     let border: u32 = t.border;
+    let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) as u32;
+    DwmSetWindowAttribute(hwnd, 20, &dark as *const u32 as *const _, 4); // DWMWA_USE_IMMERSIVE_DARK_MODE
     DwmSetWindowAttribute(hwnd, 35, &caption as *const u32 as *const _, 4);
     DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const _, 4);
     let big = brand_hicon(32);
@@ -2285,12 +2382,14 @@ unsafe fn apply_window_chrome(hwnd: HWND) {
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
+            refresh_dark_mode();
             let dpi = window_dpi(hwnd);
             let tooltip = {
                 let cls = to_wide("tooltips_class32");
                 let h = CreateWindowExW(WS_EX_TOPMOST, cls.as_ptr(), std::ptr::null(), WS_POPUP | 0x01 | 0x02, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, std::ptr::null_mut(), GetModuleHandleW(std::ptr::null()), std::ptr::null());
                 if !h.is_null() {
                     SendMessageW(h, TTM_SETMAXTIPWIDTH, 0, sc(360, dpi) as LPARAM);
+                    theme_native_control(h, "tooltips_class32");
                 }
                 h
             };
@@ -2414,7 +2513,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-            // High-contrast toggles and colour changes repaint everything.
+            // High-contrast toggles, colour changes and the Windows light/dark app mode repaint everything.
+            refresh_dark_mode();
+            EnumChildWindows(hwnd, Some(retheme_child), 0);
             EDIT_BRUSH.with(|b| {
                 if b.get() != 0 {
                     DeleteObject(b.get() as _);
@@ -2559,6 +2660,56 @@ mod tests {
         m.config.selected_microphone = Some("Headset (BT)".into());
         let (items, sel) = mic_items(&m);
         assert_eq!(items[sel], "Headset (BT) (not connected)");
+    }
+
+    fn luminance(c: u32) -> f64 {
+        let f = |v: u32| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(c & 0xFF) + 0.7152 * f((c >> 8) & 0xFF) + 0.0722 * f((c >> 16) & 0xFF)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// WCAG 2.2 AA for both colour schemes: 4.5:1 for text, 3:1 for control boundaries and the ON switch.
+    /// One test, because the scheme is process-global state.
+    #[test]
+    fn both_themes_meet_wcag_aa() {
+        for dark in [false, true] {
+            DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
+            let t = theme();
+            if t.hc {
+                continue; // high-contrast mode uses the user's own system colours
+            }
+            let text_pairs = [
+                ("text/bg", t.text, t.bg), ("text/surface", t.text, t.surface), ("text2/bg", t.text2, t.bg),
+                ("text2/surface", t.text2, t.surface), ("text2/hover", t.text2, t.hover),
+                ("text3/bg", t.text3, t.bg), ("text3/surface", t.text3, t.surface), ("text3/sidebar", t.text3, t.sidebar),
+                ("text3/hover", t.text3, t.hover), ("text3/accent_soft", t.text3, t.accent_soft),
+                ("accent text/bg", t.accent, t.bg), ("accent text/surface", t.accent, t.surface),
+                ("accent text/accent_soft", t.accent, t.accent_soft), ("accent text/sidebar", t.accent, t.sidebar),
+                ("on_accent/accent_fill", t.on_accent, t.accent_fill), ("on_accent/accent (hover)", t.on_accent, t.accent),
+                ("on_accent/accent_press", t.on_accent, t.accent_press),
+                ("ok", t.ok_fg, t.ok_bg), ("warn", t.warn_fg, t.warn_bg), ("err", t.err_fg, t.err_bg),
+            ];
+            for (name, fg, bg) in text_pairs {
+                let r = contrast(fg, bg);
+                assert!(r >= 4.5, "{} theme: {name} is {r:.2}:1 (< 4.5)", if dark { "dark" } else { "light" });
+            }
+            let ui_pairs = [
+                ("control_border/surface", t.control_border, t.surface), ("control_border/bg", t.control_border, t.bg),
+                ("accent_fill/surface (switch ON)", t.accent_fill, t.surface),
+            ];
+            for (name, fg, bg) in ui_pairs {
+                let r = contrast(fg, bg);
+                assert!(r >= 3.0, "{} theme: {name} is {r:.2}:1 (< 3.0)", if dark { "dark" } else { "light" });
+            }
+        }
+        DARK.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]
