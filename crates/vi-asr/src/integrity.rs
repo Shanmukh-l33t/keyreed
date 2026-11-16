@@ -4,13 +4,35 @@
 //! model directory is not consulted and cannot authorize a load. A directory that
 //! merely exists is not a verified model.
 
-use crate::catalog::{extract_tar_bz2_safely, find_model_spec};
+use crate::catalog::{extract_tar_bz2_filtered, find_model_spec};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static ACTIVE_IN_PROCESS_INSTALLS: AtomicUsize = AtomicUsize::new(0);
+
+pub struct InProcessInstallGuard;
+
+impl InProcessInstallGuard {
+    pub fn acquire() -> Self {
+        ACTIVE_IN_PROCESS_INSTALLS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InProcessInstallGuard {
+    fn drop(&mut self) {
+        ACTIVE_IN_PROCESS_INSTALLS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn has_active_in_process_install() -> bool {
+    ACTIVE_IN_PROCESS_INSTALLS.load(Ordering::SeqCst) > 0
+}
 
 pub struct FilePin {
     pub relative: &'static str,
@@ -241,8 +263,11 @@ pub fn clear_install_pid(models_root: &Path) -> Result<()> {
 }
 
 /// Deletes staging trees and partial downloads left by a crash or a kill.
-/// Does not touch a live install whose pid is still running.
+/// Does not touch a live install whose pid is still running or an active in-process install.
 pub fn sweep_incomplete(models_root: &Path) -> Result<()> {
+    if has_active_in_process_install() {
+        return Ok(());
+    }
     if let Some(pid) = read_install_pid(models_root) {
         if pid != std::process::id() && process_alive(pid) {
             return Ok(());
@@ -317,7 +342,9 @@ pub fn install_verified_archive(archive: &Path, models_root: &Path, model_id: &s
     let staging = staging_path(models_root);
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging)?;
-    let extract_res = extract_tar_bz2_safely(archive, &staging);
+    let pins = pins_for(spec.id).context("missing compile-time file pins")?;
+    let allowed_names: Vec<&str> = pins.iter().map(|p| p.relative).collect();
+    let extract_res = extract_tar_bz2_filtered(archive, &staging, Some(&allowed_names));
     if let Err(err) = extract_res {
         let _ = fs::remove_dir_all(&staging);
         clear_install_pid(models_root)?;
@@ -328,6 +355,23 @@ pub fn install_verified_archive(archive: &Path, models_root: &Path, model_id: &s
         let _ = fs::remove_dir_all(&staging);
         clear_install_pid(models_root)?;
         return Err(err);
+    }
+    // Prune unpinned extra files (e.g. duplicate FP32 .onnx weights or test_wavs) so only verified pinned files remain
+    if let Some(pins) = pins_for(spec.id) {
+        if let Ok(rd) = fs::read_dir(&extracted) {
+            for ent in rd.flatten() {
+                let fname = ent.file_name().to_string_lossy().to_string();
+                let keep = pins.iter().any(|p| p.relative == fname);
+                if !keep {
+                    let p = ent.path();
+                    let _ = if p.is_dir() {
+                        fs::remove_dir_all(&p)
+                    } else {
+                        fs::remove_file(&p)
+                    };
+                }
+            }
+        }
     }
     let final_dir = models_root.join(spec.folder_name);
     if final_dir.exists() {
@@ -413,6 +457,26 @@ mod tests {
         assert!(!root.join(".staging").exists());
         assert!(!root.join(".incoming").join("model.tar.bz2.part").exists());
         assert!(!root.join("sherpa-onnx-moonshine-tiny-en-int8").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn in_process_install_guard_protects_active_staging_from_sweep() {
+        let root = std::env::temp_dir().join(format!("kr-inproc-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let staging = root.join(".staging").join("sherpa-onnx-moonshine-tiny-en-int8");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("encode.int8.onnx"), b"active-download").unwrap();
+        {
+            let _guard = InProcessInstallGuard::acquire();
+            sweep_incomplete(&root).unwrap();
+            assert!(
+                staging.join("encode.int8.onnx").exists(),
+                "Active in-process download/staging must not be deleted by sweep_incomplete!"
+            );
+        }
+        sweep_incomplete(&root).unwrap();
+        assert!(!root.join(".staging").exists());
         let _ = fs::remove_dir_all(&root);
     }
 

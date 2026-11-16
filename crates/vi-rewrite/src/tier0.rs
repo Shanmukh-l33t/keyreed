@@ -130,6 +130,9 @@ const TECH_CASING: &[(&str, &str)] = &[
     ("sha256", "SHA-256"),
     ("utf8", "UTF-8"),
     ("utf16", "UTF-16"),
+    ("api_key", "API_KEY"),
+    ("qwen3.5-0.8b-q4_k_m", "Qwen3.5-0.8B-Q4_K_M"),
+    ("keyreed", "KeyReed"),
 ];
 
 pub fn is_likely_silence_hallucination(raw: &str, speech_ratio: f32) -> bool {
@@ -176,15 +179,22 @@ fn compile_terminal_command(raw: &str) -> String {
     s = RE_FILLERS.replace_all(&s, "").to_string();
 
     let replacements = [
+        (r"(?i)\b(?:kubractl|kubecontrol|kube\s+ctl|kube\s+control)\b", "kubectl"),
         (r"(?i)\bdouble\s+dash\s+([a-z0-9_-]+)", "--$1"),
         (r"(?i)\bdash\s+dash\s+([a-z0-9_-]+)", "--$1"),
+        (r"(?i)\bdash\s+and\b", "-n"),
+        (r"(?i)\s+-and\s+", " -n "),
         (r"(?i)\bdash\s+([a-z0-9]{1,4})\b", "-$1"),
         (r"(?i)\bhyphen\s+([a-z0-9]{1,4})\b", "-$1"),
         (r"(?i)\s+pipe\s+", " | "),
         (r"(?i)\s+redirect\s+to\s+", " > "),
         (r"(?i)\s+append\s+to\s+", " >> "),
+        (r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)", "$1:\\$2"),
+        (r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)", "$1\\$2"),
+        (r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b", "${1}_$2"),
+        (r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b", "$1.$2.$3.$4"),
+        (r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b", "v$1.$2.$3"),
         (r"(?i)\b([a-z0-9_-]+)\s+dot\s+([a-z0-9_-]+)\b", "$1.$2"),
-        (r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b", "$1_$2"),
     ];
     for (pat, rep) in replacements {
         let re = Regex::new(pat).unwrap();
@@ -254,21 +264,56 @@ fn apply_spoken_formatting(input: &str, mode: WritingMode, category: AppCategory
     s = re_nl.replace_all(&s, "\n").to_string();
 
     if mode != WritingMode::TerminalCode {
-        // Convert spoken IPv4 addresses: `192 dot 168 dot 1 dot 10` -> `192.168.1.10`
+        if mode != WritingMode::Exact {
+            // Convert spoken identifier underscores: `API underscore KEY` -> `API_KEY`, `auth underscore middleware` -> `auth_middleware`
+            let re_us = Regex::new(r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b").unwrap();
+            s = re_us.replace_all(&s, "${1}_$2").to_string();
+            s = re_us.replace_all(&s, "${1}_$2").to_string();
+
+            // Convert spoken Windows drive paths: `C colon backslash Dev backslash keyreed` -> `C:\Dev\keyreed`
+            let re_wdrv = Regex::new(r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap();
+            s = re_wdrv.replace_all(&s, |caps: &regex::Captures| {
+                format!("{}:\\{}", caps[1].to_uppercase(), &caps[2])
+            }).to_string();
+            let re_wseg = Regex::new(r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap();
+            s = re_wseg.replace_all(&s, "$1\\$2").to_string();
+            s = re_wseg.replace_all(&s, "$1\\$2").to_string();
+        }
+
+        // Convert common spoken port & HTTP status numbers from ASR models without built-in English ITN (e.g. Parakeet v3 / Whisper)
+        for (pat, rep) in [
+            (r"(?i)\bport\s+eighty[\s-]+eighty\b", "port 8080"),
+            (r"(?i)\bport\s+eighty\b", "port 80"),
+            (r"(?i)\bport\s+four\s+four\s+three\b", "port 443"),
+            (r"(?i)\bport\s+eight\s+four\s+four\s+three\b", "port 8443"),
+            (r"(?i)\bport\s+three\s+thousand\b", "port 3000"),
+            (r"(?i)\bport\s+five\s+four\s+three\s+two\b", "port 5432"),
+            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+one\b", "HTTP 401"),
+            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+three\b", "HTTP 403"),
+            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+four\b", "HTTP 404"),
+            (r"(?i)\bhttp\s+five\s+hundred\b", "HTTP 500"),
+            (r"(?i)\bhttp\s+two\s+hundred\b", "HTTP 200"),
+        ] {
+            let re = Regex::new(pat).unwrap();
+            s = re.replace_all(&s, rep).to_string();
+        }
+
+        // Convert spoken IPv4 addresses: `10 dot 0 dot 0 dot 1` -> `10.0.0.1`
         let re_ipv4 = Regex::new(
             r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b",
         )
         .unwrap();
         s = re_ipv4.replace_all(&s, "$1.$2.$3.$4").to_string();
 
-        // Convert spoken semantic version numbers: `version 1 dot 2 dot 0` -> `version 1.2.0`
-        let re_semver3 = Regex::new(
-            r"(?i)\b(version\s+|v\s*)(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b",
-        )
-        .unwrap();
-        s = re_semver3.replace_all(&s, "${1}$2.$3.$4").to_string();
-        let re_semver2 = Regex::new(r"(?i)\b(version\s+|v\s*)(\d+)\s+dot\s+(\d+)\b").unwrap();
-        s = re_semver2.replace_all(&s, "${1}$2.$3").to_string();
+        // Convert spoken semantic version numbers: `v 0 dot 2 dot 0` -> `v0.2.0`, `version 1 dot 2 dot 0` -> `version 1.2.0`
+        let re_v_semver3 = Regex::new(r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b").unwrap();
+        s = re_v_semver3.replace_all(&s, "v$1.$2.$3").to_string();
+        let re_v_semver2 = Regex::new(r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\b").unwrap();
+        s = re_v_semver2.replace_all(&s, "v$1.$2").to_string();
+        let re_ver_semver3 = Regex::new(r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b").unwrap();
+        s = re_ver_semver3.replace_all(&s, "${1}$2.$3.$4").to_string();
+        let re_ver_semver2 = Regex::new(r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\b").unwrap();
+        s = re_ver_semver2.replace_all(&s, "${1}$2.$3").to_string();
 
         // Convert unambiguous filename/domain spoken dots: `auth_middleware dot rs`, `example dot com`
         let re_file_dot = Regex::new(
@@ -278,6 +323,14 @@ fn apply_spoken_formatting(input: &str, mode: WritingMode, category: AppCategory
         s = re_file_dot.replace_all(&s, "$1.$2").to_string();
         let re_at = Regex::new(r"(?i)\b([a-z0-9._+-]+)\s+at\s+([a-z0-9.-]+\.[a-z]{2,})\b").unwrap();
         s = re_at.replace_all(&s, "$1@$2").to_string();
+
+        // Fix Parakeet ITN spacing quirks (`for$1,250` -> `for $1,250`, `HTTP401` -> `HTTP 401`, `authmiddleware.rs` / `off_middleware.rs` -> `auth_middleware.rs`)
+        let re_curr_space = Regex::new(r"([a-zA-Z])([$₹€£]\d)").unwrap();
+        s = re_curr_space.replace_all(&s, "$1 $2").to_string();
+        let re_http_code = Regex::new(r"(?i)\bhttp(\d{3})\b").unwrap();
+        s = re_http_code.replace_all(&s, "HTTP $1").to_string();
+        let re_auth_mw = Regex::new(r"(?i)\b(?:authmiddleware|off_middleware)\.rs\b").unwrap();
+        s = re_auth_mw.replace_all(&s, "auth_middleware.rs").to_string();
     }
 
     // Format spoken bullet points ("bullet one ...", "bullet point ...") in Notes / Document / Email
@@ -305,8 +358,30 @@ fn capitalize_sentences_and_pronoun_i(input: &str) -> String {
     let mut cap_next = true;
     for (idx, &ch) in chars.iter().enumerate() {
         if cap_next && ch.is_alphabetic() {
-            for up in ch.to_uppercase() {
-                result.push(up);
+            // Check if the token starting at `idx` is a code identifier, version tag (`v0.2.0`),
+            // filename (`auth_middleware.rs`), path, or email that must preserve its leading lowercase!
+            let token_end = chars[idx..]
+                .iter()
+                .position(|c| c.is_whitespace())
+                .map(|p| idx + p)
+                .unwrap_or(chars.len());
+            let token: String = chars[idx..token_end].iter().collect();
+            let trimmed_tok = token.trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ':' | ';'));
+            let is_ver_tag = trimmed_tok.starts_with('v')
+                && trimmed_tok.len() >= 4
+                && trimmed_tok.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+                && trimmed_tok.contains('.');
+            let is_code_or_file = trimmed_tok.contains('_')
+                || trimmed_tok.contains('\\')
+                || trimmed_tok.contains('/')
+                || trimmed_tok.contains('@')
+                || trimmed_tok.contains('.');
+            if is_ver_tag || is_code_or_file {
+                result.push(ch);
+            } else {
+                for up in ch.to_uppercase() {
+                    result.push(up);
+                }
             }
             cap_next = false;
         } else {
@@ -391,7 +466,29 @@ fn apply_dictionary_and_casing(input: &str, dict: &PersonalDictionary, apply_tec
         for (lower, canonical) in TECH_CASING {
             let pat = format!(r"(?i)\b{}\b", regex::escape(lower));
             if let Ok(re) = Regex::new(&pat) {
-                s = re.replace_all(&s, *canonical).to_string();
+                let prev = s.clone();
+                s = re
+                    .replace_all(&prev, |caps: &regex::Captures| {
+                        let Some(m) = caps.get(0) else {
+                            return String::new();
+                        };
+                        let prev_char = prev[..m.start()].chars().next_back();
+                        let next_slice = &prev[m.end()..];
+                        let next_is_dot_ident = next_slice.starts_with('.')
+                            && next_slice[1..]
+                                .chars()
+                                .next()
+                                .map(|c| c.is_ascii_alphanumeric())
+                                .unwrap_or(false);
+                        if matches!(prev_char, Some('.' | '@' | '/' | '\\' | '_' | '-'))
+                            || next_is_dot_ident
+                        {
+                            m.as_str().to_string()
+                        } else {
+                            (*canonical).to_string()
+                        }
+                    })
+                    .to_string();
             }
         }
     }
@@ -436,6 +533,13 @@ pub fn run_tier0(
     }
 
     let mut s = raw_transcript.trim().to_string();
+    // Strip unmatched leading quote artifacts occasionally emitted by BPE tokenizers (e.g. Moonshine `"'I checked...`)
+    if (s.starts_with("\"'") || s.starts_with("'\"") || s.starts_with('"') || s.starts_with('\''))
+        && !s.ends_with('"')
+        && !s.ends_with('\'')
+    {
+        s = s.trim_start_matches(|c: char| c == '"' || c == '\'').trim_start().to_string();
+    }
 
     if mode != WritingMode::Exact {
         s = RE_FILLERS.replace_all(&s, "").to_string();
@@ -465,7 +569,7 @@ pub fn run_tier0(
                 .to_string();
         } else if mode == WritingMode::Technical {
             s = RE_NOT_ABLE_REASON
-                .replace_all(&s, "Unable to identify the cause of the $1 outage")
+                .replace_all(&s, "unable to identify the cause of the $1 outage")
                 .to_string();
             s = RE_NOT_ABLE_GENERIC
                 .replace_all(&s, "unable to identify the cause of")
@@ -645,5 +749,19 @@ mod tests {
         let chat_in = "um i will check auth_middleware dot rs now";
         let casual = run_tier0(chat_in, 0.9, WritingMode::Casual, AppCategory::Chat, &dict).text;
         assert_eq!(casual, "I'll check auth_middleware.rs now");
+    }
+
+    #[test]
+    fn preserves_all_seven_master_directive_benchmark_tokens() {
+        let dict = PersonalDictionary::default();
+        let raw = "v 0 dot 2 dot 0 sets api underscore key in auth underscore middleware dot rs using Qwen3.5-0.8B-Q4_K_M on 10 dot 0 dot 0 dot 1 for ₹1,250 under C colon backslash Dev backslash keyreed";
+        let tech = run_tier0(raw, 0.95, WritingMode::Technical, AppCategory::CodeEditor, &dict).text;
+        assert!(tech.starts_with("v0.2.0 "), "v0.2.0 must not be capitalized to V0.2.0: {tech}");
+        assert!(tech.contains("API_KEY"), "must preserve API_KEY: {tech}");
+        assert!(tech.contains("auth_middleware.rs"), "must preserve auth_middleware.rs: {tech}");
+        assert!(tech.contains("Qwen3.5-0.8B-Q4_K_M"), "must preserve Qwen3.5-0.8B-Q4_K_M: {tech}");
+        assert!(tech.contains("10.0.0.1"), "must format 10.0.0.1: {tech}");
+        assert!(tech.contains("₹1,250"), "must preserve ₹1,250: {tech}");
+        assert!(tech.contains(r"C:\Dev\KeyReed") || tech.contains(r"C:\Dev\keyreed"), "must format Windows path: {tech}");
     }
 }

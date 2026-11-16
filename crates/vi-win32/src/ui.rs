@@ -32,6 +32,9 @@ pub enum UiAction {
     CopyLastDictation,
     DownloadDefaultModel,
     DownloadModel(String),
+    CancelModelDownload,
+    TestMicrophone(Option<String>),
+    ResetToDefaults,
     SessionOrPowerReset,
     Quit,
 }
@@ -43,6 +46,8 @@ pub struct SharedUiModel {
     pub rms_level: f32,
     pub status_detail: String,
     pub available_microphones: Vec<String>,
+    pub installed_asr_models: Vec<String>,
+    pub download_in_progress: bool,
 }
 
 #[cfg(windows)]
@@ -111,6 +116,11 @@ pub mod win_gui {
     const IDC_BTN_DL_MODEL: i32 = 2017;
     const IDC_CHK_CUES: i32 = 2018;
     const IDC_CHK_NOTIFY: i32 = 2019;
+    const IDC_STATIC_HDR: i32 = 2020;
+    const IDC_STATIC_STATUS: i32 = 2021;
+    const IDC_BTN_TEST_MIC: i32 = 2022;
+    const IDC_BTN_RESET: i32 = 2023;
+    const IDT_PILL_TIMER: usize = 7001;
 
     struct WinGuiGlobals {
         tx: Sender<UiAction>,
@@ -587,33 +597,60 @@ pub mod win_gui {
         ]
     }
 
-    fn asr_catalog_options() -> [(&'static str, &'static str); 6] {
+    fn asr_catalog_options() -> [(&'static str, &'static str, u32); 6] {
         [
             (
                 "parakeet-tdt-0.6b-v2-int8",
-                "Parakeet TDT 0.6B v2 (Default EN)",
+                "Parakeet TDT 0.6B v2 (EN, ~460 MB)",
+                460,
             ),
             (
                 "parakeet-tdt-0.6b-v3-int8",
-                "Parakeet TDT 0.6B v3 (25 Languages)",
+                "Parakeet TDT 0.6B v3 (Multi, ~465 MB)",
+                465,
             ),
             (
                 "moonshine-base-en-int8",
-                "Moonshine Base (Ultra-Light EN)",
+                "Moonshine Base (Fast EN, ~239 MB)",
+                239,
             ),
             (
                 "moonshine-tiny-en-int8",
-                "Moonshine Tiny (Low-RAM PC)",
+                "Moonshine Tiny (Light EN, ~103 MB)",
+                103,
             ),
             (
                 "sense-voice-small-int8",
-                "SenseVoice Small (Multilingual)",
+                "SenseVoice Small (Multi, ~240 MB)",
+                240,
             ),
             (
                 "whisper-small.en-int8",
-                "Whisper Small.en (INT8 ONNX)",
+                "Whisper Small.en (EN, ~375 MB)",
+                375,
             ),
         ]
+    }
+
+    fn model_status_summary(snap: &SharedUiModel, selected_asr_id: &str) -> String {
+        if !snap.status_detail.is_empty() {
+            return snap.status_detail.clone();
+        }
+        let is_inst = snap
+            .installed_asr_models
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(selected_asr_id));
+        let opts = asr_catalog_options();
+        let (lbl, mb) = opts
+            .iter()
+            .find(|(id, _, _)| *id == selected_asr_id)
+            .map(|(_, l, mb)| (*l, *mb))
+            .unwrap_or((selected_asr_id, 460));
+        if is_inst {
+            format!("Status: Ready — {} [Installed Offline]", lbl)
+        } else {
+            format!("Status: {} not installed (~{} MB) — Click Download", lbl, mb)
+        }
     }
 
     unsafe fn open_settings_window() {
@@ -621,7 +658,7 @@ pub mod win_gui {
         let existing = *g.settings_hwnd.lock() as HWND;
         if !existing.is_null() && IsWindow(existing) != 0 {
             let _ = ShowWindow(existing, SW_SHOWNORMAL);
-            let _ = SetForegroundWindow(existing);
+            let _ = crate::typing::force_foreground_window(existing as isize);
             return;
         }
 
@@ -634,8 +671,8 @@ pub mod win_gui {
         ));
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
         let screen_h = GetSystemMetrics(SM_CYSCREEN);
-        let win_x = ((screen_w - 600) / 2).max(40);
-        let win_y = ((screen_h - 660) / 2).max(40);
+        let win_x = ((screen_w - 640) / 2).max(40);
+        let win_y = ((screen_h - 680) / 2).max(30);
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST,
             cls.as_ptr(),
@@ -643,8 +680,8 @@ pub mod win_gui {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE,
             win_x,
             win_y,
-            600,
-            660,
+            640,
+            680,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             hinst,
@@ -653,7 +690,7 @@ pub mod win_gui {
         if !hwnd.is_null() {
             *g.settings_hwnd.lock() = hwnd as isize;
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
-            let _ = SetForegroundWindow(hwnd);
+            let _ = crate::typing::force_foreground_window(hwnd as isize);
         }
     }
 
@@ -678,8 +715,8 @@ pub mod win_gui {
             WM_CREATE => {
                 let Some(g) = GUI_GLOBALS.get() else { return 0 };
                 let snap = g.model.lock().clone();
-                let cfg = snap.config;
-                let mics = snap.available_microphones;
+                let cfg = snap.config.clone();
+                let mics = snap.available_microphones.clone();
                 let hinst = GetModuleHandleW(std::ptr::null());
                 let font_name = to_wide("Segoe UI");
                 let hfont = CreateFontW(
@@ -723,17 +760,29 @@ pub mod win_gui {
                     ),
                     0,
                     20,
-                    14,
-                    500,
-                    24,
-                    0,
+                    12,
+                    580,
+                    22,
+                    IDC_STATIC_HDR,
                 );
                 if !hdr.is_null() && !hfont_bold.is_null() {
                     SendMessageW(hdr, WM_SETFONT, hfont_bold as WPARAM, 1);
                 }
 
-                mk_ctrl("STATIC", "Microphone Device:", 0, 20, 48, 185, 22, 0);
-                let cmb_mic = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 44, 350, 180, IDC_CMB_MIC);
+                let init_status = model_status_summary(&snap, &cfg.local_asr_model);
+                mk_ctrl(
+                    "STATIC",
+                    &init_status,
+                    0,
+                    20,
+                    36,
+                    580,
+                    20,
+                    IDC_STATIC_STATUS,
+                );
+
+                mk_ctrl("STATIC", "Microphone Device:", 0, 20, 64, 185, 22, 0);
+                let cmb_mic = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 60, 294, 180, IDC_CMB_MIC);
                 let def_mic_lbl = to_wide("System Default Microphone");
                 SendMessageW(cmb_mic, CB_ADDSTRING, 0, def_mic_lbl.as_ptr() as LPARAM);
                 let mut mic_idx = 0usize;
@@ -747,9 +796,10 @@ pub mod win_gui {
                     }
                 }
                 SendMessageW(cmb_mic, CB_SETCURSEL, mic_idx, 0);
+                mk_ctrl("BUTTON", "Test Mic", BS_PUSHBUTTON, 510, 59, 90, 26, IDC_BTN_TEST_MIC);
 
-                mk_ctrl("STATIC", "Push-to-Talk Shortcut:", 0, 20, 82, 185, 22, 0);
-                let cmb_hk = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 78, 350, 180, IDC_CMB_HOTKEY);
+                mk_ctrl("STATIC", "Push-to-Talk Shortcut:", 0, 20, 96, 185, 22, 0);
+                let cmb_hk = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 92, 390, 180, IDC_CMB_HOTKEY);
                 let presets = hotkey_presets();
                 let mut hk_idx = 0usize;
                 for (i, p) in presets.iter().enumerate() {
@@ -761,8 +811,8 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_hk, CB_SETCURSEL, hk_idx, 0);
 
-                mk_ctrl("STATIC", "Activation Behaviour:", 0, 20, 116, 185, 22, 0);
-                let cmb_act = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 112, 350, 120, IDC_CMB_ACT);
+                mk_ctrl("STATIC", "Activation Behaviour:", 0, 20, 128, 185, 22, 0);
+                let cmb_act = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 124, 390, 120, IDC_CMB_ACT);
                 for lbl in ["Hold to Talk (Release to Finish)", "Toggle to Talk (Press Start / Stop)"] {
                     let s = to_wide(lbl);
                     SendMessageW(cmb_act, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
@@ -774,8 +824,8 @@ pub mod win_gui {
                     0,
                 );
 
-                mk_ctrl("STATIC", "Output Delivery:", 0, 20, 150, 185, 22, 0);
-                let cmb_out = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 146, 350, 120, IDC_CMB_OUT);
+                mk_ctrl("STATIC", "Output Delivery:", 0, 20, 160, 185, 22, 0);
+                let cmb_out = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 156, 390, 120, IDC_CMB_OUT);
                 for lbl in [
                     "Auto Insert into Active App (Default)",
                     "Clipboard Only (Ctrl+V)",
@@ -791,8 +841,8 @@ pub mod win_gui {
                 };
                 SendMessageW(cmb_out, CB_SETCURSEL, out_idx, 0);
 
-                mk_ctrl("STATIC", "Default Writing Mode:", 0, 20, 184, 185, 22, 0);
-                let cmb_mode = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 180, 350, 200, IDC_CMB_MODE);
+                mk_ctrl("STATIC", "Default Writing Mode:", 0, 20, 192, 185, 22, 0);
+                let cmb_mode = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 188, 390, 200, IDC_CMB_MODE);
                 let mut m_idx = 0usize;
                 for (i, m) in WritingMode::ALL.iter().enumerate() {
                     let s = to_wide(m.label());
@@ -803,8 +853,8 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_mode, CB_SETCURSEL, m_idx, 0);
 
-                mk_ctrl("STATIC", "Privacy && Processing:", 0, 20, 218, 185, 22, 0);
-                let cmb_prof = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 214, 350, 140, IDC_CMB_PROF);
+                mk_ctrl("STATIC", "Privacy && Processing:", 0, 20, 224, 185, 22, 0);
+                let cmb_prof = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 220, 390, 140, IDC_CMB_PROF);
                 let profs = [
                     ProcessingProfile::MaxPrivacyOffline,
                     ProcessingProfile::Balanced,
@@ -820,11 +870,11 @@ pub mod win_gui {
                 }
                 SendMessageW(cmb_prof, CB_SETCURSEL, p_idx, 0);
 
-                mk_ctrl("STATIC", "Local Speech Engine:", 0, 20, 252, 185, 22, 0);
-                let cmb_asr = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 248, 254, 200, IDC_CMB_ASR);
+                mk_ctrl("STATIC", "Local Speech Engine:", 0, 20, 256, 185, 22, 0);
+                let cmb_asr = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 210, 252, 294, 200, IDC_CMB_ASR);
                 let asr_ids = asr_catalog_options();
                 let mut a_idx = 0usize;
-                for (i, (id, lbl)) in asr_ids.iter().enumerate() {
+                for (i, (id, lbl, _)) in asr_ids.iter().enumerate() {
                     let s = to_wide(lbl);
                     SendMessageW(cmb_asr, CB_ADDSTRING, 0, s.as_ptr() as LPARAM);
                     if *id == cfg.local_asr_model {
@@ -832,10 +882,21 @@ pub mod win_gui {
                     }
                 }
                 SendMessageW(cmb_asr, CB_SETCURSEL, a_idx, 0);
-                mk_ctrl("BUTTON", "Download", BS_PUSHBUTTON, 470, 247, 90, 26, IDC_BTN_DL_MODEL);
+                let is_cur_inst = snap
+                    .installed_asr_models
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(&cfg.local_asr_model));
+                let dl_btn_lbl = if snap.download_in_progress {
+                    "Cancel"
+                } else if is_cur_inst {
+                    "Installed"
+                } else {
+                    "Download"
+                };
+                mk_ctrl("BUTTON", dl_btn_lbl, BS_PUSHBUTTON, 510, 251, 90, 26, IDC_BTN_DL_MODEL);
 
-                mk_ctrl("STATIC", "Local Grammar Model:", 0, 20, 286, 185, 22, 0);
-                let cmb_llm = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 282, 350, 120, IDC_CMB_LLM);
+                mk_ctrl("STATIC", "Local Grammar Model:", 0, 20, 288, 185, 22, 0);
+                let cmb_llm = mk_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST, 210, 284, 390, 120, IDC_CMB_LLM);
                 for lbl in [
                     "Qwen3.5-0.8B-Q4_K_M (Local AI Grammar Polish)",
                     "Tier 0 Deterministic Only (Instant / Low-RAM)",
@@ -846,47 +907,130 @@ pub mod win_gui {
                 let llm_idx = if cfg.local_llm_model.eq_ignore_ascii_case("none") { 1 } else { 0 };
                 SendMessageW(cmb_llm, CB_SETCURSEL, llm_idx, 0);
 
-                let chk_ctx = mk_ctrl("BUTTON", "Automatic App-Context Writing Adaptation", BS_AUTOCHECKBOX, 20, 322, 540, 22, IDC_CHK_AUTO_CTX);
+                let chk_ctx = mk_ctrl("BUTTON", "Automatic App-Context Writing Adaptation", BS_AUTOCHECKBOX, 20, 322, 580, 22, IDC_CHK_AUTO_CTX);
                 SendMessageW(chk_ctx, BM_SETCHECK, usize::from(cfg.auto_context_mode), 0);
 
-                let chk_pill = mk_ctrl("BUTTON", "Show Non-Activating Floating KeyReed Control", BS_AUTOCHECKBOX, 20, 348, 540, 22, IDC_CHK_PILL);
+                let chk_pill = mk_ctrl("BUTTON", "Show Non-Activating Floating KeyReed Control", BS_AUTOCHECKBOX, 20, 348, 580, 22, IDC_CHK_PILL);
                 SendMessageW(chk_pill, BM_SETCHECK, usize::from(cfg.show_floating_mic), 0);
 
-                let chk_cues = mk_ctrl("BUTTON", "Play Subtle Audio Earcons on Start && Completion", BS_AUTOCHECKBOX, 20, 374, 540, 22, IDC_CHK_CUES);
+                let chk_cues = mk_ctrl("BUTTON", "Play Subtle Audio Earcons on Start && Completion", BS_AUTOCHECKBOX, 20, 374, 580, 22, IDC_CHK_CUES);
                 SendMessageW(chk_cues, BM_SETCHECK, usize::from(cfg.audio_cues_enabled), 0);
 
-                let chk_notify = mk_ctrl("BUTTON", "Show Tray Notification on Completion / Fallback", BS_AUTOCHECKBOX, 20, 400, 540, 22, IDC_CHK_NOTIFY);
+                let chk_notify = mk_ctrl("BUTTON", "Show Tray Notification on Completion / Fallback", BS_AUTOCHECKBOX, 20, 400, 580, 22, IDC_CHK_NOTIFY);
                 SendMessageW(chk_notify, BM_SETCHECK, usize::from(cfg.notify_on_ready), 0);
 
-                let chk_excl = mk_ctrl("BUTTON", "Exclude Dictation from Windows Clipboard History && Cloud Sync", BS_AUTOCHECKBOX, 20, 426, 540, 22, IDC_CHK_CLIP_EXCL);
+                let chk_excl = mk_ctrl("BUTTON", "Exclude Dictation from Windows Clipboard History && Cloud Sync", BS_AUTOCHECKBOX, 20, 426, 580, 22, IDC_CHK_CLIP_EXCL);
                 SendMessageW(chk_excl, BM_SETCHECK, usize::from(cfg.privacy.exclude_from_clipboard_history), 0);
 
-                let chk_auto = mk_ctrl("BUTTON", "Start KeyReed Automatically when Windows Starts", BS_AUTOCHECKBOX, 20, 452, 540, 22, IDC_CHK_AUTOSTART);
+                let chk_auto = mk_ctrl("BUTTON", "Start KeyReed Automatically when Windows Starts", BS_AUTOCHECKBOX, 20, 452, 580, 22, IDC_CHK_AUTOSTART);
                 SendMessageW(chk_auto, BM_SETCHECK, usize::from(cfg.autostart_on_login), 0);
 
-                mk_ctrl("STATIC", "Personal Dictionary (comma-separated terms):", 0, 20, 484, 540, 20, 0);
+                mk_ctrl("STATIC", "Personal Dictionary (comma-separated terms):", 0, 20, 484, 580, 20, 0);
                 let vocab_str = cfg.dictionary.vocabulary.join(", ");
-                mk_ctrl("EDIT", &vocab_str, WS_BORDER | ES_AUTOHSCROLL, 20, 506, 540, 26, IDC_EDT_VOCAB);
+                mk_ctrl("EDIT", &vocab_str, WS_BORDER | ES_AUTOHSCROLL, 20, 506, 580, 26, IDC_EDT_VOCAB);
 
                 mk_ctrl("STATIC", "Optional Cloud API Key (DPAPI):", 0, 20, 542, 260, 20, 0);
-                mk_ctrl("EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD_U32, 285, 540, 275, 24, IDC_EDT_APIKEY);
+                mk_ctrl("EDIT", "", WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD_U32, 285, 540, 315, 24, IDC_EDT_APIKEY);
 
-                mk_ctrl("BUTTON", "Save && Apply", BS_PUSHBUTTON, 340, 578, 110, 34, IDC_BTN_SAVE);
-                mk_ctrl("BUTTON", "Close", BS_PUSHBUTTON, 460, 578, 100, 34, IDC_BTN_CLOSE);
+                mk_ctrl("BUTTON", "Reset Defaults", BS_PUSHBUTTON, 20, 584, 125, 34, IDC_BTN_RESET);
+                mk_ctrl("BUTTON", "Save && Apply", BS_PUSHBUTTON, 380, 584, 110, 34, IDC_BTN_SAVE);
+                mk_ctrl("BUTTON", "Close", BS_PUSHBUTTON, 500, 584, 100, 34, IDC_BTN_CLOSE);
                 0
             }
             WM_COMMAND => {
                 let id = (wparam & 0xFFFF) as i32;
+                let notify_code = ((wparam >> 16) & 0xFFFF) as u32;
+                const CBN_SELCHANGE_U32: u32 = 1;
+
+                if id == IDC_CMB_ASR && notify_code == CBN_SELCHANGE_U32 {
+                    if let Some(g) = GUI_GLOBALS.get() {
+                        let asr_ids = asr_catalog_options();
+                        let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
+                        if let Some((aid, _, _)) = asr_ids.get(asr_sel) {
+                            let snap = g.model.lock().clone();
+                            let mut temp_snap = snap.clone();
+                            temp_snap.status_detail.clear();
+                            let msg = model_status_summary(&temp_snap, aid);
+                            let st_hwnd = GetDlgItem(hwnd, IDC_STATIC_STATUS);
+                            if !st_hwnd.is_null() {
+                                let w = to_wide(&msg);
+                                let _ = SetWindowTextW(st_hwnd, w.as_ptr());
+                            }
+                            let dl_hwnd = GetDlgItem(hwnd, IDC_BTN_DL_MODEL);
+                            if !dl_hwnd.is_null() && !snap.download_in_progress {
+                                let is_inst = snap
+                                    .installed_asr_models
+                                    .iter()
+                                    .any(|m| m.eq_ignore_ascii_case(aid));
+                                let bl = to_wide(if is_inst { "Installed" } else { "Download" });
+                                let _ = SetWindowTextW(dl_hwnd, bl.as_ptr());
+                            }
+                        }
+                    }
+                    return 0;
+                }
+
                 if id == IDC_BTN_CLOSE {
                     let _ = DestroyWindow(hwnd);
                     return 0;
                 }
+                if id == IDC_BTN_TEST_MIC {
+                    if let Some(g) = GUI_GLOBALS.get() {
+                        let snap = g.model.lock().clone();
+                        let mic_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_MIC), CB_GETCURSEL, 0, 0) as usize;
+                        let sel_mic = if mic_sel == 0 {
+                            None
+                        } else {
+                            snap.available_microphones.get(mic_sel - 1).cloned()
+                        };
+                        let st_hwnd = GetDlgItem(hwnd, IDC_STATIC_STATUS);
+                        if !st_hwnd.is_null() {
+                            let w = to_wide("Testing microphone for 1.2 seconds — speak now...");
+                            let _ = SetWindowTextW(st_hwnd, w.as_ptr());
+                        }
+                        let _ = g.tx.send(UiAction::TestMicrophone(sel_mic));
+                    }
+                    return 0;
+                }
+                if id == IDC_BTN_RESET {
+                    if let Some(g) = GUI_GLOBALS.get() {
+                        let _ = g.tx.send(UiAction::ResetToDefaults);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_MIC), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_HOTKEY), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_ACT), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_OUT), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_MODE), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_PROF), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CMB_LLM), CB_SETCURSEL, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_AUTO_CTX), BM_SETCHECK, 1, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_PILL), BM_SETCHECK, 1, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_CUES), BM_SETCHECK, 1, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_NOTIFY), BM_SETCHECK, 1, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_CLIP_EXCL), BM_SETCHECK, 0, 0);
+                        SendMessageW(GetDlgItem(hwnd, IDC_CHK_AUTOSTART), BM_SETCHECK, 0, 0);
+                        let empty = to_wide("");
+                        let _ = SetWindowTextW(GetDlgItem(hwnd, IDC_EDT_VOCAB), empty.as_ptr());
+                        let _ = SetWindowTextW(GetDlgItem(hwnd, IDC_EDT_APIKEY), empty.as_ptr());
+                        let st_hwnd = GetDlgItem(hwnd, IDC_STATIC_STATUS);
+                        if !st_hwnd.is_null() {
+                            let w = to_wide("Settings restored to factory defaults.");
+                            let _ = SetWindowTextW(st_hwnd, w.as_ptr());
+                        }
+                    }
+                    return 0;
+                }
                 if id == IDC_BTN_DL_MODEL {
                     if let Some(g) = GUI_GLOBALS.get() {
-                        let asr_ids = asr_catalog_options();
-                        let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
-                        if let Some((aid, _)) = asr_ids.get(asr_sel) {
-                            let _ = g.tx.send(UiAction::DownloadModel((*aid).to_string()));
+                        let is_dl = g.model.lock().download_in_progress;
+                        if is_dl {
+                            let _ = g.tx.send(UiAction::CancelModelDownload);
+                        } else {
+                            let asr_ids = asr_catalog_options();
+                            let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
+                            if let Some((aid, _, _)) = asr_ids.get(asr_sel) {
+                                let _ = g.tx.send(UiAction::DownloadModel((*aid).to_string()));
+                            }
                         }
                     }
                     return 0;
@@ -932,7 +1076,7 @@ pub mod win_gui {
                         };
                         let asr_ids = asr_catalog_options();
                         let asr_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
-                        if let Some((aid, _)) = asr_ids.get(asr_sel) {
+                        if let Some((aid, _, _)) = asr_ids.get(asr_sel) {
                             new_cfg.local_asr_model = (*aid).to_string();
                         }
                         let llm_sel = SendMessageW(GetDlgItem(hwnd, IDC_CMB_LLM), CB_GETCURSEL, 0, 0);
@@ -1092,8 +1236,42 @@ pub mod win_gui {
                 let ev = (lparam & 0xFFFF) as u32;
                 if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
                     show_context_menu(hwnd);
-                } else if ev == WM_LBUTTONDBLCLK {
+                } else if ev == WM_LBUTTONUP || ev == WM_LBUTTONDBLCLK {
                     open_settings_window();
+                }
+                0
+            }
+            WM_TIMER => {
+                if let Some(g) = GUI_GLOBALS.get() {
+                    let ph = *g.pill_hwnd.lock() as HWND;
+                    if !ph.is_null() && IsWindowVisible(ph) != 0 {
+                        let was_hov = g.pill_hovered.load(std::sync::atomic::Ordering::Relaxed);
+                        let mut hover_changed = false;
+                        if was_hov {
+                            let mut pt = POINT { x: 0, y: 0 };
+                            let mut rc = std::mem::zeroed();
+                            if GetCursorPos(&mut pt) != 0 && GetWindowRect(ph, &mut rc) != 0 {
+                                let inside = pt.x >= rc.left
+                                    && pt.x < rc.right
+                                    && pt.y >= rc.top
+                                    && pt.y < rc.bottom;
+                                if !inside {
+                                    g.pill_hovered.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    hover_changed = true;
+                                }
+                            }
+                        }
+                        let snap = g.model.lock().clone();
+                        let is_animated = matches!(
+                            snap.state,
+                            EngineState::Listening
+                                | EngineState::Processing
+                                | EngineState::Correcting
+                        );
+                        if is_animated || hover_changed {
+                            paint_layered_pill(ph, &snap.state, snap.rms_level);
+                        }
+                    }
                 }
                 0
             }
@@ -1116,6 +1294,48 @@ pub mod win_gui {
                             let _ = ShowWindow(ph, SW_HIDE);
                         }
                     }
+                    let sh = *g.settings_hwnd.lock() as HWND;
+                    if !sh.is_null() && IsWindow(sh) != 0 {
+                        let hdr_hwnd = GetDlgItem(sh, IDC_STATIC_HDR);
+                        if !hdr_hwnd.is_null() {
+                            let hdr_txt = to_wide(&format!(
+                                "{} v{} — {}   [{}]",
+                                PRODUCT_NAME,
+                                vi_core::brand::VERSION_STR,
+                                vi_core::brand::PRODUCT_TAGLINE,
+                                snap.state.status_label()
+                            ));
+                            let _ = SetWindowTextW(hdr_hwnd, hdr_txt.as_ptr());
+                        }
+                        let asr_ids = asr_catalog_options();
+                        let asr_sel = SendMessageW(GetDlgItem(sh, IDC_CMB_ASR), CB_GETCURSEL, 0, 0) as usize;
+                        let sel_id = asr_ids
+                            .get(asr_sel)
+                            .map(|(id, _, _)| *id)
+                            .unwrap_or(&snap.config.local_asr_model);
+                        let st_hwnd = GetDlgItem(sh, IDC_STATIC_STATUS);
+                        if !st_hwnd.is_null() {
+                            let msg = model_status_summary(&snap, sel_id);
+                            let w = to_wide(&msg);
+                            let _ = SetWindowTextW(st_hwnd, w.as_ptr());
+                        }
+                        let dl_hwnd = GetDlgItem(sh, IDC_BTN_DL_MODEL);
+                        if !dl_hwnd.is_null() {
+                            let is_inst = snap
+                                .installed_asr_models
+                                .iter()
+                                .any(|m| m.eq_ignore_ascii_case(sel_id));
+                            let lbl = if snap.download_in_progress {
+                                "Cancel"
+                            } else if is_inst {
+                                "Installed"
+                            } else {
+                                "Download"
+                            };
+                            let w = to_wide(lbl);
+                            let _ = SetWindowTextW(dl_hwnd, w.as_ptr());
+                        }
+                    }
                 }
                 0
             }
@@ -1128,10 +1348,11 @@ pub mod win_gui {
                 0
             }
             WM_ALREADY_RUNNING => {
+                open_settings_window();
                 show_tray_balloon(
                     hwnd,
                     PRODUCT_NAME,
-                    "Keyreed is already running. Use the tray icon. A second copy was not started.",
+                    "KeyReed is running. Opened Settings window.",
                 );
                 0
             }
@@ -1231,6 +1452,25 @@ pub mod win_gui {
             }
         }
 
+        pub fn update_status(
+            &self,
+            status_detail: &str,
+            download_in_progress: bool,
+            installed_models: Option<Vec<String>>,
+        ) {
+            {
+                let mut g = self.model.lock();
+                g.status_detail = status_detail.to_string();
+                g.download_in_progress = download_in_progress;
+                if let Some(inst) = installed_models {
+                    g.installed_asr_models = inst;
+                }
+            }
+            unsafe {
+                let _ = PostMessageW(self.tray_hwnd as HWND, WM_SYNC_UI, 0, 0);
+            }
+        }
+
         pub fn notify_toast(&self, title: &str, body: &str) {
             if let Some(g) = GUI_GLOBALS.get() {
                 *g.toast_buf.lock() = Some((title.to_string(), body.to_string()));
@@ -1262,6 +1502,7 @@ pub mod win_gui {
         tx: Sender<UiAction>,
         initial_cfg: AppConfig,
         available_microphones: Vec<String>,
+        installed_asr_models: Vec<String>,
         open_settings_immediately: bool,
     ) -> anyhow::Result<(WinGuiHandle, Box<dyn FnOnce()>)> {
         let model = Arc::new(Mutex::new(SharedUiModel {
@@ -1274,6 +1515,8 @@ pub mod win_gui {
             rms_level: 0.0,
             status_detail: String::new(),
             available_microphones,
+            installed_asr_models,
+            download_in_progress: false,
         }));
 
         let _ = GUI_GLOBALS.set(WinGuiGlobals {
@@ -1381,6 +1624,7 @@ pub mod win_gui {
             if open_settings_immediately {
                 open_settings_window();
             }
+            let _ = SetTimer(tray_hwnd, IDT_PILL_TIMER, 50, None);
 
             let handle = WinGuiHandle {
                 tray_hwnd: tray_hwnd as isize,

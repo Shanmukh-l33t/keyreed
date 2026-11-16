@@ -7,7 +7,7 @@
 !include "MUI2.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "0.2.0"
+!define APP_VERSION "0.3.0"
 
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "..\dist\KeyReed-Setup-x64.exe"
@@ -34,7 +34,7 @@ UninstallIcon "..\assets\keyreed.ico"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.2.0.0"
+VIProductVersion "0.3.0.0"
 VIAddVersionKey "ProductName" "KeyReed"
 VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
@@ -44,6 +44,8 @@ VIAddVersionKey "CompanyName" "KeyReed"
 
 Section "KeyReed" SecApp
   SectionIn RO
+  nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
+  nsExec::ExecToLog 'taskkill /F /IM llama-server.exe'
   SetOutPath "$INSTDIR"
   File /r "..\dist\keyreed-win-x64-slim\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -70,6 +72,7 @@ SectionEnd
 
 Section "Uninstall"
   nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
+  nsExec::ExecToLog 'taskkill /F /IM llama-server.exe'
   Delete "$DESKTOP\KeyReed.lnk"
   Delete "$SMPROGRAMS\KeyReed\KeyReed.lnk"
   Delete "$SMPROGRAMS\KeyReed\KeyReed Settings.lnk"
@@ -90,7 +93,7 @@ Section "Uninstall"
   DeleteRegKey /ifempty HKCU "Software\KeyReed"
 SectionEnd
 
-LangString DESC_App ${LANG_ENGLISH} "KeyReed, the speech runtime, and the default local models."
+LangString DESC_App ${LANG_ENGLISH} "KeyReed application and native speech/grammar runtime (models download on demand in Settings)."
 LangString DESC_Desktop ${LANG_ENGLISH} "Optional shortcut on the desktop."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} $(DESC_App)
