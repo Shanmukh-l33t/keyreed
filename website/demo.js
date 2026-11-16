@@ -8,7 +8,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /* =====================================================
-     Hero scene: hold, speak, release, paste
+     Hero scene: hold, speak, release, typed into the focused field (Auto Insert, the default)
      ===================================================== */
   const scene = $('scene');
   if (scene) {
@@ -62,7 +62,7 @@
     };
 
     const showFinal = () => {
-      setState('ready', 'Pasted');
+      setState('ready', 'Inserted');
       setStep(4);
       setBubble(true, 'KeyReed wrote', true);
       el.btext.textContent = WROTE;
@@ -106,19 +106,17 @@
       el.btext.textContent = WROTE;
       el.btext.classList.remove('fadein'); void el.btext.offsetWidth; el.btext.classList.add('fadein');
       setBubble(true, 'KeyReed wrote', true);
-      setState('ready', 'Ready, press Ctrl+V');
-      await sleep(1500); if (!ok()) return;
 
-      // 4. Paste
-      el.keyPaste.classList.add('down'); setStep(4);
-      await sleep(380); if (!ok()) return;
-      el.mailText.textContent = WROTE;
+      // 4. Typed into the field the cursor was in. The real app types at about 600 characters a second.
+      setStep(4);
       el.mailBody.classList.add('filled');
-      el.mailText.classList.remove('flash'); void el.mailText.offsetWidth; el.mailText.classList.add('flash');
-      setState('idle', 'Pasted');
-      await sleep(260); if (!ok()) return;
-      el.keyPaste.classList.remove('down');
-      await sleep(3800); if (!ok()) return;
+      for (let i = 0; i <= WROTE.length; i += 6) {
+        el.mailText.textContent = WROTE.slice(0, i);
+        await sleep(16); if (!ok()) return;
+      }
+      el.mailText.textContent = WROTE;
+      setState('ready', 'Inserted');
+      await sleep(4200); if (!ok()) return;
       setBubble(false);
       await sleep(800); if (!ok()) return;
       play(); // loop

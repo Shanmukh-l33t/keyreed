@@ -670,3 +670,16 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 :root:not([data-theme="dark"]) .pipe li::before{background:var(--surface)}
 :root:not([data-theme="dark"]) .final-mark{box-shadow:0 20px 50px -14px rgba(5,150,105,.45)}
 @media (max-width:620px){.nav-gh{display:none}}
+
+/* ---------- Real app screenshots ---------- */
+.real{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:40px;align-items:center}
+.real-shot{margin:0;border-radius:12px;overflow:hidden;border:1px solid var(--line-2);box-shadow:var(--card-shadow),0 40px 80px -40px rgba(0,0,0,.4);background:var(--surface)}
+.real-shot img{width:100%;height:auto}
+:root[data-theme="dark"] .real-shot .th-light,:root:not([data-theme="dark"]) .real-shot .th-dark{display:none}
+.states{display:grid;gap:18px;background:var(--bg);color:var(--text);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:26px 24px}
+.states li{display:grid;grid-template-columns:150px minmax(0,1fr);column-gap:18px;row-gap:2px;align-items:center}
+.states img{grid-row:span 2;height:36px;width:auto;justify-self:start}
+.states b{font-weight:600;font-size:15px;line-height:1.3}
+.states span{color:var(--text-2);font-size:14px;line-height:1.4}
+@media (max-width:1020px){.real{grid-template-columns:1fr}}
+@media (max-width:620px){.states li{grid-template-columns:1fr}.states img{grid-row:auto;margin-bottom:6px}}
