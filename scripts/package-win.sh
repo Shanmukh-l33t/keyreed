@@ -74,7 +74,7 @@ LLAMA_FILES=(
   ggml-base.dll ggml-cpu-alderlake.dll ggml-cpu-cannonlake.dll ggml-cpu-cascadelake.dll
   ggml-cpu-cooperlake.dll ggml-cpu-haswell.dll ggml-cpu-icelake.dll ggml-cpu-ivybridge.dll
   ggml-cpu-piledriver.dll ggml-cpu-sandybridge.dll ggml-cpu-sapphirerapids.dll ggml-cpu-skylakex.dll
-  ggml-cpu-sse42.dll ggml-cpu-x64.dll ggml-cpu-zen4.dll ggml-rpc.dll ggml.dll libomp.dll
+  ggml-cpu-sse42.dll ggml-cpu-x64.dll ggml-cpu-zen4.dll ggml-rpc.dll ggml-vulkan.dll ggml.dll libomp.dll
   llama-batched-bench-impl.dll llama-bench-impl.dll llama-cli-impl.dll llama-common.dll
   llama-completion-impl.dll llama-fit-params-impl.dll llama-perplexity-impl.dll llama-quantize-impl.dll
   llama-server-impl.dll llama-server.exe llama.dll

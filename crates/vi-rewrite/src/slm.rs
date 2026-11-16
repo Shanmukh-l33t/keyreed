@@ -121,6 +121,7 @@ pub struct LlamaServerSupervisor {
     /// Discrete GPU id detected in the background (`None` until detection finishes or when there is none).
     gpu: std::sync::Arc<std::sync::OnceLock<Option<String>>>,
     using_gpu: bool,
+    served_once: bool,
     gpu_disabled: bool,
     last_used: Instant,
     startup_failed_permanently: bool,
@@ -167,6 +168,7 @@ impl LlamaServerSupervisor {
             child: None,
             gpu,
             using_gpu: false,
+            served_once: false,
             gpu_disabled,
             last_used: Instant::now(),
             startup_failed_permanently: false,
@@ -195,9 +197,9 @@ impl LlamaServerSupervisor {
                 let health_url = format!("http://127.0.0.1:{}/health", port);
                 let agent = ureq::AgentBuilder::new()
                     .timeout_connect(Duration::from_millis(250))
-                    .timeout_read(Duration::from_secs(8))
+                    .timeout_read(Duration::from_secs(60))
                     .build();
-                let deadline = Instant::now() + Duration::from_secs(12);
+                let deadline = Instant::now() + Duration::from_secs(60);
                 while Instant::now() < deadline {
                     if let Ok(resp) = agent.get(&health_url).call() {
                         if resp.status() == 200 {
@@ -332,6 +334,7 @@ impl LlamaServerSupervisor {
             self.gpu.get().cloned().flatten()
         };
         self.using_gpu = gpu.is_some();
+        self.served_once = false;
         let mut cmd = Command::new(&self.server_bin);
         // A dictation app issues one completion at a time, so a single slot (-np 1) is correct:
         // it halves resident KV memory and avoids the multi-slot ggml_backend_sched assertion
@@ -457,9 +460,12 @@ impl LlamaServerSupervisor {
         });
 
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+        // The first request after a GPU start can include one-time shader compilation (~22 s measured on a
+        // cold shader cache), so it gets a longer timeout instead of silently dropping the rewrite.
+        let read_timeout = if self.using_gpu && !self.served_once { 60 } else { 12 };
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(2))
-            .timeout_read(Duration::from_secs(12))
+            .timeout_read(Duration::from_secs(read_timeout))
             .build();
 
         let t_req = Instant::now();
@@ -469,6 +475,7 @@ impl LlamaServerSupervisor {
             .send_json(payload)
             .context("llama-server completion call failed")?
             .into_json()?;
+        self.served_once = true;
         let req_ms = t_req.elapsed().as_secs_f64() * 1000.0;
         let first_token_ms = resp.timings.map(|t| t.prompt_ms).unwrap_or(0.0);
 
