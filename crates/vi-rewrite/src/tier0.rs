@@ -161,6 +161,20 @@ static RE_CASUAL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (r"(?i)\bwill\s+not\b", "won't"),
     ])
 });
+/// Well-known Indian-English / non-native constructions that have one safe deterministic fix.
+static RE_ESL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    compile_pairs(&[
+        (r"(?i)^myself\s+([a-z]+),?\s+", "I am $1, and "),
+        (r"(?i)\bkindly\s+do\s+the\s+needful(?:\s+and)?\b", "please"),
+        (r"(?i)\bat\s+the\s+earliest\b", "as soon as possible"),
+        (r"(?i)\binformations\b", "information"),
+        (r"(?i)\b(discuss(?:ing|ed|es)?)\s+about\b", "$1"),
+        (r"(?i)\bexplain\s+me\b", "explain to me"),
+        (r"(?i)\b(he|she|it)\s+don't\b", "$1 doesn't"),
+        (r"(?i)\b(we|you|they)\s+was\b", "$1 were"),
+        (r"(?i)\bsince\s+((?:\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|twelve)\s+(?:minutes?|hours?|days?|weeks?|months?|years?))\b", "for $1"),
+    ])
+});
 static RE_SCOPE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+colon\s+colon\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap());
 static RE_COULDNT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcouldn't\b").unwrap());
 
@@ -651,6 +665,9 @@ pub fn run_tier0(
             .replace_all(&s, "I have a question about")
             .to_string();
         s = RE_REVERT_BACK.replace_all(&s, "reply").to_string();
+        for (re, rep) in RE_ESL_RULES.iter() {
+            s = re.replace_all(&s, *rep).to_string();
+        }
         s = RE_LEAD_BASICALLY.replace_all(&s, "").to_string();
     }
 

@@ -325,12 +325,34 @@ impl RewriteEngine {
     }
 }
 
+/// Non-English letters, or romanized-Hindi function words (Hinglish). shortcut: fixed marker list, extend
+/// with a real language-ID model if other code-mixed languages matter.
+fn is_mixed_language(s: &str) -> bool {
+    if s.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
+        return true;
+    }
+    const HINGLISH: &[&str] = &[
+        "yaar", "bhai", "kar", "karo", "karna", "dena", "denge", "nahi", "nahin", "hai", "hain", "kya", "baje",
+        "phir", "subah", "shaam", "theek", "accha", "chahiye", "abhi", "bata", "wala", "gaya", "hoga", "rakhte",
+        "mein", "aur", "toh", "kal", "aaj", "hola", "por", "favor", "equipo",
+    ];
+    s.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| !w.is_empty() && HINGLISH.contains(&w.to_ascii_lowercase().as_str()))
+}
+
 /// True when a Tier-0 paragraph is already cleanly punctuated, capitalized, and grammatical,
 /// so invoking the neural SLM would only add latency without improving the text.
 fn is_already_clean_paragraph(_raw: &str, t0: &str, mode: WritingMode) -> bool {
+    // Benchmark switch: force the SLM for every eligible paragraph to measure what the gate saves/loses.
+    if std::env::var_os("KEYREED_SLM_ALWAYS").is_some() {
+        return false;
+    }
     let t0_t = t0.trim();
     if t0_t.is_empty() {
         return false;
+    }
+    if is_mixed_language(t0_t) {
+        return true; // a 0.8B English-only editor mangles mixed-language text (drops/translates words)
     }
     if t0_t.contains("\n- ") {
         return true;
@@ -339,28 +361,12 @@ fn is_already_clean_paragraph(_raw: &str, t0: &str, mode: WritingMode) -> bool {
         return false;
     }
     let low = t0_t.to_ascii_lowercase();
+    // General non-native-English / grammar-risk markers that deterministic rules cannot fix.
     for bad in [
-        "not able to",
-        "why is the",
-        "what is the",
-        "where is the",
-        "how is the",
-        "we was",
-        "they was",
-        "you was",
-        "he don't",
-        "she don't",
-        "it don't",
-        "kindly ",
-        "from ops team",
-        "from security team",
-        "sounds good ",
-        "honestly ",
-        "hope your week",
-        "hi team ",
-        "yo ",
-        "hey ",
-        "thank you for sending",
+        "not able to", "why is the", "what is the", "where is the", "how is the", "where is ", "how is ",
+        "we was", "they was", "you was", "he don't", "she don't", "it don't",
+        "kindly ", "myself ", "revert back", "do the needful", "having a doubt", "is having ",
+        "am having", "are having",
     ] {
         if low.contains(bad) {
             return false;
@@ -480,6 +486,23 @@ mod tests {
             "smart mode must not apply spoken symbols: {}",
             smart.final_text
         );
+    }
+
+    /// Sanity: the offline profile is the one that disallows network, and it is the app default.
+    #[test]
+    fn esl_rules_fix_known_constructions_but_exact_mode_is_untouched() {
+        let mut eng = RewriteEngine::new(None);
+        let d = PersonalDictionary::default();
+        let p = ProcessingProfile::MaxPrivacyOffline;
+        let run = |e: &mut RewriteEngine, m, t: &str| {
+            e.process(t, 0.9, m, AppCategory::General, p, &d, None, None, None).final_text
+        };
+        let o = run(&mut eng, WritingMode::Smart, "we was discussing about the informations since two hours");
+        assert_eq!(o, "We were discussing the information for two hours.");
+        let o = run(&mut eng, WritingMode::Smart, "he don't know and she can explain me");
+        assert!(o.contains("doesn't") && o.contains("explain to me"), "{o}");
+        let ex = run(&mut eng, WritingMode::Exact, "we was discussing about the informations");
+        assert!(ex.contains("informations") && ex.contains("we was") || ex.contains("We was"), "{ex}");
     }
 
     /// Sanity: the offline profile is the one that disallows network, and it is the app default.
