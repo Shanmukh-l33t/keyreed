@@ -29,17 +29,17 @@
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** release **0.5.0** (built and tested on Windows 11 x64). The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** release **0.5.1** (built and tested on Windows 11 x64). The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`23.0 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+1. Download **`KeyReed-Setup-x64.exe`** (`23.1 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
 2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
 5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.5.0-windows-x64-full-offline.zip` (1.38 GB), which already contains the speech and grammar models.
+No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.5.1-windows-x64-full-offline.zip` (1.38 GB), which already contains the speech and grammar models.
 
 ## Why KeyReed
 

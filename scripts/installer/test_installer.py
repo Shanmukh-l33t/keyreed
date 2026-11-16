@@ -68,7 +68,7 @@ def gui_cancel():
     p = subprocess.Popen([str(EXE)])
     hw = d.find("Setup", p.pid)
     time.sleep(0.6)
-    d.click(hw, d.IDCANCEL)
+    d.click(hw, d.SECONDARY)  # the KeyReed "Cancel" button
     dlg = None
     for _ in range(30):  # the "are you sure" message box is a second top-level window of the same process
         time.sleep(0.2)

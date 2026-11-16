@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-11-17)
 
-In the source on `main`; not in a downloadable release yet.
+Design release: new installer, redesigned Settings controls. Speech, grammar and insertion code are unchanged from 0.5.0.
 
+- **Installer**: a frameless KeyReed window replaces the standard setup wizard. Welcome screen with install location and a desktop-shortcut switch; while installing, a waveform turns into lines of text as the real progress advances, with tips about KeyReed underneath; a "KeyReed is ready" screen with a launch switch. The uninstaller uses the same look and says what it keeps (settings, dictionary, downloaded models). Drawn by a small native plugin (`scripts/installer/kr_setup.c`, plain GDI); NSIS still does all the installing, so paths, shortcuts, upgrade and uninstall behave as in 0.5.0. Animation stops when Windows animations are off.
 - **Settings controls**: drop-downs and text boxes are drawn by KeyReed instead of the 3D system controls. A drop-down opens the native Windows menu under the field (Up/Down change the value, Alt+Down or F4 open it). Popup menus follow the dark or light theme. Toggles slide (150 ms; instant when Windows animations are off).
 - **Speech models page**: SenseVoice and Whisper showed 240 MB and 375 MB downloads; the real archives are 999 MB and 606 MB. A test now keeps the page in line with the pinned catalog. The model in use is marked once, and badges are spaced from the measured name.
 - **Listener**: 5 dp gap between the logo and the label or waveform.
