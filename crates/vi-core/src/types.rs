@@ -395,6 +395,42 @@ pub struct PipelineMetrics {
     pub total_release_to_ready_ms: f64,
     pub used_tier: String,
     pub asr_model_id: String,
+    #[serde(default)]
+    pub mic_init_ms: f64,
+    #[serde(default)]
+    pub first_frame_ms: f64,
+    #[serde(default)]
+    pub chunk_finalize_ms: f64,
+    #[serde(default)]
+    pub model_load_ms: f64,
+    #[serde(default)]
+    pub post_release_asr_ms: f64,
+    #[serde(default)]
+    pub chunks_total: usize,
+    #[serde(default)]
+    pub chunks_streamed: usize,
+    #[serde(default)]
+    pub norm_ms: f64,
+    #[serde(default)]
+    pub tier0_ms: f64,
+    #[serde(default)]
+    pub slm_startup_ms: f64,
+    #[serde(default)]
+    pub slm_first_token_ms: f64,
+    #[serde(default)]
+    pub slm_ms: f64,
+    #[serde(default)]
+    pub paragraph_ms: f64,
+    #[serde(default)]
+    pub target_id_ms: f64,
+    #[serde(default)]
+    pub end_to_end_ms: f64,
+    #[serde(default)]
+    pub cpu_ms: f64,
+    #[serde(default)]
+    pub working_set_mb: f64,
+    #[serde(default)]
+    pub cold_model: bool,
 }
 
 /// Complete output of one transcription + correction cycle.

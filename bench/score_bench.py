@@ -36,8 +36,11 @@ def num_words(n):
 
 def norm_token(tok):
     """One whitespace token -> list of normalised words (numbers spelled out, punctuation dropped)."""
-    t = tok.lower().replace("%", " percent ").replace("$", " dollars ").replace("\u20b9", " rupees ")
+    t = tok.lower()
     t = re.sub(r"(?<=\d),(?=\d{3})", "", t)
+    t = re.sub(r"\$(\d+(?:\.\d+)?)", r"\1 dollars ", t)
+    t = re.sub(r"\u20b9(\d+(?:\.\d+)?)", r"\1 rupees ", t)
+    t = t.replace("%", " percent ").replace("$", " dollars ").replace("\u20b9", " rupees ")
     t = re.sub(r"[\u2018\u2019]", "'", t)
     out = []
     for part in re.split(r"[^a-z0-9'.:]+", t):

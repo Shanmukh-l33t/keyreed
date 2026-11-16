@@ -91,8 +91,20 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     for model in a.models.split(","):
+        name = f"{model}{'.live' if a.live else ''}.json"
+        outpath = outdir / name
         records = []
+        done_ids = set()
+        if outpath.exists():
+            try:
+                prev = json.loads(outpath.read_text(encoding="utf-8"))
+                records = [r for r in prev.get("records", []) if r.get("runs")]
+                done_ids = {r["id"] for r in records}
+            except Exception:
+                records = []
         for c in clips:
+            if c["id"] in done_ids:
+                continue
             cmd = [a.exe, "--transcribe-wav", str(BENCH / "corpus" / c["wav"]), "--asr-model", model,
                    "--llm-model", a.llm, "--mode", a.mode, "--repeat", str(a.repeat)]
             if a.live:
@@ -102,7 +114,7 @@ def main():
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = p.communicate()
             wall = time.perf_counter() - t0
-            cpu_s, peak_mb = proc_stats(p._handle)
+            cpu_s, peak_mb = proc_stats(getattr(p, "_handle", 0))
             runs = parse_json_stream(out.decode("utf-8", "replace"))
             rec = {"id": c["id"], "duration_s": c["duration_s"], "process_wall_s": round(wall, 2),
                    "process_cpu_s": cpu_s, "peak_working_set_mb": peak_mb, "exit_code": p.returncode, "runs": runs}
@@ -112,12 +124,11 @@ def main():
             last = runs[-1]["result"]["metrics"] if runs else {}
             print(f"{model} {c['id']:34s} {c['duration_s']:7.1f}s  cold_total={runs[0]['result']['metrics'].get('total_release_to_ready_ms', -1) if runs else -1:9.0f}ms"
                   f"  warm_total={last.get('total_release_to_ready_ms', -1):9.0f}ms  asr={last.get('asr_ms', -1):8.0f}ms  peak={peak_mb}MB", flush=True)
-        name = f"{model}{'.live' if a.live else ''}.json"
-        (outdir / name).write_text(json.dumps({
-            "tag": a.tag, "model": model, "exe": a.exe, "live": a.live, "mode": a.mode, "llm": a.llm,
-            "repeat": a.repeat, "cpu": cpu, "ram_gb": ram, "date": time.strftime("%Y-%m-%d %H:%M"),
-            "records": records}, indent=1, ensure_ascii=False), encoding="utf-8")
-        print("wrote", outdir / name)
+            outpath.write_text(json.dumps({
+                "tag": a.tag, "model": model, "exe": a.exe, "live": a.live, "mode": a.mode, "llm": a.llm,
+                "repeat": a.repeat, "cpu": cpu, "ram_gb": ram, "date": time.strftime("%Y-%m-%d %H:%M"),
+                "records": records}, indent=1, ensure_ascii=False), encoding="utf-8")
+        print("wrote", outpath)
 
 
 if __name__ == "__main__":

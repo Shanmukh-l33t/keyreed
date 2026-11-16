@@ -34,6 +34,8 @@ pub struct TranscriptionOutput {
     pub sentences: Vec<Sentence>,
     /// Number of separately decoded audio chunks.
     pub chunks: usize,
+    /// Total 16 kHz samples fed into this transcription.
+    pub audio_samples: usize,
 }
 
 #[derive(Deserialize)]
@@ -72,7 +74,7 @@ impl SileroVad {
         cfg.silero_vad.min_silence_duration = 0.45;
         cfg.silero_vad.min_speech_duration = 0.18;
         cfg.silero_vad.window_size = 512;
-        cfg.silero_vad.max_speech_duration = 22.0;
+        cfg.silero_vad.max_speech_duration = 14.0;
         cfg.sample_rate = 16_000;
         cfg.num_threads = 1;
         cfg.provider = provider_c.as_ptr();
@@ -140,9 +142,12 @@ impl SileroVad {
 /// ("um, I checked…" said quietly), which dropped the first word(s) in live microphone tests.
 const PAD_PRE: usize = 4_800;
 const PAD_POST: usize = 4_000;
-/// How long after a span ended we wait before deciding nothing will be merged into it. Covers
-/// the detector's own delay in reporting that new speech has started.
+/// How long after a short span ended we wait before deciding nothing will be merged into it.
 const ONSET_MARGIN: usize = 6_400;
+/// Once a group has at least 5 s of speech, any Silero VAD sentence pause (>= 450 ms = 7,200 samples)
+/// closes and decodes it immediately without waiting for `merge_gap + ONSET_MARGIN`.
+const READY_SPAN_LEN: usize = 5 * 16_000;
+const VAD_MIN_SILENCE: usize = 7_000;
 
 /// Chunking policy for decoding speech spans.
 #[derive(Debug, Clone, Copy)]
@@ -180,18 +185,28 @@ fn ready_groups(
     let mut groups = Vec::new();
     let mut g_start = 0usize;
     for i in 1..=pending.len() {
-        let closes = i == pending.len()
-            || pending[i].0.saturating_sub(pending[i - 1].1) >= policy.merge_gap
-            || pending[i].1 - pending[g_start].0 > policy.max_chunk;
+        let span_len = pending[i - 1].1.saturating_sub(pending[g_start].0);
+        let closes = if i == pending.len() {
+            true
+        } else {
+            let gap = pending[i].0.saturating_sub(pending[i - 1].1);
+            gap >= policy.merge_gap
+                || (span_len >= READY_SPAN_LEN && gap >= VAD_MIN_SILENCE)
+                || pending[i].1.saturating_sub(pending[g_start].0) > policy.max_chunk
+        };
         if !closes {
             continue;
         }
         if i == pending.len() && !fin {
-            // Last group: only ready once we know the next speech cannot be merged into it.
             let last_end = pending[i - 1].1;
-            let quiet_until = speech_since.unwrap_or(fed);
-            if quiet_until.saturating_sub(last_end) < policy.merge_gap + ONSET_MARGIN {
-                break;
+            if span_len >= READY_SPAN_LEN && fed >= last_end + PAD_POST {
+                // Group is already >= 5 s and has its post-padding; next speech will start a new chunk.
+            } else {
+                // Short group: only ready once we know the next speech cannot be merged into it.
+                let quiet_until = speech_since.unwrap_or(fed);
+                if quiet_until.saturating_sub(last_end) < policy.merge_gap + ONSET_MARGIN {
+                    break;
+                }
             }
         }
         groups.push(i - g_start);
@@ -413,7 +428,11 @@ impl LocalAsrEngine {
             unsafe { MaybeUninit::zeroed().assume_init() };
         cfg.feat_config.sample_rate = 16_000;
         cfg.feat_config.feature_dim = 80;
-        cfg.model_config.num_threads = num_threads.clamp(1, 16) as i32;
+        let thr = std::env::var("KEYREED_ASR_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(num_threads);
+        cfg.model_config.num_threads = thr.clamp(1, 16) as i32;
         cfg.model_config.provider = push_c("cpu")?;
         cfg.model_config.debug = 0;
         cfg.decoding_method = push_c("greedy_search")?;
@@ -617,6 +636,7 @@ impl LocalAsrEngine {
             }
         }
         let mut out = std::mem::take(&mut self.stream.out);
+        out.audio_samples = fed;
         out.speech_ratio = if fed == 0 { 0.0 } else { self.stream.speech_samples as f32 / fed as f32 };
         out.text = out.sentences.iter().map(|s| s.0.as_str()).collect::<Vec<_>>().join(" ");
         self.stream_reset();
@@ -642,7 +662,17 @@ impl LocalAsrEngine {
             }
             let sentences = split_sentences(&text);
             let pauses = sentence_pauses(sentences.len(), &tokens, &times);
-            let gap_ms = st.last_end.map(|e| (first.0.saturating_sub(e) / 16) as u32).unwrap_or(0);
+            let gap_ms = st
+                .last_end
+                .map(|e| {
+                    let vad_gap = (first.0.saturating_sub(e) / 16) as u32;
+                    let tok_gap = times
+                        .first()
+                        .map(|&t| ((from as f32 / 16.0 + t * 1000.0) - (e as f32 / 16.0)).max(0.0) as u32)
+                        .unwrap_or(0);
+                    vad_gap.max(tok_gap)
+                })
+                .unwrap_or(0);
             for (i, s) in sentences.iter().enumerate() {
                 let pause = if i == 0 { gap_ms } else { pauses.as_ref().map(|p| p[i - 1]).unwrap_or(0) };
                 st.out.sentences.push((s.to_string(), pause));

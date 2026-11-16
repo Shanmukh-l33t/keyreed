@@ -334,3 +334,70 @@ pub fn current_process_memory_mb() -> (f64, f64) {
         (0.0, 0.0)
     }
 }
+
+/// Returns cumulative CPU time (kernel + user) of the current process in milliseconds.
+pub fn current_process_cpu_ms() -> f64 {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let (mut c, mut e, mut k, mut u): (FILETIME, FILETIME, FILETIME, FILETIME) = std::mem::zeroed();
+        if GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) != 0 {
+            let kt = ((k.dwHighDateTime as u64) << 32) | (k.dwLowDateTime as u64);
+            let ut = ((u.dwHighDateTime as u64) << 32) | (u.dwLowDateTime as u64);
+            return ((kt + ut) as f64) / 10_000.0;
+        }
+        0.0
+    }
+    #[cfg(not(windows))]
+    {
+        0.0
+    }
+}
+
+/// Returns available physical system RAM in MiB (`GlobalMemoryStatusEx`).
+pub fn system_available_ram_mb() -> u64 {
+    #[cfg(windows)]
+    unsafe {
+        #[repr(C)]
+        struct MemoryStatusEx {
+            dw_length: u32,
+            dw_memory_load: u32,
+            ull_total_phys: u64,
+            ull_avail_phys: u64,
+            ull_total_page_file: u64,
+            ull_avail_page_file: u64,
+            ull_total_virtual: u64,
+            ull_avail_virtual: u64,
+            ull_avail_extended_virtual: u64,
+        }
+        extern "system" {
+            fn GlobalMemoryStatusEx(lpBuffer: *mut MemoryStatusEx) -> i32;
+        }
+        let mut ms: MemoryStatusEx = std::mem::zeroed();
+        ms.dw_length = std::mem::size_of::<MemoryStatusEx>() as u32;
+        if GlobalMemoryStatusEx(&mut ms) != 0 {
+            return ms.ull_avail_phys / (1024 * 1024);
+        }
+        8_192
+    }
+    #[cfg(not(windows))]
+    {
+        8_192
+    }
+}
+
+/// Appends one JSONL performance trace record when `KEYREED_PERF_TRACE` is set. Never logs transcript text.
+pub fn perf_trace_record(json_line: &str) {
+    let Ok(path) = std::env::var("KEYREED_PERF_TRACE") else {
+        return;
+    };
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{json_line}")
+        });
+}

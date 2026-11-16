@@ -35,7 +35,7 @@ static RE_NOT_ABLE_REASON: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(?:i\s+)?am\s+not\s+able\s+to\s+find\s+what\s+is\s+the\s+reason\s+for\s+the\s+([a-z0-9_ -]+?)\s+going\s+down\b").unwrap()
 });
 static RE_NOT_ABLE_GENERIC: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(?:am|was|are|were)\s+not\s+able\s+to\s+find\s+what\s+is\s+the\s+reason\s+for\b").unwrap()
+    Regex::new(r"(?i)\b(?:am|is|was|are|were)\s+not\s+able\s+to\s+find\s+what\s+is\s+the\s+reason\s+for\b").unwrap()
 });
 static RE_INDIRECT_WHAT_IS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(find|identify|understand|know|see|tell|explain)\s+(what|why|where|how|who)\s+is\s+(the\s+[a-z0-9_]+)\s+(going|failing|crashing|happening|causing|breaking|timing)\b").unwrap()
@@ -58,6 +58,111 @@ static RE_DANGEROUS_CMD: Lazy<Regex> = Lazy::new(|| {
     )
     .unwrap()
 });
+
+fn compile_pairs(pairs: &[(&'static str, &'static str)]) -> Vec<(Regex, &'static str)> {
+    pairs.iter().map(|&(p, r)| (Regex::new(p).unwrap(), r)).collect()
+}
+
+static RE_TERM_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    compile_pairs(&[
+        (r"(?i)\b(?:kubractl|kubecontrol|kube\s+ctl|kube\s+control)\b", "kubectl"),
+        (r"(?i)\bdouble\s+dash\s+([a-z0-9_-]+)", "--$1"),
+        (r"(?i)\bdash\s+dash\s+([a-z0-9_-]+)", "--$1"),
+        (r"(?i)\bdash\s+and\b", "-n"),
+        (r"(?i)\s+-and\s+", " -n "),
+        (r"(?i)\bdash\s+([a-z0-9]{1,4})\b", "-$1"),
+        (r"(?i)\bhyphen\s+([a-z0-9]{1,4})\b", "-$1"),
+        (r"(?i)\s+pipe\s+", " | "),
+        (r"(?i)\s+redirect\s+to\s+", " > "),
+        (r"(?i)\s+append\s+to\s+", " >> "),
+        (r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)", "$1:\\$2"),
+        (r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)", "$1\\$2"),
+        (r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b", "${1}_$2"),
+        (r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b", "$1.$2.$3.$4"),
+        (r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b", "v$1.$2.$3"),
+        (r"(?i)\b([a-z0-9_-]+)\s+dot\s+([a-z0-9_-]+)\b", "$1.$2"),
+    ])
+});
+
+static RE_NEW_PARAGRAPH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\s*\b(?:new|next)\s+paragraph\b[.,]?\s*").unwrap());
+static RE_NEW_LINE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\s*\b(?:new|next)\s+line\b[.,]?\s*").unwrap());
+static RE_UNDERSCORE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b").unwrap());
+static RE_WIN_DRIVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap());
+static RE_WIN_SEG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap());
+static RE_PORT_HTTP_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    compile_pairs(&[
+        (r"(?i)\bport\s+eighty[\s-]+eighty\b", "port 8080"),
+        (r"(?i)\bport\s+eighty\b", "port 80"),
+        (r"(?i)\bport\s+four\s+four\s+three\b", "port 443"),
+        (r"(?i)\bport\s+eight\s+four\s+four\s+three\b", "port 8443"),
+        (r"(?i)\bport\s+three\s+thousand\b", "port 3000"),
+        (r"(?i)\bport\s+five\s+four\s+three\s+two\b", "port 5432"),
+        (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+one\b", "HTTP 401"),
+        (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+three\b", "HTTP 403"),
+        (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+four\b", "HTTP 404"),
+        (r"(?i)\bhttp\s+five\s+hundred\b", "HTTP 500"),
+        (r"(?i)\bhttp\s+two\s+hundred\b", "HTTP 200"),
+        (r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b", "$1.$2.$3.$4"),
+        (r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b", "v$1.$2.$3"),
+        (r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\b", "v$1.$2"),
+        (r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b", "${1}$2.$3.$4"),
+        (r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\b", "${1}$2.$3"),
+        (r"(?i)\b([a-z0-9_-]+)\s+dot\s+(rs|py|js|ts|tsx|jsx|go|c|cpp|h|json|yaml|yml|toml|md|txt|exe|dll|ps1|sh|sql|com|org|net|io|ai|dev|in|cc|local)\b", "$1.$2"),
+        (r"(?i)\b([a-z0-9_-]+)\s+dot\s+([a-z0-9_-]+\.[a-z]{2,})\b", "$1.$2"),
+        (r"(?i)\b([a-z0-9._+-]+)\s+at\s+([a-z0-9.-]+\.[a-z]{2,})\b", "$1@$2"),
+        (r"(?i)\b(\d{1,2}(?::\d{2})?)\s*am\b", "$1 AM"),
+        (r"(?i)\b(\d{1,2}(?::\d{2})?)\s*pm\b", "$1 PM"),
+        (r"([a-zA-Z])([$₹€£]\d)", "$1 $2"),
+        (r"(?i)\bhttp(\d{3})\b", "HTTP $1"),
+        (r"(?i)\b(?:authmiddleware|off_middleware)\.rs\b", "auth_middleware.rs"),
+        (r"(?i)\bcubanets\b", "Kubernetes"),
+    ])
+});
+static RE_BULLET: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:^|\s+)(?:bullet\s+point|bullet\s+(?:one|two|three|four|five|\d+))[:.,]?\s+").unwrap()
+});
+static RE_PRONOUN_I: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi\b").unwrap());
+static RE_PRONOUN_IM: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi'(m|ve|ll|d)\b").unwrap());
+static RE_TECH_CASING: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    TECH_CASING
+        .iter()
+        .map(|&(lower, canonical)| (Regex::new(&format!(r"(?i)\b{}\b", regex::escape(lower))).unwrap(), canonical))
+        .collect()
+});
+static RE_LEAD_BASICALLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:so[,]?\s+)?basically[,]?\s+").unwrap());
+static RE_FORMAL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    compile_pairs(&[
+        (r"(?i)^hey\b[,]?\s*", "Hello, "),
+        (r"(?i)\bi'm\b", "I am"),
+        (r"(?i)\bcan't\b", "cannot"),
+        (r"(?i)\bwon't\b", "will not"),
+        (r"(?i)\bcouldn't\b", "could not"),
+        (r"(?i)\bshouldn't\b", "should not"),
+        (r"(?i)\bwouldn't\b", "would not"),
+        (r"(?i)\bdidn't\b", "did not"),
+        (r"(?i)\bdoesn't\b", "does not"),
+        (r"(?i)\bisn't\b", "is not"),
+        (r"(?i)\baren't\b", "are not"),
+        (r"(?i)\bgonna\b", "going to"),
+        (r"(?i)\bwanna\b", "want to"),
+        (r"(?i)\bkinda\b", "somewhat"),
+    ])
+});
+static RE_CASUAL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    compile_pairs(&[
+        (r"(?i)\bi\s+am\b", "I'm"),
+        (r"(?i)\bi\s+will\b", "I'll"),
+        (r"(?i)\bwe\s+are\b", "we're"),
+        (r"(?i)\bdo\s+not\b", "don't"),
+        (r"(?i)\bdoes\s+not\b", "doesn't"),
+        (r"(?i)\bdid\s+not\b", "didn't"),
+        (r"(?i)\bcannot\b", "can't"),
+        (r"(?i)\bcan\s+not\b", "can't"),
+        (r"(?i)\bwill\s+not\b", "won't"),
+    ])
+});
+static RE_SCOPE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+colon\s+colon\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap());
+static RE_COULDNT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcouldn't\b").unwrap());
 
 const KNOWN_HALLUCINATIONS: &[&str] = &[
     "thank you for watching",
@@ -185,28 +290,9 @@ fn compile_terminal_command(raw: &str) -> String {
     // Remove leading conversational filler if user accidentally said "um" before command
     s = RE_FILLERS.replace_all(&s, "").to_string();
 
-    let replacements = [
-        (r"(?i)\b(?:kubractl|kubecontrol|kube\s+ctl|kube\s+control)\b", "kubectl"),
-        (r"(?i)\bdouble\s+dash\s+([a-z0-9_-]+)", "--$1"),
-        (r"(?i)\bdash\s+dash\s+([a-z0-9_-]+)", "--$1"),
-        (r"(?i)\bdash\s+and\b", "-n"),
-        (r"(?i)\s+-and\s+", " -n "),
-        (r"(?i)\bdash\s+([a-z0-9]{1,4})\b", "-$1"),
-        (r"(?i)\bhyphen\s+([a-z0-9]{1,4})\b", "-$1"),
-        (r"(?i)\s+pipe\s+", " | "),
-        (r"(?i)\s+redirect\s+to\s+", " > "),
-        (r"(?i)\s+append\s+to\s+", " >> "),
-        (r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)", "$1:\\$2"),
-        (r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)", "$1\\$2"),
-        (r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b", "${1}_$2"),
-        (r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b", "$1.$2.$3.$4"),
-        (r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b", "v$1.$2.$3"),
-        (r"(?i)\b([a-z0-9_-]+)\s+dot\s+([a-z0-9_-]+)\b", "$1.$2"),
-    ];
-    for (pat, rep) in replacements {
-        let re = Regex::new(pat).unwrap();
-        s = re.replace_all(&s, rep).to_string();
-        s = re.replace_all(&s, rep).to_string();
+    for (re, rep) in RE_TERM_RULES.iter() {
+        s = re.replace_all(&s, *rep).to_string();
+        s = re.replace_all(&s, *rep).to_string();
     }
 
     // Deterministic spoken `slash` path assembler
@@ -265,79 +351,27 @@ fn compile_terminal_command(raw: &str) -> String {
 
 fn apply_spoken_formatting(input: &str, mode: WritingMode, category: AppCategory) -> String {
     let mut s = input.to_string();
-    let re_np = Regex::new(r"(?i)\s*\b(?:new|next)\s+paragraph\b[.,]?\s*").unwrap();
-    s = re_np.replace_all(&s, "\n\n").to_string();
-    let re_nl = Regex::new(r"(?i)\s*\b(?:new|next)\s+line\b[.,]?\s*").unwrap();
-    s = re_nl.replace_all(&s, "\n").to_string();
+    s = RE_NEW_PARAGRAPH.replace_all(&s, "\n\n").to_string();
+    s = RE_NEW_LINE.replace_all(&s, "\n").to_string();
 
     if mode != WritingMode::TerminalCode {
         if mode != WritingMode::Exact {
             // Convert spoken identifier underscores: `API underscore KEY` -> `API_KEY`, `auth underscore middleware` -> `auth_middleware`
-            let re_us = Regex::new(r"(?i)\b([a-z0-9_]+)\s+underscore\s+([a-z0-9_]+)\b").unwrap();
-            s = re_us.replace_all(&s, "${1}_$2").to_string();
-            s = re_us.replace_all(&s, "${1}_$2").to_string();
+            s = RE_UNDERSCORE.replace_all(&s, "${1}_$2").to_string();
+            s = RE_UNDERSCORE.replace_all(&s, "${1}_$2").to_string();
 
             // Convert spoken Windows drive paths: `C colon backslash Dev backslash keyreed` -> `C:\Dev\keyreed`
-            let re_wdrv = Regex::new(r"(?i)\b([a-z])\s+colon\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap();
-            s = re_wdrv.replace_all(&s, |caps: &regex::Captures| {
+            s = RE_WIN_DRIVE.replace_all(&s, |caps: &regex::Captures| {
                 format!("{}:\\{}", caps[1].to_uppercase(), &caps[2])
             }).to_string();
-            let re_wseg = Regex::new(r"(?i)([a-z]:\\[a-z0-9_.\-\\]+)\s+back\s*slash\s*([a-z0-9_.-]+)").unwrap();
-            s = re_wseg.replace_all(&s, "$1\\$2").to_string();
-            s = re_wseg.replace_all(&s, "$1\\$2").to_string();
+            s = RE_WIN_SEG.replace_all(&s, "$1\\$2").to_string();
+            s = RE_WIN_SEG.replace_all(&s, "$1\\$2").to_string();
         }
 
-        // Convert common spoken port & HTTP status numbers from ASR models without built-in English ITN (e.g. Parakeet v3 / Whisper)
-        for (pat, rep) in [
-            (r"(?i)\bport\s+eighty[\s-]+eighty\b", "port 8080"),
-            (r"(?i)\bport\s+eighty\b", "port 80"),
-            (r"(?i)\bport\s+four\s+four\s+three\b", "port 443"),
-            (r"(?i)\bport\s+eight\s+four\s+four\s+three\b", "port 8443"),
-            (r"(?i)\bport\s+three\s+thousand\b", "port 3000"),
-            (r"(?i)\bport\s+five\s+four\s+three\s+two\b", "port 5432"),
-            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+one\b", "HTTP 401"),
-            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+three\b", "HTTP 403"),
-            (r"(?i)\bhttp\s+four\s+(?:oh|zero)\s+four\b", "HTTP 404"),
-            (r"(?i)\bhttp\s+five\s+hundred\b", "HTTP 500"),
-            (r"(?i)\bhttp\s+two\s+hundred\b", "HTTP 200"),
-        ] {
-            let re = Regex::new(pat).unwrap();
-            s = re.replace_all(&s, rep).to_string();
+        // Convert common spoken port, HTTP status, IPv4, semver, filename/domain dots, email, and currency spacing
+        for (re, rep) in RE_PORT_HTTP_RULES.iter() {
+            s = re.replace_all(&s, *rep).to_string();
         }
-
-        // Convert spoken IPv4 addresses: `10 dot 0 dot 0 dot 1` -> `10.0.0.1`
-        let re_ipv4 = Regex::new(
-            r"(?i)\b(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\s+dot\s+(\d{1,3})\b",
-        )
-        .unwrap();
-        s = re_ipv4.replace_all(&s, "$1.$2.$3.$4").to_string();
-
-        // Convert spoken semantic version numbers: `v 0 dot 2 dot 0` -> `v0.2.0`, `version 1 dot 2 dot 0` -> `version 1.2.0`
-        let re_v_semver3 = Regex::new(r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b").unwrap();
-        s = re_v_semver3.replace_all(&s, "v$1.$2.$3").to_string();
-        let re_v_semver2 = Regex::new(r"(?i)\bv\s*(\d+)\s+dot\s+(\d+)\b").unwrap();
-        s = re_v_semver2.replace_all(&s, "v$1.$2").to_string();
-        let re_ver_semver3 = Regex::new(r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\s+dot\s+(\d+)\b").unwrap();
-        s = re_ver_semver3.replace_all(&s, "${1}$2.$3.$4").to_string();
-        let re_ver_semver2 = Regex::new(r"(?i)\b(version\s+)(\d+)\s+dot\s+(\d+)\b").unwrap();
-        s = re_ver_semver2.replace_all(&s, "${1}$2.$3").to_string();
-
-        // Convert unambiguous filename/domain spoken dots: `auth_middleware dot rs`, `example dot com`
-        let re_file_dot = Regex::new(
-            r"(?i)\b([a-z0-9_-]+)\s+dot\s+(rs|py|js|ts|tsx|jsx|go|c|cpp|h|json|yaml|yml|toml|md|txt|exe|dll|ps1|sh|sql|com|org|net|io|ai|dev|in|cc|local)\b",
-        )
-        .unwrap();
-        s = re_file_dot.replace_all(&s, "$1.$2").to_string();
-        let re_at = Regex::new(r"(?i)\b([a-z0-9._+-]+)\s+at\s+([a-z0-9.-]+\.[a-z]{2,})\b").unwrap();
-        s = re_at.replace_all(&s, "$1@$2").to_string();
-
-        // Fix Parakeet ITN spacing quirks (`for$1,250` -> `for $1,250`, `HTTP401` -> `HTTP 401`, `authmiddleware.rs` / `off_middleware.rs` -> `auth_middleware.rs`)
-        let re_curr_space = Regex::new(r"([a-zA-Z])([$₹€£]\d)").unwrap();
-        s = re_curr_space.replace_all(&s, "$1 $2").to_string();
-        let re_http_code = Regex::new(r"(?i)\bhttp(\d{3})\b").unwrap();
-        s = re_http_code.replace_all(&s, "HTTP $1").to_string();
-        let re_auth_mw = Regex::new(r"(?i)\b(?:authmiddleware|off_middleware)\.rs\b").unwrap();
-        s = re_auth_mw.replace_all(&s, "auth_middleware.rs").to_string();
     }
 
     // Format spoken bullet points ("bullet one ...", "bullet point ...") in Notes / Document / Email
@@ -346,19 +380,16 @@ fn apply_spoken_formatting(input: &str, mode: WritingMode, category: AppCategory
         AppCategory::Notes | AppCategory::Document | AppCategory::Email
     ) || s.to_lowercase().contains("bullet point ")
     {
-        let re_bullet = Regex::new(r"(?i)(?:^|\s+)(?:bullet\s+point|bullet\s+(?:one|two|three|four|five|\d+))[:.,]?\s+").unwrap();
-        if re_bullet.is_match(&s) {
-            s = re_bullet.replace_all(&s, "\n- ").trim_start_matches('\n').to_string();
+        if RE_BULLET.is_match(&s) {
+            s = RE_BULLET.replace_all(&s, "\n- ").trim_start_matches('\n').to_string();
         }
     }
     s
 }
 
 fn capitalize_sentences_and_pronoun_i(input: &str) -> String {
-    let re_i = Regex::new(r"\bi\b").unwrap();
-    let s = re_i.replace_all(input, "I").to_string();
-    let re_im = Regex::new(r"\bi'(m|ve|ll|d)\b").unwrap();
-    let s = re_im.replace_all(&s, "I'$1").to_string();
+    let s = RE_PRONOUN_I.replace_all(input, "I").to_string();
+    let s = RE_PRONOUN_IM.replace_all(&s, "I'$1").to_string();
 
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + 2);
@@ -419,15 +450,26 @@ fn is_question_sentence(s: &str) -> bool {
     if trimmed.ends_with('?') {
         return true;
     }
-    let first_word = trimmed
+    let mut words = trimmed
         .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .trim_matches(|c: char| !c.is_alphabetic())
-        .to_lowercase();
+        .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase());
+    let first_word = words.next().unwrap_or_default();
+    let second_word = words.next().unwrap_or_default();
+    if matches!(first_word.as_str(), "do" | "does" | "did")
+        && matches!(second_word.as_str(), "not" | "nt" | "don't")
+    {
+        return false;
+    }
+    if matches!(first_word.as_str(), "when" | "where" | "while") {
+        return matches!(
+            second_word.as_str(),
+            "is" | "are" | "was" | "were" | "do" | "does" | "did" | "can" | "could"
+                | "will" | "would" | "should" | "shall" | "has" | "have" | "had"
+        );
+    }
     matches!(
         first_word.as_str(),
-        "what" | "why" | "how" | "where" | "when" | "who" | "which" | "whom" | "whose"
+        "what" | "why" | "how" | "who" | "which" | "whom" | "whose"
             | "can" | "could" | "would" | "should" | "will" | "shall" | "is" | "are"
             | "am" | "was" | "were" | "do" | "does" | "did" | "have" | "has"
     )
@@ -470,9 +512,8 @@ fn apply_dictionary_and_casing(input: &str, dict: &PersonalDictionary, apply_tec
         }
     }
     if apply_tech {
-        for (lower, canonical) in TECH_CASING {
-            let pat = format!(r"(?i)\b{}\b", regex::escape(lower));
-            if let Ok(re) = Regex::new(&pat) {
+        for (re, canonical) in RE_TECH_CASING.iter() {
+            if re.is_match(&s) {
                 let prev = s.clone();
                 s = re
                     .replace_all(&prev, |caps: &regex::Captures| {
@@ -566,6 +607,7 @@ pub fn run_tier0(
                 String::new()
             })
             .to_string();
+        s = dedup_adjacent_stutters(&s);
     }
 
     if matches!(mode, WritingMode::Smart | WritingMode::Professional | WritingMode::Technical | WritingMode::Casual) {
@@ -609,57 +651,25 @@ pub fn run_tier0(
             .replace_all(&s, "I have a question about")
             .to_string();
         s = RE_REVERT_BACK.replace_all(&s, "reply").to_string();
-        let re_lead_basically = Regex::new(r"(?i)^(?:so[,]?\s+)?basically[,]?\s+").unwrap();
-        s = re_lead_basically.replace_all(&s, "").to_string();
+        s = RE_LEAD_BASICALLY.replace_all(&s, "").to_string();
     }
 
     // Mode-specific style shaping so all 6 writing modes produce meaningful differences
     match mode {
         WritingMode::Professional => {
-            let formal_rules = [
-                (r"(?i)^hey\b[,]?\s*", "Hello, "),
-                (r"(?i)\bi'm\b", "I am"),
-                (r"(?i)\bcan't\b", "cannot"),
-                (r"(?i)\bwon't\b", "will not"),
-                (r"(?i)\bcouldn't\b", "could not"),
-                (r"(?i)\bshouldn't\b", "should not"),
-                (r"(?i)\bwouldn't\b", "would not"),
-                (r"(?i)\bdidn't\b", "did not"),
-                (r"(?i)\bdoesn't\b", "does not"),
-                (r"(?i)\bisn't\b", "is not"),
-                (r"(?i)\baren't\b", "are not"),
-                (r"(?i)\bgonna\b", "going to"),
-                (r"(?i)\bwanna\b", "want to"),
-                (r"(?i)\bkinda\b", "somewhat"),
-            ];
-            for (pat, rep) in formal_rules {
-                let re = Regex::new(pat).unwrap();
-                s = re.replace_all(&s, rep).to_string();
+            for (re, rep) in RE_FORMAL_RULES.iter() {
+                s = re.replace_all(&s, *rep).to_string();
             }
         }
         WritingMode::Casual => {
-            let casual_rules = [
-                (r"(?i)\bi\s+am\b", "I'm"),
-                (r"(?i)\bi\s+will\b", "I'll"),
-                (r"(?i)\bwe\s+are\b", "we're"),
-                (r"(?i)\bdo\s+not\b", "don't"),
-                (r"(?i)\bdoes\s+not\b", "doesn't"),
-                (r"(?i)\bdid\s+not\b", "didn't"),
-                (r"(?i)\bcannot\b", "can't"),
-                (r"(?i)\bcan\s+not\b", "can't"),
-                (r"(?i)\bwill\s+not\b", "won't"),
-            ];
-            for (pat, rep) in casual_rules {
-                let re = Regex::new(pat).unwrap();
-                s = re.replace_all(&s, rep).to_string();
+            for (re, rep) in RE_CASUAL_RULES.iter() {
+                s = re.replace_all(&s, *rep).to_string();
             }
         }
         WritingMode::Technical => {
             // Preserve technical precision; convert spoken "colon colon" between identifiers into `::`
-            let re_scope = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+colon\s+colon\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap();
-            s = re_scope.replace_all(&s, "$1::$2").to_string();
-            let re_cant = Regex::new(r"(?i)\bcouldn't\b").unwrap();
-            s = re_cant.replace_all(&s, "could not").to_string();
+            s = RE_SCOPE.replace_all(&s, "$1::$2").to_string();
+            s = RE_COULDNT.replace_all(&s, "could not").to_string();
         }
         _ => {}
     }

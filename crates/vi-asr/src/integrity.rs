@@ -11,9 +11,11 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ACTIVE_IN_PROCESS_INSTALLS: AtomicUsize = AtomicUsize::new(0);
+static VERIFIED_CACHE: Mutex<Vec<(PathBuf, u64, u128, String)>> = Mutex::new(Vec::new());
 
 pub struct InProcessInstallGuard;
 
@@ -108,7 +110,7 @@ pub fn pins_for(model_id: &str) -> Option<&'static [FilePin]> {
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 256 * 1024];
+    let mut buf = vec![0u8; 1024 * 1024];
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
@@ -119,6 +121,46 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn verify_single_file(dir: &Path, rel: &str, size: u64, sha: &str) -> Result<()> {
+    let path = dir.join(rel);
+    let meta = fs::metadata(&path).with_context(|| format!("missing required file {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("required model path is not a file: {}", path.display());
+    }
+    if meta.len() != size {
+        bail!(
+            "size mismatch for {}: expected {} bytes, got {}",
+            path.display(),
+            size,
+            meta.len()
+        );
+    }
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let sha_low = sha.to_ascii_lowercase();
+    if mtime_ns > 0 {
+        if let Ok(cache) = VERIFIED_CACHE.lock() {
+            if cache.iter().any(|(p, sz, mt, s)| p == &path && *sz == size && *mt == mtime_ns && s == &sha_low) {
+                return Ok(());
+            }
+        }
+    }
+    let digest = sha256_file(&path)?;
+    if !digest.eq_ignore_ascii_case(sha) {
+        bail!("SHA-256 mismatch for {}: expected {}, got {}", path.display(), sha, digest);
+    }
+    if mtime_ns > 0 {
+        if let Ok(mut cache) = VERIFIED_CACHE.lock() {
+            cache.push((path, size, mtime_ns, sha_low));
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_named_files(dir: &Path, files: &[(&str, u64, &str)]) -> Result<()> {
     if files.is_empty() {
         bail!("refusing to verify {} with an empty pin list", dir.display());
@@ -126,26 +168,20 @@ pub fn verify_named_files(dir: &Path, files: &[(&str, u64, &str)]) -> Result<()>
     if !dir.is_dir() {
         bail!("model path is not a directory: {}", dir.display());
     }
-    for (rel, size, sha) in files {
-        let path = dir.join(rel);
-        let meta = fs::metadata(&path).with_context(|| format!("missing required file {}", path.display()))?;
-        if !meta.is_file() {
-            bail!("required model path is not a file: {}", path.display());
-        }
-        if meta.len() != *size {
-            bail!(
-                "size mismatch for {}: expected {} bytes, got {}",
-                path.display(),
-                size,
-                meta.len()
-            );
-        }
-        let digest = sha256_file(&path)?;
-        if !digest.eq_ignore_ascii_case(sha) {
-            bail!("SHA-256 mismatch for {}: expected {}, got {}", path.display(), sha, digest);
-        }
+    if files.len() == 1 {
+        let (rel, size, sha) = files[0];
+        return verify_single_file(dir, rel, size, sha);
     }
-    Ok(())
+    std::thread::scope(|s| {
+        let handles: Vec<_> = files
+            .iter()
+            .map(|&(rel, size, sha)| s.spawn(move || verify_single_file(dir, rel, size, sha)))
+            .collect();
+        for h in handles {
+            h.join().map_err(|_| anyhow::anyhow!("verification thread panicked"))??;
+        }
+        Ok(())
+    })
 }
 
 pub fn verify_model_dir(dir: &Path, model_id: &str) -> Result<()> {
@@ -169,12 +205,12 @@ pub fn verify_silero(path: &Path) -> Result<()> {
 
 pub fn verify_gguf(path: &Path) -> Result<()> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if name != QWEN35_GGUF_NAME {
+    if !name.eq_ignore_ascii_case(QWEN35_GGUF_NAME) {
         bail!("refusing unpinned weight file {}", path.display());
     }
     verify_named_files(
         path.parent().unwrap_or_else(|| Path::new(".")),
-        &[(QWEN35_GGUF_NAME, QWEN35_GGUF_SIZE, QWEN35_GGUF_SHA256)],
+        &[(name, QWEN35_GGUF_SIZE, QWEN35_GGUF_SHA256)],
     )
 }
 

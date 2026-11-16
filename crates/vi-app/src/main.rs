@@ -25,11 +25,12 @@ use vi_core::{
 };
 use vi_rewrite::{slm::LlamaServerSupervisor, RewriteEngine};
 use vi_win32::{
-    capture_foreground_context, current_process_memory_mb, deliver_direct_or_clipboard_fallback,
-    dpapi_decrypt_from_b64, dpapi_encrypt_to_b64, harden_and_init_process, is_spec_physically_down,
+    capture_foreground_context, current_process_cpu_ms, current_process_memory_mb,
+    deliver_direct_or_clipboard_fallback, dpapi_decrypt_from_b64, dpapi_encrypt_to_b64,
+    harden_and_init_process, is_spec_physically_down, perf_trace_record,
     prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
-    set_autostart_enabled, timing_mark, write_clipboard_unicode, DirectTypeOutcome,
-    GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
+    set_autostart_enabled, system_available_ram_mb, timing_mark, write_clipboard_unicode,
+    DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
 };
 #[cfg(windows)]
 use vi_win32::ui::{
@@ -201,7 +202,9 @@ struct InferenceSupervisor {
     paths: RuntimePaths,
     loaded_asr_id: String,
     asr: Option<LocalAsrEngine>,
-    /// Speech model being loaded in the background while the user is still talking.
+    /// Active streaming ASR worker decoding audio chunks while the user is still speaking.
+    live_asr: Option<(String, vi_asr::live::LiveAsr)>,
+    /// Speech model being loaded in the background while the user is still talking or at startup.
     pending_asr: Option<(String, crossbeam_channel::Receiver<Result<LocalAsrEngine>>)>,
     /// Grammar model whose SHA-256 is still being verified in the background. Joined before the
     /// first rewrite, so integrity is still enforced but no longer blocks hotkeys at startup.
@@ -209,6 +212,12 @@ struct InferenceSupervisor {
     slm_threads: usize,
     rewrite: RewriteEngine,
     last_used: Instant,
+    session_keydown_at: Option<Instant>,
+    session_mic_init_ms: f64,
+    session_first_frame_ms: f64,
+    session_chunk_finalize_ms: f64,
+    session_target_id_ms: f64,
+    session_cold_model: bool,
 }
 
 /// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
@@ -233,14 +242,16 @@ fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngi
     } else {
         None
     };
-    LocalAsrEngine::load(
+    let mut engine = LocalAsrEngine::load(
         &paths.sherpa_lib_dir,
         &model_dir,
         spec.id,
         vad_opt,
         cfg.inference_threads.max(1),
         &cfg.preferred_language,
-    )
+    )?;
+    engine.warm_up();
+    Ok(engine)
 }
 
 impl InferenceSupervisor {
@@ -269,11 +280,44 @@ impl InferenceSupervisor {
             paths,
             loaded_asr_id: String::new(),
             asr: None,
+            live_asr: None,
             pending_asr: None,
             pending_slm,
             slm_threads: cfg.inference_threads.max(1),
             rewrite: RewriteEngine::new(None),
             last_used: Instant::now(),
+            session_keydown_at: None,
+            session_mic_init_ms: 0.0,
+            session_first_frame_ms: 0.0,
+            session_chunk_finalize_ms: 0.0,
+            session_target_id_ms: 0.0,
+            session_cold_model: false,
+        }
+    }
+
+    /// Non-blocking harvest of background ASR/SLM preparation threads during idle ticks.
+    fn poll_background_ready(&mut self, cfg: &AppConfig) {
+        if let Some((id, rx)) = &self.pending_asr {
+            if let Ok(res) = rx.try_recv() {
+                let id_owned = id.clone();
+                self.pending_asr = None;
+                if let Ok(engine) = res {
+                    if id_owned == cfg.local_asr_model {
+                        self.asr = Some(engine);
+                        self.loaded_asr_id = id_owned;
+                        self.last_used = Instant::now();
+                    }
+                }
+            }
+        }
+        if let Some(rx) = &self.pending_slm {
+            if let Ok(verified) = rx.try_recv() {
+                self.pending_slm = None;
+                self.install_slm(verified);
+                if !matches!(cfg.processing_profile, vi_core::ProcessingProfile::MaxAccuracy) {
+                    self.rewrite.prewarm(cfg.default_writing_mode);
+                }
+            }
         }
     }
 
@@ -319,19 +363,29 @@ impl InferenceSupervisor {
     }
 
     fn maybe_unload_idle(&mut self, idle_secs: u64) {
-        if idle_secs == 0 {
+        if idle_secs == 0 || self.live_asr.is_some() {
             return;
         }
-        let _ = self.rewrite.maybe_unload_idle(idle_secs);
-        if self.asr.is_some() && self.last_used.elapsed() >= Duration::from_secs(idle_secs) {
+        // Adaptive retention based on system memory pressure: keep warm longer when RAM is plentiful.
+        let avail_mb = system_available_ram_mb();
+        let effective_secs = if avail_mb >= 4_096 {
+            idle_secs.saturating_mul(6)
+        } else if avail_mb < 2_048 {
+            idle_secs.min(120)
+        } else {
+            idle_secs
+        };
+        let _ = self.rewrite.maybe_unload_idle(effective_secs);
+        if self.asr.is_some() && self.last_used.elapsed() >= Duration::from_secs(effective_secs) {
             self.asr = None;
             self.pending_asr = None;
             self.loaded_asr_id.clear();
-            log::info!("Unloaded idle ASR engine to reclaim system RAM");
+            log::info!("Unloaded idle ASR engine to reclaim system RAM (avail={} MB)", avail_mb);
         }
     }
 
     fn force_unload_all(&mut self) {
+        self.cancel_live_session();
         self.asr = None;
         self.pending_asr = None;
         self.loaded_asr_id.clear();
@@ -342,10 +396,13 @@ impl InferenceSupervisor {
         self.asr.is_some() && self.loaded_asr_id == cfg.local_asr_model
     }
 
-    /// Starts loading the speech model in the background (called when recording starts), so a
-    /// cold start overlaps with the user speaking instead of following it.
+    /// Starts loading the speech model in the background (called at startup, model switch, or recording start).
     fn prewarm_asr(&mut self, cfg: &AppConfig) {
-        if self.asr_ready(cfg) || self.pending_asr.as_ref().map(|p| p.0 == cfg.local_asr_model).unwrap_or(false) {
+        self.poll_background_ready(cfg);
+        if self.asr_ready(cfg)
+            || self.live_asr.as_ref().map(|p| p.0 == cfg.local_asr_model).unwrap_or(false)
+            || self.pending_asr.as_ref().map(|p| p.0 == cfg.local_asr_model).unwrap_or(false)
+        {
             return;
         }
         let paths = self.paths.clone();
@@ -364,7 +421,62 @@ impl InferenceSupervisor {
         }
     }
 
+    /// Begins an incremental streaming ASR worker for an active recording session so completed
+    /// speech chunks are decoded while the user is still speaking.
+    fn begin_live_session(&mut self, cfg: &AppConfig) {
+        self.cancel_live_session();
+        self.poll_background_ready(cfg);
+        self.session_cold_model = !self.asr_ready(cfg);
+        let use_cloud = cfg.processing_profile == vi_core::ProcessingProfile::MaxAccuracy
+            && cfg.cloud.encrypted_api_key_b64.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        if use_cloud {
+            return;
+        }
+        let hotwords = cfg.dictionary.to_sherpa_hotwords();
+        let model_id = cfg.local_asr_model.clone();
+        let live_res = if self.asr_ready(cfg) {
+            let eng = self.asr.take().unwrap();
+            vi_asr::live::LiveAsr::start(move || Ok(eng), hotwords)
+        } else if self.pending_asr.as_ref().map(|p| p.0 == model_id).unwrap_or(false) {
+            let (_, rx) = self.pending_asr.take().unwrap();
+            let paths = self.paths.clone();
+            let cfg2 = cfg.clone();
+            vi_asr::live::LiveAsr::start(
+                move || match rx.recv() {
+                    Ok(r) => r,
+                    Err(_) => load_asr_engine(&paths, &cfg2),
+                },
+                hotwords,
+            )
+        } else {
+            let paths = self.paths.clone();
+            let cfg2 = cfg.clone();
+            vi_asr::live::LiveAsr::start(move || load_asr_engine(&paths, &cfg2), hotwords)
+        };
+        if let Ok(live) = live_res {
+            self.live_asr = Some((model_id, live));
+        }
+    }
+
+    fn feed_live_audio(&mut self, cfg: &AppConfig, samples_16k: Vec<f32>) {
+        self.poll_background_ready(cfg);
+        if let Some((_, live)) = &self.live_asr {
+            live.feed(samples_16k);
+        }
+    }
+
+    fn cancel_live_session(&mut self) {
+        if let Some((id, live)) = self.live_asr.take() {
+            if let Some(eng) = live.cancel() {
+                self.asr = Some(eng);
+                self.loaded_asr_id = id;
+                self.last_used = Instant::now();
+            }
+        }
+    }
+
     fn ensure_asr_loaded(&mut self, cfg: &AppConfig) -> Result<&mut LocalAsrEngine> {
+        self.cancel_live_session();
         if !self.asr_ready(cfg) {
             if let Some((id, rx)) = self.pending_asr.take() {
                 if id == cfg.local_asr_model {
@@ -398,7 +510,8 @@ impl InferenceSupervisor {
         on_stage_correcting: Option<&dyn Fn()>,
     ) -> Result<PipelineResult> {
         let t_release = Instant::now();
-        let audio_duration_ms = ((samples_16k.len() as u64) * 1000) / 16_000;
+        let cpu_t0 = current_process_cpu_ms();
+        let mut audio_duration_ms = ((samples_16k.len() as u64) * 1000) / 16_000;
 
         // Determine effective writing mode: explicit override -> per-app user rule -> automatic context -> default
         let proc_lower = fg_ctx.process_name.to_lowercase();
@@ -430,14 +543,21 @@ impl InferenceSupervisor {
         // Stage 1: Speech Recognition (Cloud when MaxAccuracy + configured + online; otherwise Local CPU ASR)
         let mut vad_ms = 0.0;
         let mut asr_ms = 0.0;
+        let mut model_load_ms = 0.0;
+        let mut post_release_asr_ms = 0.0;
+        let mut chunks_total = 0usize;
+        let mut chunks_streamed = 0usize;
         let mut speech_ratio = 1.0f32;
         let mut used_asr_id = cfg.local_asr_model.clone();
         let mut raw_transcript = String::new();
+        let mut asr_sentences: Vec<(String, u32)> = Vec::new();
         let mut cloud_stt_ok = false;
+        let mut cold_model = self.session_cold_model;
 
         if cfg.processing_profile == vi_core::ProcessingProfile::MaxAccuracy
             && !decrypted_key.trim().is_empty()
         {
+            self.cancel_live_session();
             let t_cloud = Instant::now();
             let glossary = cfg.dictionary.to_prompt_glossary(25);
             if let Ok(txt) = transcribe_cloud_multipart(
@@ -449,6 +569,7 @@ impl InferenceSupervisor {
                 &samples_16k,
             ) {
                 asr_ms = t_cloud.elapsed().as_secs_f64() * 1000.0;
+                post_release_asr_ms = asr_ms;
                 raw_transcript = txt;
                 used_asr_id = format!("cloud:{}", cfg.cloud.stt_model);
                 cloud_stt_ok = true;
@@ -456,13 +577,43 @@ impl InferenceSupervisor {
         }
 
         if !cloud_stt_ok {
-            let hotwords = cfg.dictionary.to_sherpa_hotwords();
-            let engine = self.ensure_asr_loaded(cfg)?;
-            let out = engine.transcribe(&samples_16k, Some(&hotwords))?;
-            vad_ms = out.vad_ms;
-            asr_ms = out.decode_ms;
-            speech_ratio = out.speech_ratio;
-            raw_transcript = out.text;
+            if let Some((live_id, live)) = self.live_asr.take() {
+                let tail = std::mem::take(&mut samples_16k);
+                let done = live.finish(tail);
+                if let Some(eng) = done.engine {
+                    self.asr = Some(eng);
+                    self.loaded_asr_id = live_id;
+                    self.last_used = Instant::now();
+                }
+                model_load_ms = done.model_wait_ms;
+                post_release_asr_ms = done.post_release_ms;
+                chunks_streamed = done.chunks_before_release;
+                let out = done.result?;
+                audio_duration_ms = ((out.audio_samples as u64) * 1000) / 16_000;
+                vad_ms = out.vad_ms;
+                asr_ms = out.decode_ms;
+                speech_ratio = out.speech_ratio;
+                raw_transcript = out.text;
+                asr_sentences = out.sentences;
+                chunks_total = out.chunks;
+            } else {
+                cold_model = !self.asr_ready(cfg);
+                let t_load = Instant::now();
+                let hotwords = cfg.dictionary.to_sherpa_hotwords();
+                let engine = self.ensure_asr_loaded(cfg)?;
+                if cold_model {
+                    model_load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
+                }
+                let t_post = Instant::now();
+                let out = engine.transcribe(&samples_16k, Some(&hotwords))?;
+                post_release_asr_ms = t_post.elapsed().as_secs_f64() * 1000.0;
+                vad_ms = out.vad_ms;
+                asr_ms = out.decode_ms;
+                speech_ratio = out.speech_ratio;
+                raw_transcript = out.text;
+                asr_sentences = out.sentences;
+                chunks_total = out.chunks;
+            }
         }
 
         // Zeroize raw PCM audio immediately after ASR finishes!
@@ -472,10 +623,11 @@ impl InferenceSupervisor {
             cb();
         }
 
-        // Stage 2: Conservative Meaning-Preserving Grammar & Context Correction
+        // Stage 2: Conservative Meaning-Preserving Grammar & Context Correction + Paragraph Formatting
         self.ensure_slm_ready();
-        let rw = self.rewrite.process(
+        let rw = self.rewrite.process_with_sentences(
             &raw_transcript,
+            &asr_sentences,
             speech_ratio,
             effective_mode,
             fg_ctx.category,
@@ -491,9 +643,50 @@ impl InferenceSupervisor {
         );
         decrypted_key.zeroize();
 
+        let mic_init_ms = std::mem::replace(&mut self.session_mic_init_ms, 0.0);
+        let first_frame_ms = std::mem::replace(&mut self.session_first_frame_ms, 0.0);
+        let chunk_finalize_ms = std::mem::replace(&mut self.session_chunk_finalize_ms, 0.0);
+        let target_id_ms = std::mem::replace(&mut self.session_target_id_ms, 0.0);
+        let keydown_at = self.session_keydown_at.take();
+        self.session_cold_model = false;
+
         if rw.skipped_as_hallucination || rw.final_text.trim().is_empty() {
             // Crucial requirement (Section 4): NEVER overwrite existing clipboard when nothing valid was spoken!
             let total_ms = t_release.elapsed().as_secs_f64() * 1000.0;
+            let end_to_end_ms = keydown_at.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(total_ms);
+            let cpu_ms = (current_process_cpu_ms() - cpu_t0).max(0.0);
+            let (ws_mb, _) = current_process_memory_mb();
+            let metrics = PipelineMetrics {
+                audio_duration_ms,
+                vad_ms,
+                asr_ms,
+                rewrite_ms: rw.elapsed_ms,
+                output_ms: 0.0,
+                total_release_to_ready_ms: total_ms,
+                used_tier: rw.tier_used,
+                asr_model_id: used_asr_id,
+                mic_init_ms,
+                first_frame_ms,
+                chunk_finalize_ms,
+                model_load_ms,
+                post_release_asr_ms,
+                chunks_total,
+                chunks_streamed,
+                norm_ms: rw.norm_ms,
+                tier0_ms: rw.tier0_ms,
+                slm_startup_ms: rw.slm_startup_ms,
+                slm_first_token_ms: rw.slm_first_token_ms,
+                slm_ms: rw.slm_ms,
+                paragraph_ms: rw.paragraph_ms,
+                target_id_ms,
+                end_to_end_ms,
+                cpu_ms,
+                working_set_mb: ws_mb,
+                cold_model,
+            };
+            if let Ok(line) = serde_json::to_string(&metrics) {
+                perf_trace_record(&line);
+            }
             return Ok(PipelineResult {
                 raw_transcript,
                 final_text: String::new(),
@@ -503,16 +696,7 @@ impl InferenceSupervisor {
                 delivery_reason: None,
                 requires_command_confirmation: false,
                 warning_note: Some("No speech detected; existing clipboard preserved.".to_string()),
-                metrics: PipelineMetrics {
-                    audio_duration_ms,
-                    vad_ms,
-                    asr_ms,
-                    rewrite_ms: rw.elapsed_ms,
-                    output_ms: 0.0,
-                    total_release_to_ready_ms: total_ms,
-                    used_tier: rw.tier_used,
-                    asr_model_id: used_asr_id,
-                },
+                metrics,
             });
         }
 
@@ -580,6 +764,42 @@ impl InferenceSupervisor {
         }
         let output_ms = t_out.elapsed().as_secs_f64() * 1000.0;
         let total_release_to_ready_ms = t_release.elapsed().as_secs_f64() * 1000.0;
+        let end_to_end_ms = keydown_at
+            .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(total_release_to_ready_ms);
+        let cpu_ms = (current_process_cpu_ms() - cpu_t0).max(0.0);
+        let (ws_mb, _) = current_process_memory_mb();
+        let metrics = PipelineMetrics {
+            audio_duration_ms,
+            vad_ms,
+            asr_ms,
+            rewrite_ms: rw.elapsed_ms,
+            output_ms,
+            total_release_to_ready_ms,
+            used_tier: rw.tier_used,
+            asr_model_id: used_asr_id,
+            mic_init_ms,
+            first_frame_ms,
+            chunk_finalize_ms,
+            model_load_ms,
+            post_release_asr_ms,
+            chunks_total,
+            chunks_streamed,
+            norm_ms: rw.norm_ms,
+            tier0_ms: rw.tier0_ms,
+            slm_startup_ms: rw.slm_startup_ms,
+            slm_first_token_ms: rw.slm_first_token_ms,
+            slm_ms: rw.slm_ms,
+            paragraph_ms: rw.paragraph_ms,
+            target_id_ms,
+            end_to_end_ms,
+            cpu_ms,
+            working_set_mb: ws_mb,
+            cold_model,
+        };
+        if let Ok(line) = serde_json::to_string(&metrics) {
+            perf_trace_record(&line);
+        }
 
         Ok(PipelineResult {
             raw_transcript,
@@ -590,16 +810,7 @@ impl InferenceSupervisor {
             delivery_reason,
             requires_command_confirmation: rw.requires_confirmation,
             warning_note,
-            metrics: PipelineMetrics {
-                audio_duration_ms,
-                vad_ms,
-                asr_ms,
-                rewrite_ms: rw.elapsed_ms,
-                output_ms,
-                total_release_to_ready_ms,
-                used_tier: rw.tier_used,
-                asr_model_id: used_asr_id,
-            },
+            metrics,
         })
     }
 }
@@ -647,6 +858,9 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
     let mut repeat: usize = 1;
     let mut asr_model_override: Option<String> = None;
     let mut llm_override: Option<String> = None;
+    let mut live_mode = false;
+    let mut live_speed: f64 = 1.0;
+    let mut prewarm_before = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -682,6 +896,14 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
                 }
             }
             "--copy-clipboard" => copy_clipboard = true,
+            "--live" => live_mode = true,
+            "--prewarm" => prewarm_before = true,
+            "--live-speed" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    live_speed = v.parse::<f64>().unwrap_or(1.0).clamp(0.25, 64.0);
+                }
+            }
             "--repeat" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
@@ -701,13 +923,37 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
     if let Some(l) = llm_override {
         cfg.local_llm_model = l;
     }
+    if let Some(m) = mode {
+        cfg.default_writing_mode = m;
+    }
 
     let mut sup = InferenceSupervisor::new(&cfg);
+    if prewarm_before {
+        let _ = sup.ensure_asr_loaded(&cfg);
+        sup.ensure_slm_ready();
+        sup.rewrite.warm_up_slot(cfg.default_writing_mode);
+    }
     let mut fg = ForegroundContext::default();
     fg.category = cat;
     for n in 1..=repeat {
         let samples = load_wav_16k_mono(&wav)?;
-        let res = sup.execute_pipeline(samples, &cfg, &fg, mode, copy_clipboard, None)?;
+        let res = if live_mode {
+            sup.session_keydown_at = Some(Instant::now());
+            sup.begin_live_session(&cfg);
+            sup.prewarm_slm(&cfg);
+            let step = 1_200usize; // 75 ms at 16 kHz, matching coordinator ticker
+            let tick_dur = Duration::from_secs_f64(0.075 / live_speed);
+            let total = samples.len();
+            let mut offset = 0usize;
+            while offset + step < total {
+                sup.feed_live_audio(&cfg, samples[offset..offset + step].to_vec());
+                offset += step;
+                std::thread::sleep(tick_dur);
+            }
+            sup.execute_pipeline(samples[offset..].to_vec(), &cfg, &fg, mode, copy_clipboard, None)?
+        } else {
+            sup.execute_pipeline(samples, &cfg, &fg, mode, copy_clipboard, None)?
+        };
         let (ws_mb, priv_mb) = current_process_memory_mb();
         let out_json = serde_json::json!({
             "run": n,
@@ -1367,23 +1613,49 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
             }
             let live_target_ctx = capture_foreground_context(true);
 
+            full_sup.session_keydown_at = Some(Instant::now());
+            full_sup.begin_live_session(&cfg);
+            full_sup.prewarm_slm(&cfg);
+            let step = 1_200usize;
+            let mut offset = 0usize;
+            while offset + step < samples.len() {
+                full_sup.feed_live_audio(&cfg, samples[offset..offset + step].to_vec());
+                offset += step;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            unsafe {
+                if !target_hwnd.is_null() {
+                    let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+                }
+            }
             let r = full_sup.execute_pipeline(
-                samples,
+                samples[offset..].to_vec(),
                 &cfg,
                 &live_target_ctx,
                 Some(WritingMode::Smart),
                 true,
                 None,
             )?;
-            std::thread::sleep(Duration::from_millis(220));
-            let auto_inserted_text = read_hwnd_text(target_edit_hwnd);
+            // Typing is asynchronous in the target's message queue: poll until the text stops growing.
+            let mut auto_inserted_text = String::new();
+            for _ in 0..60 {
+                std::thread::sleep(Duration::from_millis(150));
+                let now = read_hwnd_text(target_edit_hwnd);
+                if !now.is_empty() && now == auto_inserted_text {
+                    break;
+                }
+                auto_inserted_text = now;
+            }
+            let mut norm_inserted = auto_inserted_text.clone();
+            norm_inserted.retain(|c| c != char::from(13u8));
             let (active_ws, active_priv) = current_process_memory_mb();
             full_sup.force_unload_all();
             let (after_unload_ws, after_unload_priv) = current_process_memory_mb();
             wav_e2e_json = serde_json::json!({
                 "pipeline": r,
                 "target_window_auto_inserted_text": auto_inserted_text,
-                "auto_insert_exact_match": auto_inserted_text.trim() == r.final_text.trim(),
+                "target_window_paragraph_count": norm_inserted.trim().split("\n\n").filter(|s| !s.trim().is_empty()).count(),
+                "auto_insert_exact_match": norm_inserted.trim() == r.final_text.trim(),
                 "active_working_set_mb": active_ws,
                 "active_private_mb": active_priv,
                 "post_unload_working_set_mb": after_unload_ws,
@@ -1497,7 +1769,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
         .spawn(move || {
             let mut cfg = initial_cfg;
             let mut history = HistoryStore::load_or_default(&hist_path);
-            let mut ptt = PttController::new(cfg.activation_mode, 110, 120_000);
+            let mut ptt = PttController::new(cfg.activation_mode, 110, 1_800_000);
             let _ = ptt.set_app_enabled(cfg.app_enabled);
             let _ = ptt.set_ptt_enabled(cfg.ptt_enabled);
 
@@ -1509,6 +1781,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         "KeyReed needs a speech model",
                         "Download one in KeyReed > Speech models (about 460 MB, one time). Dictation works offline after that.",
                     );
+                } else if cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy {
+                    supervisor.prewarm_asr(&cfg);
                 }
             }
             let mut active_mic: Option<ActiveCapture> = None;
@@ -1626,6 +1900,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     let _ = cfg.save_atomic(&cfg_path);
                                     gui_for_worker.update_status("", false, Some(paths.list_installed_asr_ids()));
                                     gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
+                                    if cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy {
+                                        supervisor.prewarm_asr(&cfg);
+                                    }
                                 }
                             }
                             Ok(UiAction::RefreshMicrophones) => {
@@ -1932,7 +2209,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         if pending_action == PttAction::None {
                             pending_action = ptt.on_tick(now_ms());
                         }
-                        if let Some(mic) = &active_mic {
+                        if let Some(mic) = &mut active_mic {
+                            supervisor.session_first_frame_ms = mic.first_frame_ms();
+                            let chunk = mic.take_new_16k();
+                            supervisor.feed_live_audio(&cfg, chunk);
                             if mic.is_disconnected() {
                                 // Microphone disconnected mid-recording: attempt seamless rebind to default device
                                 log::warn!("Active microphone disconnected mid-session; attempting default-device recovery");
@@ -1956,6 +2236,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                                 }
                             }
+                            supervisor.poll_background_ready(&cfg);
                             supervisor.maybe_unload_idle(cfg.idle_unload_seconds);
                         }
                     }
@@ -1965,7 +2246,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     PttAction::None => {}
                     PttAction::StartRecording => {
                         timing_mark("coordinator_start_recording");
+                        supervisor.session_keydown_at = Some(Instant::now());
                         transient_state_until = None;
+                        let t_fg = Instant::now();
                         let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
                         let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
                         captured_fg_ctx = if cur_fg.hwnd != 0 && (cur_fg.process_id != std::process::id() || practice) {
@@ -1974,14 +2257,17 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         } else {
                             last_external_fg_ctx.clone()
                         };
+                        supervisor.session_target_id_ms = t_fg.elapsed().as_secs_f64() * 1000.0;
+                        let t_mic = Instant::now();
                         match ActiveCapture::start(cfg.selected_microphone.as_deref()) {
                             Ok(cap) => {
+                                supervisor.session_mic_init_ms = t_mic.elapsed().as_secs_f64() * 1000.0;
                                 timing_mark("mic_started");
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
                                 gui_for_worker.sync(EngineState::Listening, 0.0, None);
                                 if cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy {
-                                    supervisor.prewarm_asr(&cfg);
+                                    supervisor.begin_live_session(&cfg);
                                     supervisor.prewarm_slm(&cfg);
                                 }
                                 play_subtle_earcon(cfg.audio_cues_enabled, true);
@@ -2002,6 +2288,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         if let Some(m) = active_mic.take() {
                             m.cancel_and_zeroize();
                         }
+                        supervisor.cancel_live_session();
                         busy_flag.store(false, Ordering::Relaxed);
                         gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                         if reason == "recording_cap_discarded" {
@@ -2013,11 +2300,14 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     }
                     PttAction::StopAndProcess => {
                         timing_mark("coordinator_stop");
-                        let cold = !supervisor.asr_ready(&cfg) && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy;
+                        let cold = supervisor.session_cold_model && !supervisor.asr_ready(&cfg) && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy;
                         gui_for_worker.set_processing_note(if cold { Some("Loading model") } else { None });
                         gui_for_worker.sync(EngineState::Processing, 0.0, None);
                         if let Some(m) = active_mic.take() {
+                            supervisor.session_first_frame_ms = m.first_frame_ms();
+                            let t_fin = Instant::now();
                             let samples = m.stop_and_take_16k();
+                            supervisor.session_chunk_finalize_ms = t_fin.elapsed().as_secs_f64() * 1000.0;
                             let gui_stage = gui_for_worker.clone();
                             let on_corr = move || {
                                 gui_stage.set_processing_note(None);

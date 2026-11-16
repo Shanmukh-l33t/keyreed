@@ -7,7 +7,7 @@
 !include "MUI2.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "0.4.0"
+!define APP_VERSION "0.5.0"
 
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "..\dist\KeyReed-Setup-x64.exe"
@@ -34,7 +34,7 @@ UninstallIcon "..\assets\keyreed.ico"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.4.0.0"
+VIProductVersion "0.5.0.0"
 VIAddVersionKey "ProductName" "KeyReed"
 VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

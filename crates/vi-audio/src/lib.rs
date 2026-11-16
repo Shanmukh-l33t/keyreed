@@ -84,6 +84,10 @@ pub struct ActiveCapture {
     device_name: String,
     #[cfg(windows)]
     used_fallback_device: bool,
+    #[cfg(windows)]
+    first_frame_us: Arc<AtomicU32>,
+    #[cfg(windows)]
+    sim_running: Option<Arc<AtomicBool>>,
 }
 
 impl ActiveCapture {
@@ -96,6 +100,55 @@ impl ActiveCapture {
         }
         #[cfg(windows)]
         {
+            if let Ok(sim_wav) = std::env::var("KEYREED_TEST_AUDIO_WAV") {
+                if !sim_wav.trim().is_empty() {
+                    let t0 = std::time::Instant::now();
+                    let samples = load_wav_16k_mono(Path::new(sim_wav.trim()))?;
+                    let raw_mono = Arc::new(Mutex::new(Vec::with_capacity(samples.len())));
+                    let buf_ref = Arc::clone(&raw_mono);
+                    let latest_rms_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+                    let rms_ref = Arc::clone(&latest_rms_bits);
+                    let peak_rms_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+                    let peak_ref = Arc::clone(&peak_rms_bits);
+                    let first_frame_us = Arc::new(AtomicU32::new(0));
+                    let ff_ref = Arc::clone(&first_frame_us);
+                    let sim_running = Arc::new(AtomicBool::new(true));
+                    let run_ref = Arc::clone(&sim_running);
+                    let speed: f64 = std::env::var("KEYREED_TEST_AUDIO_SPEED")
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(1.0)
+                        .clamp(0.25, 32.0);
+                    std::thread::Builder::new()
+                        .name("keyreed-sim-mic".to_string())
+                        .spawn(move || {
+                            let step = 320usize; // 20 ms at 16 kHz
+                            let tick = std::time::Duration::from_secs_f64(0.020 / speed);
+                            for ch in samples.chunks(step) {
+                                if !run_ref.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                push_interleaved_f32(ch, 1, &buf_ref, &rms_ref, &peak_ref, &ff_ref, t0);
+                                std::thread::sleep(tick);
+                            }
+                        })?;
+                    return Ok(Self {
+                        stream: None,
+                        raw_mono,
+                        input_sample_rate: 16_000,
+                        latest_rms_bits,
+                        peak_rms_bits,
+                        stream_disconnected: Arc::new(AtomicBool::new(false)),
+                        last_error: Arc::new(Mutex::new(None)),
+                        device_name: format!("SimulatedWAV:{}", sim_wav.trim()),
+                        used_fallback_device: false,
+                        first_frame_us,
+                        sim_running: Some(sim_running),
+                    });
+                }
+            }
+
+            let t0 = std::time::Instant::now();
             let host = cpal::default_host();
             let mut used_fallback = false;
             let device = match preferred_device.filter(|s| !s.trim().is_empty()) {
@@ -138,6 +191,8 @@ impl ActiveCapture {
             let disc_ref = Arc::clone(&stream_disconnected);
             let last_error = Arc::new(Mutex::new(None));
             let err_ref = Arc::clone(&last_error);
+            let first_frame_us = Arc::new(AtomicU32::new(0));
+            let ff_ref = Arc::clone(&first_frame_us);
 
             let err_fn = move |err: cpal::StreamError| {
                 log::error!("Audio capture stream error: {}", err);
@@ -149,7 +204,7 @@ impl ActiveCapture {
                 cpal::SampleFormat::F32 => device.build_input_stream(
                     &stream_cfg,
                     move |data: &[f32], _| {
-                        push_interleaved_f32(data, channels, &buf_ref, &rms_ref, &peak_ref)
+                        push_interleaved_f32(data, channels, &buf_ref, &rms_ref, &peak_ref, &ff_ref, t0)
                     },
                     err_fn,
                     None,
@@ -159,7 +214,7 @@ impl ActiveCapture {
                     move |data: &[i16], _| {
                         let converted: Vec<f32> =
                             data.iter().map(|&x| (x as f32) / 32768.0).collect();
-                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref);
+                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref, &ff_ref, t0);
                     },
                     err_fn,
                     None,
@@ -171,7 +226,7 @@ impl ActiveCapture {
                             .iter()
                             .map(|&x| ((x as f32) - 32768.0) / 32768.0)
                             .collect();
-                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref);
+                        push_interleaved_f32(&converted, channels, &buf_ref, &rms_ref, &peak_ref, &ff_ref, t0);
                     },
                     err_fn,
                     None,
@@ -191,6 +246,8 @@ impl ActiveCapture {
                 last_error,
                 device_name,
                 used_fallback_device: used_fallback,
+                first_frame_us,
+                sim_running: None,
             })
         }
     }
@@ -262,10 +319,39 @@ impl ActiveCapture {
         }
     }
 
+    pub fn first_frame_ms(&self) -> f64 {
+        #[cfg(windows)]
+        {
+            (self.first_frame_us.load(Ordering::Relaxed) as f64) / 1000.0
+        }
+        #[cfg(not(windows))]
+        {
+            0.0
+        }
+    }
+
+    /// Drains and resamples newly captured audio into 16 kHz mono while recording continues,
+    /// zeroizing the consumed raw samples immediately.
+    pub fn take_new_16k(&mut self) -> Vec<f32> {
+        #[cfg(windows)]
+        {
+            let mut guard = self.raw_mono.lock();
+            take_aligned_16k(&mut guard, self.input_sample_rate)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = self;
+            Vec::new()
+        }
+    }
+
     /// Stops WASAPI capture immediately, resamples to 16 kHz mono, and zeroizes the raw buffer.
     pub fn stop_and_take_16k(mut self) -> Vec<f32> {
         #[cfg(windows)]
         {
+            if let Some(sim) = self.sim_running.take() {
+                sim.store(false, Ordering::Relaxed);
+            }
             if let Some(s) = self.stream.take() {
                 let _ = s.pause();
                 drop(s);
@@ -287,6 +373,9 @@ impl ActiveCapture {
     pub fn cancel_and_zeroize(mut self) {
         #[cfg(windows)]
         {
+            if let Some(sim) = self.sim_running.take() {
+                sim.store(false, Ordering::Relaxed);
+            }
             if let Some(s) = self.stream.take() {
                 let _ = s.pause();
                 drop(s);
@@ -303,6 +392,9 @@ impl ActiveCapture {
 #[cfg(windows)]
 impl Drop for ActiveCapture {
     fn drop(&mut self) {
+        if let Some(sim) = self.sim_running.take() {
+            sim.store(false, Ordering::Relaxed);
+        }
         if let Some(s) = self.stream.take() {
             let _ = s.pause();
             drop(s);
@@ -322,9 +414,15 @@ fn push_interleaved_f32(
     dest: &Mutex<Vec<f32>>,
     rms_atomic: &AtomicU32,
     peak_atomic: &AtomicU32,
+    first_frame_us: &AtomicU32,
+    started_at: std::time::Instant,
 ) {
     if data.is_empty() || channels == 0 {
         return;
+    }
+    if first_frame_us.load(Ordering::Relaxed) == 0 {
+        let us = started_at.elapsed().as_micros().clamp(1, u32::MAX as u128) as u32;
+        let _ = first_frame_us.compare_exchange(0, us, Ordering::Relaxed, Ordering::Relaxed);
     }
     let frames = data.len() / channels;
     let mut sum_sq = 0.0f32;
@@ -348,6 +446,29 @@ fn push_interleaved_f32(
             peak_atomic.store(rms.to_bits(), Ordering::Relaxed);
         }
     }
+}
+
+fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a.max(1)
+}
+
+/// Drains an exact integer-ratio multiple of `src_rate` samples into 16 kHz mono so incremental
+/// drains never drift relative to a single whole-recording resample.
+fn take_aligned_16k(buf: &mut Vec<f32>, src_rate: u32) -> Vec<f32> {
+    let block = if src_rate == 0 { 1 } else { (src_rate / gcd_u32(src_rate, 16_000)).max(1) as usize };
+    let take_len = (buf.len() / block) * block;
+    if take_len == 0 {
+        return Vec::new();
+    }
+    let out = resample_to_16k_mono(&buf[..take_len], src_rate);
+    buf[..take_len].zeroize();
+    buf.drain(..take_len);
+    out
 }
 
 /// Anti-aliased boxcar-filtered linear resampler from arbitrary `src_rate` (e.g. 44.1 / 48 kHz) to 16 kHz mono.
@@ -441,5 +562,19 @@ mod tests {
         let out = resample_to_16k_mono(&src, 44_100);
         assert_eq!(out.len(), 16_000);
         assert!((out[100] - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn incremental_drain_matches_oneshot_48k() {
+        let full: Vec<f32> = (0..48_005).map(|i| ((i as f32) * 0.007).cos()).collect();
+        let expected = resample_to_16k_mono(&full, 48_000);
+        let mut buf = Vec::new();
+        let mut got = Vec::new();
+        for ch in full.chunks(1_111) {
+            buf.extend_from_slice(ch);
+            got.extend(take_aligned_16k(&mut buf, 48_000));
+        }
+        got.extend(resample_to_16k_mono(&buf, 48_000));
+        assert_eq!(got, expected);
     }
 }

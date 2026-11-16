@@ -164,3 +164,13 @@ on the old setting; their text arrives as a completion message, and the grammar 
   the file tool or a script file instead.
 - Acceptance rule: live output text must not lose words relative to v0.4.0 one-shot output.
 - Do not change `SileroVad` thresholds without a WER comparison; they were tuned in live mic tests.
+
+## Status update (v0.5.0 work, measured on i7-8850H / 64 GB, CPU only)
+
+Measured (bench/results, gitignored; rerun with bench/run_bench.py + score_bench.py):
+- 47 s dictation, Parakeet v2, live streaming: release-to-ready ~0.5-0.7 s (v0.4.0: 9.8-26 s), 3/3 paragraphs (v0.4.0: 1 paragraph).
+- Multi-model, 6 clips, `--live --live-speed 2`: WER % / 1-min warm post-release ms: Parakeet v2 2.09/372, Moonshine Base 2.79/168, SenseVoice 3.14/176, Whisper small.en 2.44/16160, Parakeet v3 4.18/680, Moonshine Tiny 6.62/113. Parakeet v2 stays the default.
+- Correction eval (88 cases): Tier-0 only 45 exact-ref, SLM v0.4.0 46 (p50 1206 ms), SLM v0.5.0 52 (p50 0.4 ms, SLM only called on 23/88 cases); must-keep and forbidden-term invariants 100% in all.
+- Real Windows E2E (`--win32-e2e-test <60s wav>`): direct typing into external window, text exact match, 2 paragraphs, release-to-ready ~7.2 s with SLM on (3.5 s of it SLM rewrite).
+
+Not verified: full 120/300/600 s matrix on v0.5.0 for all six models, noisy/quiet real-human speech, live human mic dictation, installer/zip build, release publish. Tier-0 ref-match rate is not a quality claim (references are stylistic).

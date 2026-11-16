@@ -31,7 +31,7 @@ pub struct PttController {
 
 impl Default for PttController {
     fn default() -> Self {
-        Self::new(ActivationMode::HoldToTalk, 110, 120_000)
+        Self::new(ActivationMode::HoldToTalk, 110, 1_800_000)
     }
 }
 
