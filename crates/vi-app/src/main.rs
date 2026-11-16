@@ -37,6 +37,7 @@ struct RuntimePaths {
     sherpa_lib_dir: PathBuf,
     models_dir: PathBuf,
     user_models_dir: PathBuf,
+    system_models_dir: PathBuf,
     silero_vad_path: PathBuf,
     llama_server_bin: PathBuf,
 }
@@ -64,6 +65,7 @@ impl RuntimePaths {
             });
 
         let user_models_dir = AppConfig::default_models_dir();
+        let system_models_dir = PathBuf::from(r"C:\Program Files\KeyReed\models");
         let models_dir = env::var("KEYREED_MODELS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -79,6 +81,7 @@ impl RuntimePaths {
             let candidates = [
                 models_dir.join("silero_vad.onnx"),
                 user_models_dir.join("silero_vad.onnx"),
+                system_models_dir.join("silero_vad.onnx"),
                 root.join("models").join("silero_vad.onnx"),
                 root.join("silero_vad.onnx"),
             ];
@@ -110,36 +113,45 @@ impl RuntimePaths {
             sherpa_lib_dir,
             models_dir,
             user_models_dir,
+            system_models_dir,
             silero_vad_path,
             llama_server_bin,
         }
     }
 
-    /// Returns a writable directory for downloading models. If `models_dir` is in `Program Files`
-    /// and not writable without elevation, falls back to `%LOCALAPPDATA%\keyreed\models`.
+    /// Returns a persistent writable directory (`%LOCALAPPDATA%\keyreed\models`) for on-demand model downloads
+    /// so downloaded models survive application upgrades and reinstallations.
     fn writable_models_dir(&self) -> PathBuf {
         if env::var("KEYREED_MODELS_DIR").is_ok() {
+            let _ = std::fs::create_dir_all(&self.models_dir);
             return self.models_dir.clone();
         }
-        let probe = self.models_dir.join(".write_probe");
-        if std::fs::create_dir_all(&self.models_dir).is_ok()
-            && std::fs::write(&probe, b"ok").is_ok()
-        {
-            let _ = std::fs::remove_file(&probe);
-            return self.models_dir.clone();
+        if std::fs::create_dir_all(&self.user_models_dir).is_ok() {
+            return self.user_models_dir.clone();
         }
-        let _ = std::fs::create_dir_all(&self.user_models_dir);
-        self.user_models_dir.clone()
+        let _ = std::fs::create_dir_all(&self.models_dir);
+        self.models_dir.clone()
     }
 
-    /// Finds which models root (`models_dir` or `user_models_dir`) contains `folder_name`.
+    /// Finds which models root (`user_models_dir`, `models_dir`, or `system_models_dir`) contains `folder_name`.
     fn find_installed_model_root(&self, folder_name: &str) -> Option<PathBuf> {
-        for root in [&self.models_dir, &self.user_models_dir] {
+        for root in [&self.user_models_dir, &self.models_dir, &self.system_models_dir] {
             if root.join(folder_name).exists() {
                 return Some(root.clone());
             }
         }
         None
+    }
+
+    /// Lists all catalog ASR model IDs currently installed on disk.
+    fn list_installed_asr_ids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for spec in vi_asr::catalog::ASR_CATALOG {
+            if self.find_installed_model_root(spec.folder_name).is_some() {
+                out.push(spec.id.to_string());
+            }
+        }
+        out
     }
 
     fn resolve_gguf_path(&self, model_id: &str) -> Option<PathBuf> {
@@ -151,7 +163,7 @@ impl RuntimePaths {
             "Qwen3.5-0.8B-Q4_K_M.gguf".to_string(),
             "Qwen3-0.6B-Q4_K_M.gguf".to_string(),
         ];
-        for root in [&self.models_dir, &self.user_models_dir] {
+        for root in [&self.user_models_dir, &self.models_dir, &self.system_models_dir] {
             for name in &candidates {
                 let p = root.join(name);
                 if p.exists() {
@@ -543,7 +555,7 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
             "--repeat" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
-                    repeat = v.parse().unwrap_or(1).clamp(1, 20);
+                    repeat = v.parse().unwrap_or(1).clamp(1, 200);
                 }
             }
             _ => {}
@@ -943,10 +955,12 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
     // 6. Spawn live Tray + Non-Activating Layered Floating Pill + Settings Window + Dedicated External Target Window!
     let (ui_tx, _ui_rx) = crossbeam_channel::unbounded();
     let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
+    let installed_asr = RuntimePaths::discover(&cfg).list_installed_asr_ids();
     let (gui, _pump) = vi_win32::ui::win_gui::init_and_spawn_gui_windows(
         ui_tx,
         cfg.clone(),
         mic_names.clone(),
+        installed_asr,
         true,
     )?;
     gui.sync(EngineState::Listening, 0.65, None);
@@ -1059,6 +1073,18 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
             std::thread::sleep(Duration::from_millis(80));
         }
         let ctx_ask = capture_foreground_context(true);
+        write_clipboard_unicode("PRE_EXISTING_CLIPBOARD_STAYS", true)?;
+        let out_ask_cancel = prompt_and_deliver_ask_before_inserting(
+            "Cancelled insert touches neither target nor clipboard.",
+            &ctx_ask,
+            true,
+            false,
+            true,
+            Some(vi_win32::AskInsertDecision::Cancel),
+        )?;
+        let readback_after_cancel = read_hwnd_text(target_edit_hwnd);
+        let clip_after_cancel = read_clipboard_unicode().unwrap_or_default();
+
         let out_ask_decline = prompt_and_deliver_ask_before_inserting(
             "Declined insert stays on clipboard only.",
             &ctx_ask,
@@ -1078,6 +1104,29 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
         )?;
         std::thread::sleep(Duration::from_millis(120));
         let readback_after_approve = read_hwnd_text(target_edit_hwnd);
+
+        // 7b2. Terminal Newline Sanitization (AppCategory::Terminal never injects CR or LF)
+        unsafe {
+            clear_hwnd_text(target_edit_hwnd);
+            let _ = vi_win32::force_foreground_window(target_hwnd as isize);
+            SendMessageW(target_hwnd, 0x0400 + 70, 0, 0);
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        let mut ctx_term = capture_foreground_context(true);
+        ctx_term.category = AppCategory::Terminal;
+        let term_input = format!("kubectl get pods{}\necho second_line\n", char::from(13u8));
+        let _ = deliver_direct_or_clipboard_fallback(
+            &term_input,
+            &ctx_term,
+            true,
+            false,
+            true,
+        )?;
+        std::thread::sleep(Duration::from_millis(120));
+        let term_readback = read_hwnd_text(target_edit_hwnd);
+        let terminal_newline_stripped = !term_readback.contains('\n')
+            && !term_readback.contains(char::from(13u8))
+            && term_readback.contains("kubectl get pods echo second_line");
 
         // 7c. Password Field Protection (ES_PASSWORD control id=202)
         unsafe {
@@ -1107,19 +1156,48 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
             true,
         )?;
 
+        // 7e. Adversarial Fault Injection: Corrupted Model Quarantine & Download Cancel
+        let fault_dir = std::env::temp_dir().join(format!("keyreed_fault_test_{}", std::process::id()));
+        let corrupt_model_dir = fault_dir.join("sherpa-onnx-moonshine-tiny-en-int8");
+        let _ = std::fs::remove_dir_all(&fault_dir);
+        std::fs::create_dir_all(&corrupt_model_dir)?;
+        std::fs::write(corrupt_model_dir.join("tokens.txt"), b"TAMPERED_CONTENT")?;
+        let corrupt_rejected = vi_asr::integrity::prepare_installed_model(&fault_dir, "moonshine-tiny-en-int8").is_err()
+            && !corrupt_model_dir.exists()
+            && fault_dir.join(".rejected").exists();
+        let cancel_flag = AtomicBool::new(true);
+        let cancel_dest = fault_dir.join("cancelled.tar.bz2");
+        let cancel_aborted = vi_asr::catalog::download_verified_with_progress(
+            "http://127.0.0.1:1/unreachable.tar.bz2",
+            &cancel_dest,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            Some(&cancel_flag),
+            None,
+        )
+        .is_err()
+            && !cancel_dest.exists();
+        let _ = std::fs::remove_dir_all(&fault_dir);
+
         auto_insert_matrix = serde_json::json!({
             "unicode_multiline_outcome": format!("{:?}", out_direct),
             "unicode_multiline_readback": readback_unicode,
             "unicode_multiline_verified": readback_unicode.contains("नमस्ते भारत") && readback_unicode.contains("₹1,250") && readback_unicode.contains("Line 2:"),
+            "ask_before_inserting_cancel_outcome": format!("{:?}", out_ask_cancel),
+            "ask_before_inserting_cancel_target_empty": readback_after_cancel.is_empty(),
+            "ask_before_inserting_cancel_clipboard_preserved": clip_after_cancel.as_deref() == Some("PRE_EXISTING_CLIPBOARD_STAYS"),
             "ask_before_inserting_decline_outcome": format!("{:?}", out_ask_decline),
             "ask_before_inserting_decline_target_empty": readback_after_decline.is_empty(),
             "ask_before_inserting_approve_outcome": format!("{:?}", out_ask_approve),
             "ask_before_inserting_approve_readback": readback_after_approve,
+            "terminal_newline_sanitized": terminal_newline_stripped,
+            "terminal_sanitized_readback": term_readback,
             "password_field_detected": ctx_pw.is_password_field,
             "password_field_outcome": format!("{:?}", out_pw),
             "password_field_target_empty": pw_readback.is_empty(),
             "toctou_focus_switch_outcome": format!("{:?}", out_toctou),
             "win11_notepad_deep_richedit_discovery": notepad_deep_editor_found,
+            "corrupted_model_quarantined": corrupt_rejected,
+            "cancelled_download_cleaned_up": cancel_aborted,
         });
     }
 
@@ -1254,20 +1332,36 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     )?);
 
     let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
+    let init_paths = RuntimePaths::discover(&initial_cfg);
+    let installed_asr = init_paths.list_installed_asr_ids();
+    let active_model_installed = vi_asr::catalog::find_model_spec(&initial_cfg.local_asr_model)
+        .and_then(|s| init_paths.find_installed_model_root(s.folder_name))
+        .is_some();
+    let is_minimized = env::args().any(|a| a == "--minimized");
+    let should_open_settings =
+        open_settings_on_start || (!is_minimized && (!initial_cfg.first_run_completed || !active_model_installed));
+
     let (gui_handle, gui_pump) = vi_win32::ui::win_gui::init_and_spawn_gui_windows(
-        ui_tx,
+        ui_tx.clone(),
         initial_cfg.clone(),
         mic_names,
-        open_settings_on_start,
+        installed_asr,
+        should_open_settings,
     )?;
 
     let gui_for_worker = gui_handle.clone();
     let hk_for_worker = Arc::clone(&hk_engine);
+    let download_cancel_flag = Arc::new(AtomicBool::new(false));
+    let download_active_flag = Arc::new(AtomicBool::new(false));
 
     std::thread::Builder::new()
         .name("keyreed-coordinator".to_string())
         .spawn(move || {
             let mut cfg = initial_cfg;
+            if !cfg.first_run_completed && active_model_installed {
+                cfg.first_run_completed = true;
+                let _ = cfg.save_atomic(&cfg_path);
+            }
             let mut history = HistoryStore::load_or_default(&hist_path);
             let mut ptt = PttController::new(cfg.activation_mode, 110, 120_000);
             let _ = ptt.set_app_enabled(cfg.app_enabled);
@@ -1279,7 +1373,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                 if paths.find_installed_model_root(spec.folder_name).is_none() {
                     gui_for_worker.notify_toast(
                         PRODUCT_NAME,
-                        "Speech model is not installed yet. Open the tray menu or Settings and click Download Default Speech Model.",
+                        "Speech model is not installed yet. Click Download in Settings or choose Download Default Speech Model in the tray menu.",
                     );
                 }
             }
@@ -1289,6 +1383,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut last_completed_text = String::new();
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
+            let mut transient_state_until: Option<Instant> = None;
             let start_epoch = Instant::now();
             let now_ms = || start_epoch.elapsed().as_millis() as u64;
 
@@ -1387,50 +1482,174 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     );
                                 }
                             }
-                            Ok(UiAction::DownloadDefaultModel) => {
-                                let dl_dir = RuntimePaths::discover(&cfg).writable_models_dir();
-                                let gui_dl = gui_for_worker.clone();
-                                std::thread::spawn(move || {
-                                    gui_dl.notify_toast(
+                            Ok(UiAction::CancelModelDownload) => {
+                                download_cancel_flag.store(true, Ordering::Relaxed);
+                                gui_for_worker.update_status("Cancelling model download...", false, None);
+                            }
+                            Ok(UiAction::DownloadDefaultModel) | Ok(UiAction::DownloadModel(_)) => {
+                                let model_id = match ua {
+                                    Ok(UiAction::DownloadModel(id)) => id,
+                                    _ => "parakeet-tdt-0.6b-v2-int8".to_string(),
+                                };
+                                if download_active_flag.swap(true, Ordering::SeqCst) {
+                                    gui_for_worker.notify_toast(
                                         PRODUCT_NAME,
-                                        "Downloading the default speech model. This may take a few minutes.",
+                                        "A speech model download is already in progress.",
                                     );
-                                    let result = match vi_asr::catalog::find_model_spec("parakeet-tdt-0.6b-v2-int8") {
-                                        Some(spec) => vi_asr::catalog::ensure_model_present(&dl_dir, spec).map(|_| ()),
-                                        None => Err(anyhow::anyhow!("default speech model is not in the catalog")),
-                                    };
-                                    match result {
-                                        Ok(()) => gui_dl.notify_toast(PRODUCT_NAME, "Default speech model is verified and ready."),
-                                        Err(e) => gui_dl.notify_toast(
-                                            PRODUCT_NAME,
-                                            &format!("Model download failed: {e}"),
-                                        ),
+                                } else {
+                                    cfg.local_asr_model = model_id.clone();
+                                    let _ = cfg.save_atomic(&cfg_path);
+                                    gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
+
+                                    download_cancel_flag.store(false, Ordering::Relaxed);
+                                    let cancel_cl = Arc::clone(&download_cancel_flag);
+                                    let active_cl = Arc::clone(&download_active_flag);
+                                    let rpaths = RuntimePaths::discover(&cfg);
+                                    let dl_dir = rpaths.writable_models_dir();
+                                    let gui_dl = gui_for_worker.clone();
+                                    std::thread::spawn(move || {
+                                        let Some(spec) = vi_asr::catalog::find_model_spec(&model_id) else {
+                                            active_cl.store(false, Ordering::SeqCst);
+                                            gui_dl.update_status(&format!("Unknown model '{model_id}'"), false, None);
+                                            return;
+                                        };
+                                        if let Some(existing_root) = rpaths.find_installed_model_root(spec.folder_name) {
+                                            if vi_asr::integrity::prepare_installed_model(&existing_root, spec.id).is_ok() {
+                                                active_cl.store(false, Ordering::SeqCst);
+                                                let inst = rpaths.list_installed_asr_ids();
+                                                gui_dl.update_status(
+                                                    &format!("Ready: {} is already installed and verified.", spec.display_name),
+                                                    false,
+                                                    Some(inst),
+                                                );
+                                                return;
+                                            }
+                                        }
+                                        let start_msg = format!(
+                                            "Downloading {} (~{} MB)...",
+                                            spec.display_name, spec.approx_download_mb
+                                        );
+                                        gui_dl.update_status(&start_msg, true, None);
+                                        gui_dl.notify_toast(PRODUCT_NAME, &start_msg);
+                                        let gui_prog = gui_dl.clone();
+                                        let approx_mb = spec.approx_download_mb.max(1) as u64;
+                                        let name_short = spec.display_name;
+                                        let prog_cb = move |done_bytes: u64, total_opt: Option<u64>, stage: &'static str| {
+                                            if stage == "extracting" {
+                                                gui_prog.update_status(
+                                                    &format!("Verifying SHA-256 and extracting {}...", name_short),
+                                                    true,
+                                                    None,
+                                                );
+                                            } else if stage == "downloading" {
+                                                let done_mb = done_bytes / (1024 * 1024);
+                                                let tot_mb = total_opt
+                                                    .map(|t| (t / (1024 * 1024)).max(1))
+                                                    .unwrap_or(approx_mb);
+                                                let pct = ((done_mb * 100) / tot_mb).min(99);
+                                                gui_prog.update_status(
+                                                    &format!(
+                                                        "Downloading {}: {}% ({} / {} MB)...",
+                                                        name_short, pct, done_mb, tot_mb
+                                                    ),
+                                                    true,
+                                                    None,
+                                                );
+                                            }
+                                        };
+                                        let res = vi_asr::catalog::ensure_model_present_with_progress(
+                                            &dl_dir,
+                                            spec,
+                                            Some(&cancel_cl),
+                                            Some(&prog_cb),
+                                        );
+                                        active_cl.store(false, Ordering::SeqCst);
+                                        let inst = rpaths.list_installed_asr_ids();
+                                        match res {
+                                            Ok(_) => {
+                                                let ok_msg = format!(
+                                                    "Ready: {} is verified and ready to use.",
+                                                    spec.display_name
+                                                );
+                                                gui_dl.update_status(&ok_msg, false, Some(inst));
+                                                gui_dl.notify_toast(PRODUCT_NAME, &ok_msg);
+                                            }
+                                            Err(e) => {
+                                                let err_msg = format!("Model download stopped: {e}");
+                                                gui_dl.update_status(&err_msg, false, Some(inst));
+                                                gui_dl.notify_toast(PRODUCT_NAME, &err_msg);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            Ok(UiAction::TestMicrophone(sel_mic)) => {
+                                let gui_test = gui_for_worker.clone();
+                                std::thread::spawn(move || {
+                                    match ActiveCapture::start(sel_mic.as_deref()) {
+                                        Ok(cap) => {
+                                            let dev_name = cap.device_name().to_string();
+                                            let used_fb = cap.used_fallback_device();
+                                            std::thread::sleep(Duration::from_millis(1200));
+                                            let rms = cap.current_rms();
+                                            let peak = cap.peak_rms();
+                                            let samples = cap.stop_and_take_16k();
+                                            let pct = (peak * 100.0).round() as u32;
+                                            let fb_note = if used_fb { " [Fallback to Default]" } else { "" };
+                                            let msg = if samples.is_empty() {
+                                                format!(
+                                                    "Mic Error ({}{}): 0 samples captured. Check Windows Microphone Privacy.",
+                                                    dev_name, fb_note
+                                                )
+                                            } else if peak >= 0.94 {
+                                                format!(
+                                                    "Mic Warning ({}{}): Signal clipping (Peak {}%). Lower input volume.",
+                                                    dev_name, fb_note, pct
+                                                )
+                                            } else if peak >= 0.08 {
+                                                format!(
+                                                    "Mic OK ({}{}): Healthy signal ({} samples, Peak {}%, Level {:.2}).",
+                                                    dev_name, fb_note, samples.len(), pct, rms
+                                                )
+                                            } else if peak > 0.001 {
+                                                format!(
+                                                    "Mic Connected ({}{}): Active stream ({} samples, quiet room floor Peak {}%).",
+                                                    dev_name, fb_note, samples.len(), pct.max(1)
+                                                )
+                                            } else {
+                                                format!(
+                                                    "Mic Muted/Silent ({}{}): 0% signal ({} samples). Check hardware mute button.",
+                                                    dev_name, fb_note, samples.len()
+                                                )
+                                            };
+                                            gui_test.update_status(&msg, false, None);
+                                        }
+                                        Err(e) => {
+                                            gui_test.update_status(
+                                                &format!("Microphone error: {e}"),
+                                                false,
+                                                None,
+                                            );
+                                        }
                                     }
                                 });
                             }
-                            Ok(UiAction::DownloadModel(model_id)) => {
-                                let dl_dir = RuntimePaths::discover(&cfg).writable_models_dir();
-                                let gui_dl = gui_for_worker.clone();
-                                std::thread::spawn(move || {
-                                    let Some(spec) = vi_asr::catalog::find_model_spec(&model_id) else {
-                                        gui_dl.notify_toast(PRODUCT_NAME, &format!("Unknown model '{model_id}'"));
-                                        return;
-                                    };
-                                    gui_dl.notify_toast(
-                                        PRODUCT_NAME,
-                                        &format!("Downloading {} (~{} MB)…", spec.display_name, spec.approx_download_mb),
-                                    );
-                                    match vi_asr::catalog::ensure_model_present(&dl_dir, spec) {
-                                        Ok(_) => gui_dl.notify_toast(
-                                            PRODUCT_NAME,
-                                            &format!("{} is verified and ready.", spec.display_name),
-                                        ),
-                                        Err(e) => gui_dl.notify_toast(
-                                            PRODUCT_NAME,
-                                            &format!("Model download failed: {e}"),
-                                        ),
-                                    }
-                                });
+                            Ok(UiAction::ResetToDefaults) => {
+                                let mut def_cfg = AppConfig::default();
+                                def_cfg.first_run_completed = true;
+                                if let Ok(exe) = env::current_exe() {
+                                    let _ = set_autostart_enabled(AUTOSTART_REG_VALUE, false, &exe);
+                                }
+                                ptt.set_activation_mode(def_cfg.activation_mode);
+                                hk_for_worker.update_shortcuts(
+                                    def_cfg.ptt_hotkey.clone(),
+                                    def_cfg.mode_cycle_hotkey.clone(),
+                                );
+                                hk_for_worker.set_enabled(true);
+                                cfg = def_cfg;
+                                supervisor = InferenceSupervisor::new(&cfg);
+                                let _ = cfg.save_atomic(&cfg_path);
+                                gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                             }
                             Ok(UiAction::SessionOrPowerReset) => {
                                 hk_for_worker.reset_modifiers();
@@ -1548,6 +1767,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 gui_for_worker.sync(EngineState::Listening, mic.current_rms(), None);
                             }
                         } else {
+                            if let Some(deadline) = transient_state_until {
+                                if Instant::now() >= deadline {
+                                    transient_state_until = None;
+                                    ptt.transition_to_idle();
+                                    gui_for_worker.sync(ptt.state().clone(), 0.0, None);
+                                }
+                            }
                             supervisor.maybe_unload_idle(cfg.idle_unload_seconds);
                         }
                     }
@@ -1557,6 +1783,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     PttAction::None => {}
                     PttAction::StartRecording => {
                         timing_mark("coordinator_start_recording");
+                        transient_state_until = None;
                         let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
                         captured_fg_ctx = if cur_fg.hwnd != 0 && cur_fg.process_id != std::process::id() {
                             last_external_fg_ctx = cur_fg.clone();
@@ -1579,6 +1806,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 busy_flag.store(false, Ordering::Relaxed);
                                 gui_for_worker.sync(EngineState::Error(msg.clone()), 0.0, None);
                                 gui_for_worker.notify_toast(PRODUCT_NAME, &msg);
+                                transient_state_until = Some(Instant::now() + Duration::from_millis(3500));
                             }
                         }
                     }
@@ -1650,13 +1878,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         gui_for_worker.notify_toast(title, &preview);
                                     }
 
-                                    // Return visual state smoothly from ReadyToPaste -> Idle after 1.6s
-                                    let gui_reset = gui_for_worker.clone();
-                                    std::thread::spawn(move || {
-                                        std::thread::sleep(Duration::from_millis(1600));
-                                        gui_reset.sync(EngineState::Idle, 0.0, None);
-                                    });
                                     ptt.transition_to_idle();
+                                    transient_state_until = Some(Instant::now() + Duration::from_millis(1600));
                                 }
                                 Ok(_) => {
                                     ptt.transition_to_idle();
@@ -1667,8 +1890,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     ptt.transition_to_error(&msg);
                                     gui_for_worker.sync(EngineState::Error(msg.clone()), 0.0, None);
                                     gui_for_worker.notify_toast(PRODUCT_NAME, &msg);
+                                    transient_state_until = Some(Instant::now() + Duration::from_millis(3500));
                                 }
                             }
+                        }
+                        // Drain any stale key events that arrived while pipeline was busy unless shortcut is still held
+                        if cfg.activation_mode == vi_core::ActivationMode::HoldToTalk
+                            && !is_spec_physically_down(&cfg.ptt_hotkey)
+                        {
+                            while hk_rx.try_recv().is_ok() {}
+                            hk_for_worker.reset_modifiers();
                         }
                         busy_flag.store(false, Ordering::Relaxed);
                     }

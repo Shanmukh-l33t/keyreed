@@ -76,6 +76,7 @@ window.KR_CODE={
   "path": "crates/vi-asr/src/catalog.rs",
   "start": 20,
   "lines": [
+   " ",
    "<span class=\"sx-a\">#[derive(Debug, Clone, Serialize, Deserialize)]</span>",
    "<span class=\"sx-k\">pub</span> <span class=\"sx-k\">struct</span> <span class=\"sx-t\">AsrModelSpec</span> {",
    "    <span class=\"sx-k\">pub</span> id: &amp;'<span class=\"sx-k\">static</span> <span class=\"sx-k\">str</span>,",
@@ -104,15 +105,14 @@ window.KR_CODE={
    "        approx_ram_mb: <span class=\"sx-n\">690</span>,",
    "        languages: <span class=\"sx-s\">\"en (Strong US/UK/Indian English + native punctuation)\"</span>,",
    "        license: <span class=\"sx-s\">\"CC-BY-4.0\"</span>,",
-   "        supports_hotwords: <span class=\"sx-k\">true</span>,",
-   "    },"
+   "        supports_hotwords: <span class=\"sx-k\">true</span>,"
   ],
   "hl": [
-   8,
    9,
-   23,
+   10,
    24,
-   27
+   25,
+   28
   ]
  },
  "tree": {
@@ -131,7 +131,7 @@ window.KR_CODE={
    "]",
    " ",
    "<span class=\"sx-t\">[workspace.package]</span>",
-   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.2.0\"</span>",
+   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.3.0\"</span>",
    "<span class=\"sx-f\">edition</span> = <span class=\"sx-s\">\"2021\"</span>",
    "<span class=\"sx-f\">license</span> = <span class=\"sx-s\">\"MIT OR Apache-2.0\"</span>",
    " ",

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tar::Archive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,8 +137,16 @@ pub fn validate_safe_relative_path(entry_path: &Path) -> Result<()> {
 }
 
 /// Safely extracts a `.tar.bz2` model bundle while rejecting symlinks, hardlinks, device nodes,
-/// and `..` path traversal.
+/// and `..` path traversal. If `only_files` is provided, only extracts files whose relative name matches.
 pub fn extract_tar_bz2_safely(archive_path: &Path, dest_root: &Path) -> Result<()> {
+    extract_tar_bz2_filtered(archive_path, dest_root, None)
+}
+
+pub fn extract_tar_bz2_filtered(
+    archive_path: &Path,
+    dest_root: &Path,
+    only_files: Option<&[&str]>,
+) -> Result<()> {
     fs::create_dir_all(dest_root)?;
     let file = File::open(archive_path)?;
     let bz = BzDecoder::new(file);
@@ -146,11 +155,27 @@ pub fn extract_tar_bz2_safely(archive_path: &Path, dest_root: &Path) -> Result<(
     for entry_res in archive.entries()? {
         let mut entry = entry_res?;
         let etype = entry.header().entry_type();
-        if etype.is_symlink() || etype.is_hard_link() || etype.is_block_special() || etype.is_character_special() || etype.is_fifo() {
+        if etype.is_symlink()
+            || etype.is_hard_link()
+            || etype.is_block_special()
+            || etype.is_character_special()
+            || etype.is_fifo()
+        {
             bail!("refusing unsafe tar entry type {:?}", etype);
         }
         let rel = entry.path()?.into_owned();
         validate_safe_relative_path(&rel)?;
+        if let Some(allowed) = only_files {
+            if etype.is_file() {
+                let fname = rel
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if !allowed.iter().any(|&a| a == fname) {
+                    continue;
+                }
+            }
+        }
         let out_path = dest_root.join(&rel);
         if etype.is_dir() {
             fs::create_dir_all(&out_path)?;
@@ -166,12 +191,20 @@ pub fn extract_tar_bz2_safely(archive_path: &Path, dest_root: &Path) -> Result<(
 
 /// Downloads a file over HTTPS with mandatory SHA-256 verification.
 pub fn download_verified(url: &str, dest_file: &Path, expected_sha256: &str) -> Result<String> {
+    download_verified_with_progress(url, dest_file, expected_sha256, None, None)
+}
+
+/// Downloads a file over HTTPS with mandatory SHA-256 verification, optional cancellation, and progress reporting.
+pub fn download_verified_with_progress(
+    url: &str,
+    dest_file: &Path,
+    expected_sha256: &str,
+    cancel_flag: Option<&AtomicBool>,
+    on_progress: Option<&dyn Fn(u64, Option<u64>)>,
+) -> Result<String> {
     if !url.starts_with("https://") {
         bail!("model downloads require HTTPS: {}", url);
     }
-    // Fail closed: an unpinned archive is a supply-chain hole (threat model T9). A malicious
-    // model file parsed by onnxruntime/llama.cpp can exploit the ONNX/GGUF CVE family, so we
-    // refuse to download anything without a 64-hex SHA-256 to check against.
     let exp = expected_sha256.trim();
     if exp.is_empty() || exp.len() != 64 || !exp.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!(
@@ -179,24 +212,62 @@ pub fn download_verified(url: &str, dest_file: &Path, expected_sha256: &str) -> 
             url
         );
     }
+    if let Some(c) = cancel_flag {
+        if c.load(Ordering::Relaxed) {
+            bail!("Download cancelled by user");
+        }
+    }
     if let Some(parent) = dest_file.parent() {
         fs::create_dir_all(parent)?;
     }
     let resp = ureq::get(url)
         .call()
         .with_context(|| format!("HTTPS download failed for {}", url))?;
+    let total_bytes: Option<u64> = resp
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok());
     let mut reader = resp.into_reader();
     let tmp = dest_file.with_extension("part");
     let mut out = File::create(&tmp)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
+    let mut downloaded = 0u64;
+    let mut last_reported = 0u64;
     loop {
-        let n = reader.read(&mut buf)?;
+        if let Some(c) = cancel_flag {
+            if c.load(Ordering::Relaxed) {
+                drop(out);
+                let _ = fs::remove_file(&tmp);
+                bail!("Download cancelled by user");
+            }
+        }
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                drop(out);
+                let _ = fs::remove_file(&tmp);
+                return Err(e).with_context(|| format!("network read interrupted for {}", url));
+            }
+        };
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
-        out.write_all(&buf[..n])?;
+        if let Err(e) = out.write_all(&buf[..n]) {
+            drop(out);
+            let _ = fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("disk write failed for {}", tmp.display()));
+        }
+        downloaded += n as u64;
+        if downloaded - last_reported >= 512 * 1024 {
+            last_reported = downloaded;
+            if let Some(cb) = on_progress {
+                cb(downloaded, total_bytes);
+            }
+        }
+    }
+    if let Some(cb) = on_progress {
+        cb(downloaded, total_bytes);
     }
     out.flush()?;
     drop(out);
@@ -216,17 +287,62 @@ pub fn download_verified(url: &str, dest_file: &Path, expected_sha256: &str) -> 
 }
 
 pub fn ensure_model_present(models_root: &Path, spec: &AsrModelSpec) -> Result<PathBuf> {
+    ensure_model_present_with_progress(models_root, spec, None, None)
+}
+
+pub fn ensure_model_present_with_progress(
+    models_root: &Path,
+    spec: &AsrModelSpec,
+    cancel_flag: Option<&AtomicBool>,
+    on_progress: Option<&dyn Fn(u64, Option<u64>, &'static str)>,
+) -> Result<PathBuf> {
     crate::integrity::sweep_incomplete(models_root)?;
     let target = models_root.join(spec.folder_name);
     if target.exists() {
         return crate::integrity::prepare_installed_model(models_root, spec.id);
     }
+    let _guard = crate::integrity::InProcessInstallGuard::acquire();
+    crate::integrity::write_install_pid(models_root)?;
     let incoming = models_root.join(".incoming");
     fs::create_dir_all(&incoming)?;
     let archive_tmp = incoming.join(format!("{}.tar.bz2", spec.folder_name));
-    download_verified(spec.download_url, &archive_tmp, spec.expected_sha256)?;
+    let reuse_existing_archive = if archive_tmp.exists() {
+        crate::integrity::sha256_file(&archive_tmp)
+            .map(|d| d.eq_ignore_ascii_case(spec.expected_sha256))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if !reuse_existing_archive {
+        let dl_cb = |done: u64, total: Option<u64>| {
+            if let Some(cb) = on_progress {
+                cb(done, total, "downloading");
+            }
+        };
+        let dl_res = download_verified_with_progress(
+            spec.download_url,
+            &archive_tmp,
+            spec.expected_sha256,
+            cancel_flag,
+            Some(&dl_cb),
+        );
+        if let Err(e) = dl_res {
+            let _ = fs::remove_file(&archive_tmp);
+            let _ = crate::integrity::clear_install_pid(models_root);
+            return Err(e);
+        }
+    }
+    if let Some(cb) = on_progress {
+        cb(0, None, "extracting");
+    }
     let install_res = crate::integrity::install_verified_archive(&archive_tmp, models_root, spec.id);
     let _ = fs::remove_file(&archive_tmp);
+    let _ = crate::integrity::clear_install_pid(models_root);
+    if install_res.is_ok() {
+        if let Some(cb) = on_progress {
+            cb(0, None, "ready");
+        }
+    }
     install_res
 }
 

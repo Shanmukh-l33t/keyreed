@@ -16,6 +16,7 @@ pub enum DirectTypeOutcome {
 pub enum AskInsertDecision {
     InsertIntoTarget,
     CopyToClipboardOnly,
+    Cancel,
 }
 
 #[cfg(windows)]
@@ -79,23 +80,33 @@ pub fn force_foreground_window(_target_hwnd: isize) -> bool {
 }
 
 /// Strips dangerous Unicode bidirectional override characters and non-printable control characters.
-/// In `Terminal` contexts, also strips CR and LF so dictated text can NEVER auto-execute a shell command!
+/// In `Terminal` contexts, replaces CR/LF sequences with a single space so dictated text can NEVER auto-execute a shell command!
 pub fn sanitize_for_injection(text: &str, is_terminal: bool) -> String {
-    text.chars()
-        .filter(|&c| {
-            // Strip bidi Trojan-Source overrides
-            if matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}') {
-                return false;
+    let mut out = String::with_capacity(text.len());
+    let mut last_was_space = false;
+    for c in text.chars() {
+        // Strip bidi Trojan-Source overrides
+        if matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}') {
+            continue;
+        }
+        if is_terminal && (c == '\x0d' || c == '\n') {
+            if !out.is_empty() && !last_was_space {
+                out.push(' ');
+                last_was_space = true;
             }
-            if is_terminal && (c == '\x0d' || c == '\n') {
-                return false;
-            }
-            if c.is_control() && c != '\n' && c != '\x0d' && c != '\t' {
-                return false;
-            }
-            true
-        })
-        .collect()
+            continue;
+        }
+        if c.is_control() && c != '\n' && c != '\x0d' && c != '\t' {
+            continue;
+        }
+        last_was_space = c == ' ';
+        out.push(c);
+    }
+    if is_terminal {
+        out.trim().to_string()
+    } else {
+        out
+    }
 }
 
 pub fn is_current_process_elevated() -> bool {
@@ -274,9 +285,18 @@ pub fn deliver_direct_or_clipboard_fallback(
         }
 
         // If target is a modern container like Windows 11 Notepad (`NotepadTextBox` -> `RichEditD2DPT`),
-        // ensure keyboard focus is inside the editor child if no child is focused.
+        // ensure keyboard focus is inside the editor child across process threads via AttachThreadInput.
         if let Some(editor_child) = crate::context::find_deep_editor_hwnd(target_hwnd) {
-            let _ = SetFocus(editor_child);
+            use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+            let target_tid = GetWindowThreadProcessId(target_hwnd, std::ptr::null_mut());
+            let cur_tid = GetCurrentThreadId();
+            if target_tid != 0 && target_tid != cur_tid {
+                let _ = AttachThreadInput(target_tid, cur_tid, 1);
+                let _ = SetFocus(editor_child);
+                let _ = AttachThreadInput(target_tid, cur_tid, 0);
+            } else {
+                let _ = SetFocus(editor_child);
+            }
         }
 
         let is_term = target_ctx.category == AppCategory::Terminal;
@@ -418,15 +438,14 @@ pub fn prompt_and_deliver_ask_before_inserting(
     exclude_from_clipboard_history: bool,
     override_decision: Option<AskInsertDecision>,
 ) -> Result<DirectTypeOutcome> {
-    write_clipboard_unicode(text, exclude_from_clipboard_history)?;
-
     let decision = if let Some(d) = override_decision {
         d
     } else {
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                MessageBoxW, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+                MessageBoxW, IDNO, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST,
+                MB_YESNOCANCEL,
             };
             let target_name = if target_ctx.process_name.is_empty() {
                 "the active window".to_string()
@@ -435,7 +454,7 @@ pub fn prompt_and_deliver_ask_before_inserting(
             };
             let preview: String = text.chars().take(280).collect();
             let prompt = format!(
-                "Insert dictated text into {}?\n\n\"{}\"\n\nClick Yes to auto-insert into {}, or No to keep it on the clipboard only.",
+                "Insert dictated text into {}?\n\n\"{}\"\n\n• Click Yes to auto-insert into {}.\n• Click No to keep on clipboard only.\n• Click Cancel to dismiss without inserting.",
                 target_name, preview, target_name
             );
             let title = "KeyReed — Ask Before Inserting\0"
@@ -446,12 +465,14 @@ pub fn prompt_and_deliver_ask_before_inserting(
                 std::ptr::null_mut(),
                 body.as_ptr(),
                 title.as_ptr(),
-                MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
+                MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
             );
             if ans == IDYES {
                 AskInsertDecision::InsertIntoTarget
-            } else {
+            } else if ans == IDNO {
                 AskInsertDecision::CopyToClipboardOnly
+            } else {
+                AskInsertDecision::Cancel
             }
         }
         #[cfg(not(windows))]
@@ -461,15 +482,28 @@ pub fn prompt_and_deliver_ask_before_inserting(
     };
 
     match decision {
-        AskInsertDecision::InsertIntoTarget => deliver_direct_or_clipboard_fallback(
-            text,
-            target_ctx,
-            block_passwords,
-            requires_command_confirmation,
-            exclude_from_clipboard_history,
-        ),
-        AskInsertDecision::CopyToClipboardOnly => Ok(DirectTypeOutcome::FallbackToClipboard {
-            reason: "user_chose_clipboard_only",
+        AskInsertDecision::InsertIntoTarget => {
+            write_clipboard_unicode(text, exclude_from_clipboard_history)?;
+            if target_ctx.hwnd != 0 {
+                let _ = force_foreground_window(target_ctx.hwnd as isize);
+                std::thread::sleep(std::time::Duration::from_millis(35));
+            }
+            deliver_direct_or_clipboard_fallback(
+                text,
+                target_ctx,
+                block_passwords,
+                requires_command_confirmation,
+                exclude_from_clipboard_history,
+            )
+        }
+        AskInsertDecision::CopyToClipboardOnly => {
+            write_clipboard_unicode(text, exclude_from_clipboard_history)?;
+            Ok(DirectTypeOutcome::FallbackToClipboard {
+                reason: "user_chose_clipboard_only",
+            })
+        }
+        AskInsertDecision::Cancel => Ok(DirectTypeOutcome::FallbackToClipboard {
+            reason: "user_cancelled_insert",
         }),
     }
 }

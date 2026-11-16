@@ -15,17 +15,14 @@ Do not copy a half-extracted model folder into place. Use the installer's models
 **No microphone, or the wrong one.**
 Windows may report no capture device, or desktop apps may be blocked. Check Settings, Privacy, Microphone, and allow desktop apps. Then choose the device in KeyReed Settings.
 
-**The text did not paste.**
-By default KeyReed copies the finished text and you paste it yourself. Click the target application first, then press Ctrl+V. If the target ignores clipboard paste, that is a target-application issue. Auto Insert is optional and falls back to the clipboard for password fields, elevated windows, or when the target has lost focus.
+**The text did not auto-insert.**
+By default (**Auto Insert**), KeyReed types the finished text directly into the focused window via Win32 `SendInput`. It automatically falls back to the clipboard (so you can press **Ctrl+V**) for password fields (`ES_PASSWORD`), elevated Administrator windows (UIPI), or when the target window lost focus during processing.
 
 **A recording was thrown away.**
 A lost key release, or the 120 second cap, discards the audio on purpose. It does not transcribe and does not change the clipboard. Escape also cancels.
 
 **Spoken symbols like "forward slash" are not applied.**
-They apply only in Terminal / Code mode. A code editor is classified as Technical, not Terminal / Code, unless you choose that mode yourself.
-
-**Some Settings labels show an underscore instead of an ampersand.**
-This is a known cosmetic issue in 0.1.1. It does not affect behaviour.
+Full spoken command symbols (`dash`, `double dash`, `pipe`, `forward slash`) apply in Terminal / Code mode. Spoken Windows paths (`C colon backslash Dev`), IPv4 addresses (`10 dot 0 dot 0 dot 1`), semantic versions (`v 0 dot 2 dot 0`), filenames (`auth_middleware dot rs`), and emails (`support at example dot com`) are formatted automatically across `Smart`, `Technical`, `Professional`, and `Terminal / Code` modes.
 
 **It feels slow, or memory use is high.**
 The first dictation loads the speech model, which is the slow part. On a 4 GB test VM the app plus local grammar runtime used roughly 1.6 GB. Models unload after 300 seconds idle by default. A lighter speech model (`moonshine-base-en-int8` or `moonshine-tiny-en-int8`) uses less RAM, with different accuracy.

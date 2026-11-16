@@ -2,9 +2,9 @@
 
 ## Requirements
 
-- 64-bit Windows 11 (Windows 10 is an intended target and was not re-tested for 0.1.1).
+- 64-bit Windows 11 (verified end-to-end on Windows 11 x64; Windows 10 x64 is supported by the Win32/WASAPI architecture).
 - A microphone that desktop apps are allowed to use.
-- About 33 MB for the installer and about 460 MB for the default speech model.
+- About 18 MB for the standard installer and about 460 MB for the default speech model (`Parakeet TDT 0.6B v2`).
 
 No Rust, Python, Visual Studio or command line is needed.
 
@@ -14,24 +14,25 @@ Both files are on the [latest release](https://github.com/Shanmukh-l33t/keyreed/
 
 | File | Use it when | Notes |
 | --- | --- | --- |
-| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Small installer. It does not include speech models; you download the default one once. |
-| `KeyReed-Full-x64.zip` | You want everything offline in one download. | About 1 GB. Contains the default speech model and the default grammar model. Extract and run `keyreed.exe`. |
+| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `17.8 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
+| `keyreed-0.3.0-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `30.8 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
+| `keyreed-0.3.0-windows-x64-full-offline.zip` | You want everything offline in one download. | `1.56 GB` archive containing `keyreed.exe`, runtimes, `Parakeet TDT 0.6B v2`, `Moonshine Base`, `Moonshine Tiny`, and `Qwen3.5-0.8B-Q4_K_M`. Extract and run `keyreed.exe`. |
 | `SHA256SUMS.txt` | You want to verify a download. | Checksums for the files above. |
 
 ## Install
 
 1. Run `KeyReed-Setup-x64.exe`. Windows may show an unknown-publisher prompt because the file is unsigned.
-2. Choose the install folder. The default is `C:\Program Files\KeyReed`.
+2. Choose the install folder. The default is `%LOCALAPPDATA%\Programs\KeyReed`.
 3. Finish. Leave "Launch KeyReed" checked to start it now. KeyReed lives in the system tray, and a Start Menu shortcut is created. A desktop shortcut is optional.
-4. From the tray menu choose **Download default speech model**. The download is HTTPS and is checked against pinned size and SHA-256 values before it is activated.
-5. Open **Settings** from the tray icon, pick your microphone and confirm the shortcut.
+4. On first launch, KeyReed opens **Settings** automatically if the default speech model is not installed yet. Click **Download** next to **Local Speech Engine** (or choose **Download default speech model** from the tray menu). The download is HTTPS and is checked against pinned size and SHA-256 values before it is activated.
+5. In **Settings**, pick your microphone, click **Test Mic** to verify your input level, and confirm your shortcut.
 
 ## First use
 
 1. Hold **Right Ctrl**, speak, release.
-2. When the tray says the text is ready, click where you want it and press **Ctrl+V**.
+2. By default (**Auto Insert**), KeyReed types the finished text directly into the focused window (falling back to the clipboard for password fields, elevated windows, or unfocused targets). You can switch to **Clipboard Only** or **Ask Before Inserting** at any time in Settings or the tray menu.
 
-Auto Insert (typing into the focused field) is off until you turn it on in the tray menu or Settings. Startup with Windows is also off by default.
+Startup with Windows is off by default.
 
 ## Verify your download
 
@@ -41,11 +42,12 @@ The Windows files are not code-signed, so check the hash against the one publish
 Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256
 ```
 
-For release 0.1.1:
+For release 0.3.0:
 
 ```text
-cba942e7e6e7236f6201ca9e8f77fd9e9798bfb66d8de3c235bb4355fa46ab10  KeyReed-Setup-x64.exe
-63767c3cf0a46561ae84ad5a49785a29852ec7d00af1d2fbc7f75e2bc872fcc5  KeyReed-Full-x64.zip
+2d0c87d56e36c3c363b3d3a43438f075c7c6fe2c47105feda92694a17e091bea  KeyReed-Setup-x64.exe
+1f4a73e79cda50be4ee9646757d30f7e0cad4bc3672ea990fcff0e6db381ed8d  keyreed-0.3.0-windows-x86_64-portable.zip
+79721a464d47248183909c3eb94ff935dd78bee7e259d3db12af36dc007fb0b5  keyreed-0.3.0-windows-x64-full-offline.zip
 ```
 
 A SmartScreen prompt on an unsigned file is expected. It is not a verdict on the file, but it is a good reason to compare the hash or build from source ([development guide](development.md)).

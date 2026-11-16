@@ -148,13 +148,15 @@
     setText('#dl-ver', `Version ${ver}`);
     const find = (name) => rel.assets.find((a) => a.name === name);
     const setup = find('KeyReed-Setup-x64.exe');
-    const full = find('KeyReed-Full-x64.zip');
+    const full = rel.assets.find((a) => a.name.includes('full-offline') || a.name === 'KeyReed-Full-x64.zip');
     if (setup) {
       setText('[data-bind="installer-size"]', fmtSize(setup.size));
       if (setup.digest && /^sha256:[0-9a-f]{64}$/.test(setup.digest)) setText('#sha-installer', setup.digest.slice(7));
     }
     if (full) {
       setText('[data-bind="full-size"]', fmtSize(full.size));
+      const dlFull = $('#dl-full');
+      if (dlFull && full.name) dlFull.href = `https://github.com/${REPO}/releases/latest/download/${full.name}`;
       if (full.digest && /^sha256:[0-9a-f]{64}$/.test(full.digest)) setText('#sha-full', full.digest.slice(7));
     }
   }

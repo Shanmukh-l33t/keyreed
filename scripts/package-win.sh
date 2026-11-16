@@ -28,7 +28,7 @@ done
 DEFAULT_ASR=(sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8)
 ALL_ASR=(sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 sherpa-onnx-moonshine-base-en-int8 sherpa-onnx-moonshine-tiny-en-int8)
 DEFAULT_LLM=(Qwen3.5-0.8B-Q4_K_M.gguf)
-ALL_LLM=(Qwen3.5-0.8B-Q4_K_M.gguf Qwen3-0.6B-Q4_K_M.gguf)
+ALL_LLM=(Qwen3.5-0.8B-Q4_K_M.gguf)
 
 if [[ "$MODE" == "slim" ]]; then
   ASR_SET=()
@@ -106,6 +106,7 @@ cp -f "$VAD" "$DIST/models/silero_vad.onnx"
 for folder in "${ASR_SET[@]}"; do
   src="$BENCH/$folder"
   [[ -d "$src" ]] || src="$FALLBACK_RT/models/$folder"
+  [[ -d "$src" ]] || src="${LOCALAPPDATA:-C:/Users/ImMandatory/AppData/Local}/keyreed/models/$folder"
   [[ -d "$src" ]] || { echo "FATAL: missing extracted ASR model $folder"; exit 1; }
   cp -r "$src" "$DIST/models/$folder"
   rm -rf "$DIST/models/$folder/test_wavs"

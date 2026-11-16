@@ -5,7 +5,7 @@ use std::collections::HashSet;
 static RE_TAGS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)</?transcript>").unwrap());
 static RE_NUMBERS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d+(?:[.:]\d+)*\b").unwrap());
 static RE_EMAIL_OR_PATH: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}|[a-z0-9_-]+\.(?:rs|py|js|ts|go|json|yaml|yml|toml|exe|dll|md|sql|sh|ps1))").unwrap()
+    Regex::new(r"(?i)(?:[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}|[a-z0-9_-]+\.(?:rs|py|js|ts|go|json|yaml|yml|toml|exe|dll|md|sql|sh|ps1|gguf|onnx)|[a-z]:\\[a-z0-9_.\-\\]+|\b[a-z0-9]+_[a-z0-9_]+\b)").unwrap()
 });
 static RE_WORDS: Lazy<Regex> = Lazy::new(|| Regex::new(r"[a-zA-Z0-9']+").unwrap());
 
@@ -80,10 +80,17 @@ pub fn verify_rewrite_candidate(tier0_text: &str, candidate_raw: &str) -> GuardV
         }
     }
 
-    // Every email address and code filename in Tier 0 must survive (case-insensitive)
+    // Every email address, code filename, Windows path, and snake_case identifier in Tier 0 must survive (case-insensitive)
     for m in RE_EMAIL_OR_PATH.find_iter(tier0_text) {
         if !lower.contains(&m.as_str().to_lowercase()) {
             return GuardVerdict::Rejected("identifier_or_email_dropped");
+        }
+    }
+
+    // Currency symbols in Tier 0 must survive
+    for sym in ['₹', '$', '€', '£'] {
+        if tier0_text.contains(sym) && !cleaned.contains(sym) {
+            return GuardVerdict::Rejected("currency_symbol_dropped");
         }
     }
 
