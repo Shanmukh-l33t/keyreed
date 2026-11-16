@@ -40,7 +40,8 @@ check(brokenAria.length === 0, `all ${controls.length} aria-controls/labelledby 
 
 // ---- local files
 const localRefs = [...html.matchAll(/(?:src|href)="([^"#:]+)"/g)].map((m) => m[1]).filter((p) => !p.startsWith('//'));
-const missing = [...new Set(localRefs)].filter((p) => !existsSync(join(site, p)));
+// vercel.json has cleanUrls, so /page resolves to page.html.
+const missing = [...new Set(localRefs)].filter((p) => !existsSync(join(site, p)) && !existsSync(join(site, p + '.html')));
 check(missing.length === 0, `all ${new Set(localRefs).size} local files referenced exist${missing.length ? ': ' + missing.join(', ') : ''}`);
 
 // ---- images and links
