@@ -2,7 +2,7 @@
 window.KR_CODE={
  "privacy": {
   "path": "crates/vi-core/src/types.rs",
-  "start": 98,
+  "start": 176,
   "lines": [
    "<span class=\"sx-a\">#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]</span>",
    "<span class=\"sx-a\">#[serde(rename_all = \"snake_case\")]</span>",
@@ -25,6 +25,22 @@ window.KR_CODE={
    "        }",
    "    }",
    " ",
+   "    <span class=\"sx-k\">pub</span> <span class=\"sx-k\">fn</span> <span class=\"sx-f\">title</span>(<span class=\"sx-k\">self</span>) -&gt; &amp;'<span class=\"sx-k\">static</span> <span class=\"sx-k\">str</span> {",
+   "        <span class=\"sx-k\">match</span> <span class=\"sx-k\">self</span> {",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">MaxPrivacyOffline</span> =&gt; <span class=\"sx-s\">\"On this PC only\"</span>,",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">Balanced</span> =&gt; <span class=\"sx-s\">\"Local first\"</span>,",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">MaxAccuracy</span> =&gt; <span class=\"sx-s\">\"Cloud when available\"</span>,",
+   "        }",
+   "    }",
+   " ",
+   "    <span class=\"sx-k\">pub</span> <span class=\"sx-k\">fn</span> <span class=\"sx-f\">description</span>(<span class=\"sx-k\">self</span>) -&gt; &amp;'<span class=\"sx-k\">static</span> <span class=\"sx-k\">str</span> {",
+   "        <span class=\"sx-k\">match</span> <span class=\"sx-k\">self</span> {",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">MaxPrivacyOffline</span> =&gt; <span class=\"sx-s\">\"Audio and text never leave this computer. Recommended.\"</span>,",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">Balanced</span> =&gt; <span class=\"sx-s\">\"Runs locally. May use your cloud key for long or unclear recordings.\"</span>,",
+   "            <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">MaxAccuracy</span> =&gt; <span class=\"sx-s\">\"Uses your cloud key when online, falls back to local offline.\"</span>,",
+   "        }",
+   "    }",
+   " ",
    "    <span class=\"sx-k\">pub</span> <span class=\"sx-k\">fn</span> <span class=\"sx-f\">allows_network</span>(<span class=\"sx-k\">self</span>) -&gt; <span class=\"sx-k\">bool</span> {",
    "        !matches!(<span class=\"sx-k\">self</span>, <span class=\"sx-t\">ProcessingProfile</span>::<span class=\"sx-t\">MaxPrivacyOffline</span>)",
    "    }",
@@ -34,8 +50,8 @@ window.KR_CODE={
    3,
    4,
    5,
-   21,
-   22
+   37,
+   38
   ]
  },
  "config": {
@@ -131,7 +147,7 @@ window.KR_CODE={
    "]",
    " ",
    "<span class=\"sx-t\">[workspace.package]</span>",
-   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.3.0\"</span>",
+   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"0.4.0\"</span>",
    "<span class=\"sx-f\">edition</span> = <span class=\"sx-s\">\"2021\"</span>",
    "<span class=\"sx-f\">license</span> = <span class=\"sx-s\">\"MIT OR Apache-2.0\"</span>",
    " ",

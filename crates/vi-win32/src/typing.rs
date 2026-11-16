@@ -194,6 +194,33 @@ unsafe fn release_active_modifiers_cleanly() {
     }
 }
 
+/// Gives keyboard focus to KeyReed's own confirmation dialog when Windows' foreground lock refuses
+/// `SetForegroundWindow`. A tagged Alt tap makes this process the source of the last input event,
+/// which is the documented condition for being allowed to set the foreground window. Alt alone is
+/// ignored by the dialog; the tag keeps our hotkey hook from reacting to it.
+#[cfg(windows)]
+fn focus_dialog_with_alt_unlock(hwnd: isize) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_MENU,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+    let key = |flags| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT { wVk: VK_MENU, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: KEYREED_SYNTHETIC_TAG },
+        },
+    };
+    unsafe {
+        let down = [key(0)];
+        let up = [key(KEYEVENTF_KEYUP)];
+        let _ = SendInput(1, down.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        let _ = SetForegroundWindow(hwnd as _);
+        let _ = SendInput(1, up.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        GetForegroundWindow() as isize == hwnd
+    }
+}
+
 /// Attempts direct Unicode insertion into `target_ctx`, falling back to Clipboard automatically
 /// whenever UIPI, password protection, focus change (TOCTOU), unsupported target, or dangerous-command policy applies.
 pub fn deliver_direct_or_clipboard_fallback(
@@ -461,12 +488,31 @@ pub fn prompt_and_deliver_ask_before_inserting(
                 .encode_utf16()
                 .collect::<Vec<u16>>();
             let body: Vec<u16> = prompt.encode_utf16().chain(std::iter::once(0)).collect();
+            // Windows' foreground lock usually stops a background process from activating its own
+            // MessageBox, which left the dialog visible but without keyboard focus (Enter/Esc went to
+            // the user's app). Give it focus explicitly once it exists.
+            let focus_helper = std::thread::spawn(|| {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
+                let cls: Vec<u16> = "#32770\0".encode_utf16().collect();
+                let ttl: Vec<u16> = "KeyReed — Ask Before Inserting\0".encode_utf16().collect();
+                for _ in 0..60 {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    let h = FindWindowW(cls.as_ptr(), ttl.as_ptr());
+                    if !h.is_null() && IsWindowVisible(h) != 0 {
+                        let first = force_foreground_window(h as isize);
+                        let second = first || focus_dialog_with_alt_unlock(h as isize);
+                        crate::security::timing_mark(&format!("ask_dialog_focus attach={first} alt={second}"));
+                        return;
+                    }
+                }
+            });
             let ans = MessageBoxW(
                 std::ptr::null_mut(),
                 body.as_ptr(),
                 title.as_ptr(),
                 MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
             );
+            let _ = focus_helper.join();
             if ans == IDYES {
                 AskInsertDecision::InsertIntoTarget
             } else if ans == IDNO {

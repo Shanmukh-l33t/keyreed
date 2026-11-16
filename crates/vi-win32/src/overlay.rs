@@ -1,321 +1,640 @@
-//! Per-Monitor DPI v2 Non-Activating Layered Floating Microphone Control (Master Directive Section 8).
+//! Floating listener renderer (pure software, premultiplied BGRA, unit-testable).
 //!
-//! Uses `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` and `UpdateLayeredWindow`
-//! with an anti-aliased premultiplied-ARGB pill buffer featuring the official KeyReed keycap + reed-waveform
-//! brand mark, 5-bar live voice equalizer, and distinct state visuals (Idle, Listening, Processing, Completed, Error).
+//! Design (v0.4): an icon-first, compact capsule that only grows when it has something to say.
+//!
+//! | State        | Content                                          | Logical size @100% |
+//! |--------------|--------------------------------------------------|--------------------|
+//! | Idle         | KeyReed mark only                                | 36 x 36            |
+//! | Idle + hover | mark + writing mode + shortcut                   | text-sized         |
+//! | Listening    | mark + 11-bar waveform of *measured* mic levels  | 98 x 36            |
+//! | Processing   | mark + "Transcribing" with a moving sheen        | text-sized         |
+//! | Done         | mark + check + "Inserted" / "Copied"             | text-sized         |
+//! | Error        | mark + alert + short plain-language reason       | text-sized         |
+//!
+//! The window itself is `WS_EX_LAYERED | WS_EX_NOACTIVATE`; this module only produces pixels.
+//! Text is rasterised by the caller (GDI, grayscale AA) and passed in as a coverage mask so the
+//! final alpha is exact (GDI cannot write alpha into layered windows).
 
-use vi_core::EngineState;
+use crate::icon_data::{KEYREED_ICON_64, KEYREED_ICON_SIZE};
 
-/// Embedded 28x28 premultiplied-BGRA bitmap of the official KeyReed keycap + reed-waveform logo mark.
-pub const KEYREED_ICON_28_BGRA: [u32; 784] = [
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x01000000, 0x01000000, 0x01000000, 0x01000000, 0x01000000,
-    0x01000000, 0x01000000, 0x01000000, 0x01000000, 0x01000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x03000000, 0x02020202, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x03010101, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000, 0x07000000, 0x0A000000, 0x0B000000, 0x0B000000, 0x0B000000,
-    0x0C000000, 0x0C000000, 0x0A000000, 0x0B000000, 0x04000000, 0x00000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x02000000, 0x00000000, 0x3C000000, 0xB2252B2D, 0xE0565C5E, 0xE55C6264, 0xE65A6062, 0xE65C6162, 0xE6585F60,
-    0xE8606567, 0xE85F6466, 0xE65A6061, 0xE65C6163, 0xDB525B5C, 0xA3192021, 0x29000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x03000000, 0x00000000, 0x4B000000, 0xFC6F7677, 0xFFF3F4F5, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-    0xFFF7FFFD, 0xFFF9FFFD, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFE8EAEA, 0xEF535B5C, 0x34000000, 0x01010101, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x01000000, 0x01010101, 0x08000000, 0xE03A4143, 0xFFFFFFFF, 0xF9F9F9F9, 0xFEFBFBFB, 0xFDFBFBFB, 0xFEF9F9F9, 0xFEFEFCFC, 0xFEABC5BD,
-    0xFE10563B, 0xFEA5C2B8, 0xFEFBFBFB, 0xFEF8F9F8, 0xFDFAFAFA, 0xF8F8F8F8, 0xFFF2F4F4, 0xC61B2325, 0x00000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x03000000, 0x00000000, 0x45000000, 0xFF909697, 0xFCFCFCFC, 0xFFFAFAFA, 0xFFFFFFFF, 0xFFFCFDFD, 0xFFFDFEFD, 0xFFEEF4F2, 0xFF1B664F,
-    0xFF004529, 0xFFB3CCC4, 0xFFFDFEFD, 0xFFFBFCFB, 0xFFFFFFFF, 0xFFFBFBFB, 0xFDFDFDFD, 0xFB60696A, 0x25000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x04000000, 0x00000000, 0x99060C0D, 0xFED4D7D7, 0xFBFBFBFB, 0xFFFBFCFC, 0xFFFDFDFD, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFD6E4E0, 0xFF03543A,
-    0xFF296C57, 0xFFF0F5F3, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFCFDFC, 0xFFFBFBFB, 0xFBFBFBFB, 0xFFABB2B2, 0x79000202, 0x00000000, 0x04000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x01000000, 0x00000000, 0x0A000000, 0xE4374041, 0xFFFCFDFD, 0xFDFAFBFB, 0xFFFFFFFF, 0xFFFFFFFF, 0xFF8FB3A7, 0xFFAAC6BD, 0xFFE9EFED, 0xFF00422C,
-    0xFF447667, 0xFFFFFFFF, 0xFF6C9B8B, 0xFFC9DAD4, 0xFFFFFFFF, 0xFFFFFFFF, 0xFCFCFCFC, 0xFFEBEDED, 0xCD152222, 0x01000000, 0x01010101, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x03000000, 0x00000000, 0x49000000, 0xFF818989, 0xFDFDFDFD, 0xFFFFFFFF, 0xFFC4D6D0, 0xFFBDD1CA, 0xFF5D907F, 0xFF74A091, 0xFFF0F3F3, 0xFF003F2A,
-    0xFF407565, 0xFFFEFFFE, 0xFF1F634C, 0xFFAAC4BB, 0xFFA4BFB7, 0xFFE5EDEA, 0xFFFFFFFF, 0xFEFEFEFE, 0xFC576362, 0x2B000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x03000101, 0x00000000, 0x9C040B0B, 0xFED2D4D5, 0xFBEBF2F0, 0xFFB6CCC5, 0xFF7EA598, 0xFF639181, 0xFF749F91, 0xFF7CA496, 0xFFEEF2F2, 0xFF00452D,
-    0xFF3F7966, 0xFFFFFFFF, 0xFF2F705A, 0xFFADC7BE, 0xFF2E6B58, 0xFFB3CAC2, 0xFFAAC1BA, 0xFBFBFBFB, 0xFFAAB3B2, 0x80000302, 0x00000000, 0x04000000, 0x00000000, 0x00000000,
-    0x00000000, 0x01000000, 0x00000000, 0x0B000000, 0xE62F3A3B, 0xFFFFFFFF, 0xFEBED2CC, 0xFF357660, 0xFF8CADA2, 0xFF719B8D, 0xFF709C8F, 0xFF7CA598, 0xFFEFECEE, 0xFF00211A,
-    0xFF445E59, 0xFFFFFFFF, 0xFF2D6E58, 0xFFABC5BC, 0xFF477B6A, 0xFFA3BEB5, 0xFF195D47, 0xFDF1F5F4, 0xFFF0F1F1, 0xD4142523, 0x02000000, 0x01010101, 0x00000000, 0x00000000,
-    0x00000000, 0x03000000, 0x00000000, 0x4A000000, 0xFF7E8687, 0xFDFDFDFD, 0xFFE1E9E7, 0xFFB7CDC5, 0xFF7FA79A, 0xFF639484, 0xFF739D90, 0xFF7DA698, 0xFFEFECEE, 0xFF000D0F,
-    0xFF465152, 0xFFFFFFFF, 0xFF2E6C58, 0xFFAEC6BE, 0xFF2E6B58, 0xFFB3C9C2, 0xFFACC4BC, 0xFFF4F7F6, 0xFDFDFDFD, 0xFE596968, 0x34000000, 0x00000000, 0x03000000, 0x00000000,
-    0x00000000, 0x03000101, 0x00000000, 0x9D020809, 0xFECBCFCF, 0xFBFBFBFB, 0xFFFEFEFE, 0xFFFFFFFF, 0xFFB7CDC6, 0xFFAFC9C0, 0xFF639082, 0xFF78A194, 0xFFF0ECEF, 0xFF000F10,
-    0xFF465353, 0xFFFFFFFF, 0xFF24634F, 0xFFACC4BC, 0xFF89ADA2, 0xFFDDE7E4, 0xFFFFFFFF, 0xFFFBFCFB, 0xFBFBFBFB, 0xFFACB5B4, 0x8D000303, 0x00000000, 0x04000000, 0x00000000,
-    0x01000000, 0x00000000, 0x0C000000, 0xE7323D3D, 0xFFFBFBFB, 0xFDFDFDFD, 0xFFFEFEFE, 0xFFFCFDFD, 0xFFFFFFFF, 0xFFFFFFFF, 0xFF79A195, 0xFF98B9AE, 0xFFEDEAEC, 0xFF011011,
-    0xFF485354, 0xFFFFFFFF, 0xFF4D7F6F, 0xFFBDCFC9, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFCFDFC, 0xFFFEFEFE, 0xFDFDFDFD, 0xFFECEFEE, 0xDD162B29, 0x06000000, 0x01010101, 0x01000000,
-    0x04000000, 0x01010101, 0x4A000000, 0xFF535E5E, 0xFDFDFDFD, 0xFFFCFCFC, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFDFEFD, 0xFFFDFDFD, 0xFFFDFDFD, 0xFFFFFFFF, 0xFFD8DADB, 0xFF021011,
-    0xFF455151, 0xFFFFFFFF, 0xFFFBFDFC, 0xFFFFFFFF, 0xFFFCFDFD, 0xFFFEFEFE, 0xFFFFFFFF, 0xFFFEFEFE, 0xFFFDFDFD, 0xFDFDFDFD, 0xFF2A4642, 0x40000100, 0x00000000, 0x03000000,
-    0x03000101, 0x00000000, 0xA2050F10, 0xFE1F3030, 0xFBECEDED, 0xFFFFFFFF, 0xFFFCFCFC, 0xFFFCFDFD, 0xFFFCFDFD, 0xFFFCFDFD, 0xFFFBFBFB, 0xFFFCFCFC, 0xFFE4E5E6, 0xFF0A191A,
-    0xFF535E5E, 0xFFFCFDFD, 0xFFFBFBFB, 0xFFFCFDFD, 0xFFFCFCFC, 0xFFFCFDFD, 0xFFFCFDFD, 0xFFFBFCFC, 0xFFFFFFFF, 0xFBCED3D3, 0xFF082621, 0x9A041512, 0x00000000, 0x04000000,
-    0x00000000, 0x10000101, 0xEF0F1F1F, 0xFF061918, 0xFE5E6B6A, 0xFFE6E7E8, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFE5E7E7,
-    0xFFF7F7F7, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFCFD4D4, 0xFE2C4440, 0xFF011D18, 0xE807211D, 0x0B000000, 0x00000000,
-    0x00000000, 0x59050A0A, 0xFF0F2121, 0xFC172827, 0xFF324342, 0xFF3E4D4D, 0xFF52605F, 0xFF586564, 0xFF576363, 0xFF586363, 0xFF586363, 0xFF586363, 0xFF576262, 0xFF5F6A69,
-    0xFF5B6666, 0xFF556161, 0xFF586364, 0xFF586464, 0xFF586464, 0xFF586463, 0xFF576363, 0xFF455554, 0xFF0B2A25, 0xFF00241C, 0xFC052420, 0xFF062520, 0x51020909, 0x00000000,
-    0x00000000, 0x91081111, 0xFD0E1F1F, 0xFB223231, 0xFF455352, 0xFF283938, 0xFF071B1A, 0xFF021514, 0xFF031515, 0xFF031414, 0xFF021213, 0xFF021213, 0xFF021313, 0xFF001111,
-    0xFF011213, 0xFF021314, 0xFF021314, 0xFF011213, 0xFF001213, 0xFF001213, 0xFF001213, 0xFF011716, 0xFF072722, 0xFF062E26, 0xFB04231E, 0xFD05241F, 0x8F041211, 0x00000000,
-    0x00000000, 0x77070E0E, 0xFF122423, 0xF82F3E3D, 0xFE394847, 0xFE1D2E2D, 0xFE122424, 0xFE122424, 0xFE122323, 0xFE122222, 0xFE112021, 0xFE112021, 0xFE122121, 0xFE112122,
-    0xFE112122, 0xFE112122, 0xFE122222, 0xFE112021, 0xFE101F20, 0xFE102021, 0xFE102121, 0xFE0F2121, 0xFE092320, 0xFF052A23, 0xF903231E, 0xFF062420, 0x7D030F0E, 0x00000000,
-    0x01000000, 0x1A000202, 0xE8172526, 0xFF3A4A4A, 0xFF2D3D3C, 0xFF142625, 0xFF102121, 0xFF102020, 0xFF101F20, 0xFF101F20, 0xFF101E1F, 0xFF101E1F, 0xFF101E1F, 0xFF101E1F,
-    0xFF0F1E20, 0xFF0F1E1F, 0xFF0F1E1F, 0xFF0F1E1F, 0xFF0E1D1E, 0xFF0F1E1F, 0xFF0F1F20, 0xFF0F2020, 0xFF0C2220, 0xFF062722, 0xFF032C24, 0xF405211D, 0x22000404, 0x01000000,
-    0x02000000, 0x00000000, 0x28050808, 0xAD232C2C, 0xE81F2D2C, 0xF4102020, 0xFC101F1F, 0xFD0F1E1E, 0xFD101E1F, 0xFD101E1F, 0xFD0F1D1E, 0xFD0F1D1E, 0xFD0F1D1E, 0xFD0F1C1E,
-    0xFD101D1F, 0xFD0F1D1E, 0xFD0F1E1E, 0xFD0F1D1E, 0xFD0F1D1F, 0xFD0F1D1F, 0xFD0F1F20, 0xFD0F1F20, 0xFC0E2020, 0xF7082320, 0xCB03211B, 0x3C010806, 0x00000000, 0x02000000,
-    0x00000000, 0x01000000, 0x00000000, 0x00000000, 0x0E000101, 0x19010303, 0x24020404, 0x26020303, 0x26020404, 0x26020404, 0x26020304, 0x26020404, 0x26020304, 0x26020303,
-    0x26020404, 0x26020304, 0x26020404, 0x25020404, 0x26020405, 0x26020304, 0x26020404, 0x26020404, 0x25020404, 0x20010303, 0x00000000, 0x00000000, 0x02000000, 0x00000000,
-    0x00000000, 0x00000000, 0x02000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x02000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x01000000, 0x01000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000,
-    0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-];
+/// Logical (96-DPI) capsule height. Every other dimension derives from it.
+pub const PILL_HEIGHT: f32 = 36.0;
+/// Transparent margin around the capsule that holds the soft shadow.
+pub const PILL_MARGIN: f32 = 4.0;
+/// Number of waveform bars while listening.
+pub const WAVE_BARS: usize = 11;
 
-/// Pure software premultiplied-ARGB pill renderer (unit-testable and screenshot-verifiable).
-pub fn render_pill_bgra_premultiplied(
-    width: usize,
-    height: usize,
-    state: &EngineState,
-    rms_level: f32,
-) -> Vec<u32> {
-    render_pill_bgra_premultiplied_ex(width, height, state, rms_level, 0, false)
+/// Visual state of the listener. Mapped from `EngineState` by the window code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillKind {
+    Idle,
+    IdleHover,
+    Disabled,
+    Listening,
+    Processing,
+    Done,
+    /// Neutral outcome (discarded, nothing heard): label only, no success glyph.
+    Notice,
+    /// Needs the user's attention but is not an error (e.g. review a command before pasting).
+    Attention,
+    Error,
 }
 
-/// Extended renderer supporting animation phase and hover state for the floating control.
-pub fn render_pill_bgra_premultiplied_ex(
-    width: usize,
-    height: usize,
-    state: &EngineState,
-    rms_level: f32,
-    anim_tick: u32,
-    is_hovered: bool,
-) -> Vec<u32> {
-    let mut pixels = vec![0u32; width * height];
+/// Brand colours (from website/styles.css dark theme) as straight RGB.
+pub mod palette {
+    pub const SURFACE: (u8, u8, u8) = (0x0C, 0x14, 0x11);
+    pub const SURFACE_HOVER: (u8, u8, u8) = (0x12, 0x1D, 0x18);
+    pub const TEXT: (u8, u8, u8) = (0xE8, 0xF1, 0xEC);
+    pub const TEXT_2: (u8, u8, u8) = (0xA5, 0xB8, 0xAF);
+    pub const TEXT_3: (u8, u8, u8) = (0x6F, 0x85, 0x7B);
+    pub const EMERALD: (u8, u8, u8) = (0x10, 0xB9, 0x81);
+    pub const EMERALD_2: (u8, u8, u8) = (0x34, 0xD3, 0x99);
+    pub const MINT: (u8, u8, u8) = (0xA7, 0xF3, 0xD0);
+    pub const WARN: (u8, u8, u8) = (0xF5, 0xC2, 0x6B);
+    pub const ROSE: (u8, u8, u8) = (0xFB, 0x71, 0x85);
+    pub const ROSE_TEXT: (u8, u8, u8) = (0xFE, 0xCD, 0xD3);
+    pub const AMBER_TEXT: (u8, u8, u8) = (0xFD, 0xE6, 0x8A);
+    /// Slightly lifted circle behind the mark so the keycap's dark body keeps its silhouette.
+    pub const WELL: (u8, u8, u8) = (0x1B, 0x29, 0x23);
+}
+
+/// Grayscale text coverage mask (0..=255), row-major.
+#[derive(Debug, Clone, Copy)]
+pub struct TextMask<'a> {
+    pub width: usize,
+    pub height: usize,
+    pub coverage: &'a [u8],
+}
+
+/// One frame of the listener.
+#[derive(Debug, Clone, Copy)]
+pub struct PillFrame<'a> {
+    /// DPI scale (1.0 = 96 DPI).
+    pub scale: f32,
+    pub kind: PillKind,
+    /// Measured input levels, oldest first, each in `0.0..=1.0`. Only used while listening.
+    pub levels: &'a [f32],
+    /// Seconds since the state began; drives the processing sheen only.
+    pub phase: f32,
+    /// Primary label (mode name, status word, error reason).
+    pub label: Option<TextMask<'a>>,
+    /// Optional secondary label shown after the primary one in a dimmer colour (e.g. shortcut).
+    pub secondary: Option<TextMask<'a>>,
+    /// Opacity multiplier for the whole frame (0..=1).
+    pub opacity: f32,
+    /// Opacity of state content (labels, glyphs, bars) so it can fade in after a change.
+    pub content_opacity: f32,
+}
+
+/// Physical geometry derived from scale.
+#[derive(Debug, Clone, Copy)]
+pub struct PillMetrics {
+    pub margin: usize,
+    pub cap_h: usize,
+    pub icon: usize,
+    pub content_x: usize,
+    pub pad_right: usize,
+    pub gap: usize,
+    pub glyph: usize,
+    pub bar_w: f32,
+    pub bar_gap: f32,
+}
+
+impl PillMetrics {
+    pub fn for_scale(scale: f32) -> Self {
+        let s = scale.max(0.5);
+        let cap_h = (PILL_HEIGHT * s).round() as usize;
+        let margin = (PILL_MARGIN * s).round() as usize;
+        let icon = ((22.0 * s).round() as usize).max(12);
+        PillMetrics {
+            margin,
+            cap_h,
+            icon,
+            // Content starts just right of the icon well (a circle of diameter cap_h).
+            content_x: margin + cap_h - (3.0 * s).round() as usize,
+            pad_right: (13.0 * s).round() as usize,
+            gap: (6.0 * s).round() as usize,
+            glyph: (12.0 * s).round() as usize,
+            bar_w: (2.5 * s).max(1.5),
+            bar_gap: (2.5 * s).max(1.5),
+        }
+    }
+
+    pub fn window_height(&self) -> usize {
+        self.cap_h + 2 * self.margin
+    }
+
+    fn wave_width(&self) -> usize {
+        (WAVE_BARS as f32 * self.bar_w + (WAVE_BARS as f32 - 1.0) * self.bar_gap).ceil() as usize
+    }
+}
+
+/// Width of the window (including shadow margin) required for `kind` with the given label widths.
+pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w: usize) -> usize {
+    let m = PillMetrics::for_scale(scale);
+    let content = match kind {
+        PillKind::Idle | PillKind::Disabled => return m.cap_h + 2 * m.margin,
+        PillKind::Listening => m.wave_width(),
+        PillKind::Done | PillKind::Error | PillKind::Attention => m.glyph + m.gap + label_w,
+        PillKind::IdleHover => label_w + if secondary_w > 0 { m.gap + secondary_w } else { 0 },
+        PillKind::Processing | PillKind::Notice => label_w,
+    };
+    m.content_x + content + m.pad_right + m.margin
+}
+
+/// Maps an RMS value (linear, 0..1) to a perceptual 0..1 level using a -55 dBFS .. -15 dBFS window.
+pub fn rms_to_level(rms: f32) -> f32 {
+    if !rms.is_finite() || rms <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * rms.max(1e-6).log10();
+    ((db + 55.0) / 40.0).clamp(0.0, 1.0)
+}
+
+/// Box-filters the 64px brand mark to `n` px (premultiplied BGRA).
+pub fn scaled_icon(n: usize) -> Vec<u32> {
+    let src_n = KEYREED_ICON_SIZE;
+    let n = n.clamp(1, 256);
+    let mut out = vec![0u32; n * n];
+    let ratio = src_n as f32 / n as f32;
+    for dy in 0..n {
+        let sy0 = dy as f32 * ratio;
+        let sy1 = sy0 + ratio;
+        for dx in 0..n {
+            let sx0 = dx as f32 * ratio;
+            let sx1 = sx0 + ratio;
+            let (mut a, mut r, mut g, mut b, mut wsum) = (0f32, 0f32, 0f32, 0f32, 0f32);
+            let mut sy = sy0.floor() as usize;
+            while (sy as f32) < sy1 && sy < src_n {
+                let wy = ((sy + 1) as f32).min(sy1) - (sy as f32).max(sy0);
+                let mut sx = sx0.floor() as usize;
+                while (sx as f32) < sx1 && sx < src_n {
+                    let wx = ((sx + 1) as f32).min(sx1) - (sx as f32).max(sx0);
+                    let w = wx * wy;
+                    let p = KEYREED_ICON_64[sy * src_n + sx];
+                    a += ((p >> 24) & 0xFF) as f32 * w;
+                    r += ((p >> 16) & 0xFF) as f32 * w;
+                    g += ((p >> 8) & 0xFF) as f32 * w;
+                    b += (p & 0xFF) as f32 * w;
+                    wsum += w;
+                    sx += 1;
+                }
+                sy += 1;
+            }
+            if wsum > 0.0 {
+                let f = |v: f32| ((v / wsum).round().clamp(0.0, 255.0)) as u32;
+                out[dy * n + dx] = (f(a) << 24) | (f(r) << 16) | (f(g) << 8) | f(b);
+            }
+        }
+    }
+    out
+}
+
+/// Renders a frame into a premultiplied BGRA buffer of `width x height` (window size incl. margin).
+pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
+    let mut px = vec![0u32; width * height];
     if width < 8 || height < 8 {
-        return pixels;
+        return px;
     }
+    let m = PillMetrics::for_scale(f.scale);
+    let margin = m.margin as f32;
+    let cap_h = (height as f32 - 2.0 * margin).max(4.0);
+    let cap_w = (width as f32 - 2.0 * margin).max(cap_h);
+    let radius = cap_h * 0.5;
+    let cy = margin + radius;
+    let left_cx = margin + radius;
+    let right_cx = margin + cap_w - radius;
 
-    // State accent color (R, G, B) — aligned with KeyReed's forest emerald & charcoal design language
-    let (acc_r, acc_g, acc_b) = match state {
-        EngineState::Disabled => (108u8, 117u8, 125u8),     // Muted slate
-        EngineState::Idle => (31u8, 107u8, 74u8),           // KeyReed forest emerald (#1F6B4A)
-        EngineState::Listening => (42u8, 168u8, 112u8),     // Active listening emerald
-        EngineState::Processing => (245u8, 158u8, 11u8),    // Warm amber (transcribing)
-        EngineState::Correcting => (20u8, 184u8, 166u8),    // Teal-emerald (grammar polish)
-        EngineState::ReadyToPaste => (16u8, 185u8, 129u8),  // Completed emerald
-        EngineState::Error(_) => (244u8, 63u8, 94u8),       // Rose alert
+    let (accent, border_a, surface) = match f.kind {
+        PillKind::Idle => (palette::MINT, 0.16, palette::SURFACE),
+        PillKind::IdleHover => (palette::MINT, 0.30, palette::SURFACE_HOVER),
+        PillKind::Disabled => (palette::TEXT_3, 0.18, palette::SURFACE),
+        PillKind::Listening => (palette::EMERALD, 0.85, palette::SURFACE),
+        PillKind::Processing => (palette::WARN, 0.55, palette::SURFACE),
+        PillKind::Done => (palette::EMERALD_2, 0.70, palette::SURFACE),
+        PillKind::Notice => (palette::TEXT_2, 0.35, palette::SURFACE),
+        PillKind::Attention => (palette::WARN, 0.75, palette::SURFACE),
+        PillKind::Error => (palette::ROSE, 0.80, palette::SURFACE),
     };
+    let body_alpha = 0.96f32;
+    let opacity = f.opacity.clamp(0.0, 1.0);
+    let border_w = (1.0 * f.scale).max(1.0);
+    let shadow_r = margin.max(1.0);
 
-    let (bg_r, bg_g, bg_b) = if is_hovered {
-        (28u8, 33u8, 39u8)
-    } else {
-        (21u8, 25u8, 30u8)
-    };
-
-    let radius = (height as f32) * 0.5;
-    let left_cx = radius;
-    let right_cx = (width as f32) - radius;
-    let cy = radius;
-
-    // 5-bar equalizer geometry positioned next to the KeyReed keycap logo mark
-    let scale = (height as f32) / 38.0;
-    let eq_start_x = (height as f32 * 1.05).round() as isize;
-    let bar_w = (3.0 * scale).round().max(2.0);
-    let bar_gap = (2.8 * scale).round().max(2.0);
-    let phase = (anim_tick as f32) * 0.45;
-
-    let mut bar_heights = [0.0f32; 5];
-    let max_bar_half_h = (height as f32 * 0.28).max(4.0);
-    for (i, bh) in bar_heights.iter_mut().enumerate() {
-        let idx_f = i as f32;
-        let frac = match state {
-            EngineState::Listening => {
-                let base_lvl = (rms_level * 3.8).clamp(0.22, 1.0);
-                let wave = ((phase + idx_f * 1.1).sin() * 0.28 + 0.72).clamp(0.2, 1.0);
-                let center_boost = if i == 2 { 1.0 } else if i == 1 || i == 3 { 0.82 } else { 0.58 };
-                (base_lvl * wave * center_boost).clamp(0.18, 1.0)
+    // 1) Capsule body + hairline border + soft shadow (signed distance field).
+    for y in 0..height {
+        let py = y as f32 + 0.5;
+        for x in 0..width {
+            let pxf = x as f32 + 0.5;
+            let cx = pxf.clamp(left_cx, right_cx);
+            let d = ((pxf - cx).powi(2) + (py - cy).powi(2)).sqrt() - radius; // <0 inside
+            let mut col = (0f32, 0f32, 0f32, 0f32); // straight rgb, alpha
+            if d < 0.75 {
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                let border_t = ((d + border_w + 0.5).clamp(0.0, 1.0)) * border_a;
+                let r = lerp(surface.0 as f32, accent.0 as f32, border_t);
+                let g = lerp(surface.1 as f32, accent.1 as f32, border_t);
+                let b = lerp(surface.2 as f32, accent.2 as f32, border_t);
+                col = (r, g, b, body_alpha * cov);
             }
-            EngineState::Processing | EngineState::Correcting => {
-                let wave = ((phase * 1.3 - idx_f * 0.85).sin() * 0.5 + 0.5).clamp(0.22, 0.95);
-                wave
-            }
-            EngineState::ReadyToPaste => {
-                // Rising completion cadence
-                (0.35 + (idx_f * 0.14)).clamp(0.35, 0.92)
-            }
-            EngineState::Error(_) => {
-                if i == 2 { 0.85 } else { 0.25 }
-            }
-            _ => {
-                // Idle: calm, symmetrical reed silhouette matching the logo
-                match i {
-                    0 | 4 => 0.22,
-                    1 | 3 => 0.36,
-                    _ => 0.54,
+            // Shadow outside the body (black, quadratic fall-off over the margin).
+            if d > -0.5 && d < shadow_r {
+                let t = 1.0 - (d.max(0.0) / shadow_r);
+                let sa = 0.22 * t * t;
+                let (r, g, b, a) = col;
+                let out_a = a + sa * (1.0 - a);
+                if out_a > 0.0 {
+                    col = (r * a / out_a, g * a / out_a, b * a / out_a, out_a);
                 }
             }
-        };
-        *bh = (max_bar_half_h * frac).max(1.5);
+            let a = col.3 * opacity;
+            if a > 0.0 {
+                px[y * width + x] = pack(col.0, col.1, col.2, a);
+            }
+        }
     }
 
-    for y in 0..height {
-        let py = (y as f32) + 0.5;
-        for x in 0..width {
-            let px = (x as f32) + 0.5;
-            let clamped_x = px.clamp(left_cx, right_cx);
-            let dist = ((px - clamped_x).powi(2) + (py - cy).powi(2)).sqrt();
-            let edge_cov = (radius - dist + 0.5).clamp(0.0, 1.0);
-            if edge_cov <= 0.0 {
-                continue;
-            }
+    // 2) Brand mark in the left well (centred in a circle of diameter cap_h).
+    let icon_n = m.icon.min(cap_h as usize);
+    let icon = scaled_icon(icon_n);
+    let icon_alpha = if f.kind == PillKind::Disabled { 0.45 } else { 1.0 } * opacity;
+    fill_circle(&mut px, width, height, left_cx, cy, radius - 3.0 * f.scale, palette::WELL, opacity);
+    let ix0 = (left_cx - icon_n as f32 / 2.0).round() as isize;
+    let iy0 = (cy - icon_n as f32 / 2.0).round() as isize;
+    blit_premul(&mut px, width, height, &icon, icon_n, icon_n, ix0, iy0, icon_alpha);
 
-            let is_border = (radius - dist) < 1.35;
-            let (mut r, mut g, mut b, a) = if is_border {
-                let border_mix = if matches!(state, EngineState::Idle | EngineState::Disabled) && !is_hovered {
-                    0.42
-                } else {
-                    0.82
+
+    if matches!(f.kind, PillKind::Idle | PillKind::Disabled) {
+        return px;
+    }
+
+    let content_x = m.content_x as f32;
+    let opacity = opacity * f.content_opacity.clamp(0.0, 1.0);
+    match f.kind {
+        PillKind::Listening => {
+            let max_half = cap_h * 0.30;
+            let min_half = 1.2 * f.scale;
+            let n = f.levels.len();
+            for i in 0..WAVE_BARS {
+                // Newest sample on the right; missing history renders as the floor.
+                let lvl = if n >= WAVE_BARS - i { f.levels[n - (WAVE_BARS - i)] } else { 0.0 };
+                let half = min_half + (max_half - min_half) * lvl.clamp(0.0, 1.0);
+                let bx = content_x + i as f32 * (m.bar_w + m.bar_gap);
+                let c = if lvl > 0.04 { palette::EMERALD_2 } else { palette::TEXT_3 };
+                fill_round_rect(&mut px, width, height, bx, cy - half, m.bar_w, half * 2.0, c, opacity);
+            }
+        }
+        PillKind::Done | PillKind::Error | PillKind::Attention => {
+            let g = m.glyph as f32;
+            let gx = content_x;
+            let gy = cy - g / 2.0;
+            match f.kind {
+                PillKind::Done => draw_check(&mut px, width, height, gx, gy, g, palette::EMERALD_2, f.scale, opacity),
+                PillKind::Attention => draw_alert(&mut px, width, height, gx, gy, g, palette::WARN, f.scale, opacity),
+                _ => draw_alert(&mut px, width, height, gx, gy, g, palette::ROSE, f.scale, opacity),
+            }
+            if let Some(t) = f.label {
+                let c = match f.kind {
+                    PillKind::Done => palette::MINT,
+                    PillKind::Attention => palette::AMBER_TEXT,
+                    _ => palette::ROSE_TEXT,
                 };
-                (
-                    lerp_u8(bg_r, acc_r, border_mix),
-                    lerp_u8(bg_g, acc_g, border_mix),
-                    lerp_u8(bg_b, acc_b, border_mix),
-                    242u8,
-                )
-            } else {
-                (bg_r, bg_g, bg_b, 244u8)
-            };
-
-            // Render 5-bar voice equalizer in the center-left region
-            let rel_x = (x as isize) - eq_start_x;
-            if rel_x >= 0 {
-                let stride = (bar_w + bar_gap) as isize;
-                if stride > 0 {
-                    let bar_idx = (rel_x / stride) as usize;
-                    let in_bar_x = (rel_x % stride) as f32;
-                    if bar_idx < 5 && in_bar_x < bar_w {
-                        let dy = (py - cy).abs();
-                        let half_h = bar_heights[bar_idx];
-                        if dy <= half_h + 0.5 {
-                            let cov = (half_h - dy + 0.5).clamp(0.0, 1.0);
-                            let (br, bg_c, bb) = if matches!(state, EngineState::Idle) && !is_hovered {
-                                (62u8, 128u8, 98u8)
-                            } else {
-                                (acc_r, acc_g, acc_b)
-                            };
-                            r = lerp_u8(r, br, cov);
-                            g = lerp_u8(g, bg_c, cov);
-                            b = lerp_u8(b, bb, cov);
-                        }
-                    }
-                }
+                let tx = content_x + g + m.gap as f32;
+                blend_text(&mut px, width, height, &t, tx, cy, c, None, opacity);
             }
-
-            let final_a = ((a as f32) * edge_cov).round() as u32;
-            let pr = (((r as u32) * final_a) / 255) & 0xFF;
-            let pg = (((g as u32) * final_a) / 255) & 0xFF;
-            let pb = (((b as u32) * final_a) / 255) & 0xFF;
-            pixels[y * width + x] = (final_a << 24) | (pr << 16) | (pg << 8) | pb;
         }
+        PillKind::Processing => {
+            if let Some(t) = f.label {
+                // Sheen sweeps left->right every 1.4 s; it is the only motion and stops with the state.
+                let sweep = (f.phase / 1.4).fract();
+                let band_x = content_x + (t.width as f32 + 40.0 * f.scale) * sweep - 20.0 * f.scale;
+                blend_text(
+                    &mut px,
+                    width,
+                    height,
+                    &t,
+                    content_x,
+                    cy,
+                    palette::WARN,
+                    Some((band_x, 18.0 * f.scale)),
+                    opacity,
+                );
+            }
+        }
+        PillKind::Notice => {
+            if let Some(t) = f.label {
+                blend_text(&mut px, width, height, &t, content_x, cy, palette::TEXT_2, None, opacity);
+            }
+        }
+        PillKind::IdleHover => {
+            let mut tx = content_x;
+            if let Some(t) = f.label {
+                blend_text(&mut px, width, height, &t, tx, cy, palette::TEXT, None, opacity);
+                tx += (t.width + m.gap) as f32;
+            }
+            if let Some(t2) = f.secondary {
+                blend_text(&mut px, width, height, &t2, tx, cy, palette::TEXT_3, None, opacity);
+            }
+        }
+        _ => {}
     }
-
-    // Composite the embedded 28x28 KeyReed logo mark onto the left side of the pill
-    let icon_target_sz = ((height as f32) * 0.72).round().clamp(16.0, 48.0) as usize;
-    let icon_x0 = ((height.saturating_sub(icon_target_sz)) / 2).max(4);
-    let icon_y0 = (height.saturating_sub(icon_target_sz)) / 2;
-
-    for iy in 0..icon_target_sz {
-        let dst_y = icon_y0 + iy;
-        if dst_y >= height {
-            continue;
-        }
-        let src_y = ((iy * 28) / icon_target_sz).min(27);
-        for ix in 0..icon_target_sz {
-            let dst_x = icon_x0 + ix;
-            if dst_x >= width {
-                continue;
-            }
-            let src_x = ((ix * 28) / icon_target_sz).min(27);
-            let src_px = KEYREED_ICON_28_BGRA[src_y * 28 + src_x];
-            let sa = (src_px >> 24) & 0xFF;
-            if sa == 0 {
-                continue;
-            }
-            let dst_px = pixels[dst_y * width + dst_x];
-            let inv_sa = 255 - sa;
-            let out_a = sa + (((dst_px >> 24) & 0xFF) * inv_sa) / 255;
-            let out_r = ((src_px >> 16) & 0xFF) + ((((dst_px >> 16) & 0xFF) * inv_sa) / 255);
-            let out_g = ((src_px >> 8) & 0xFF) + ((((dst_px >> 8) & 0xFF) * inv_sa) / 255);
-            let out_b = (src_px & 0xFF) + (((dst_px & 0xFF) * inv_sa) / 255);
-            pixels[dst_y * width + dst_x] =
-                (out_a.min(255) << 24) | (out_r.min(255) << 16) | (out_g.min(255) << 8) | out_b.min(255);
-        }
-    }
-
-    // Small live state badge dot at bottom-right of the KeyReed icon mark
-    let badge_cx = (icon_x0 + icon_target_sz.saturating_sub(2)) as f32;
-    let badge_cy = (icon_y0 + icon_target_sz.saturating_sub(2)) as f32;
-    let badge_r = (2.8 * scale).clamp(2.2, 4.5);
-    for y in 0..height {
-        let py = (y as f32) + 0.5;
-        if (py - badge_cy).abs() > badge_r + 1.5 {
-            continue;
-        }
-        for x in 0..width {
-            let px = (x as f32) + 0.5;
-            let d = ((px - badge_cx).powi(2) + (py - badge_cy).powi(2)).sqrt();
-            if d <= badge_r + 0.6 {
-                let cov = (badge_r - d + 0.5).clamp(0.0, 1.0);
-                let dst_px = pixels[y * width + x];
-                let da = (dst_px >> 24) & 0xFF;
-                if da > 0 {
-                    let dr = ((dst_px >> 16) & 0xFF) as u8;
-                    let dg = ((dst_px >> 8) & 0xFF) as u8;
-                    let db = (dst_px & 0xFF) as u8;
-                    let nr = lerp_u8(dr, acc_r, cov) as u32;
-                    let ng = lerp_u8(dg, acc_g, cov) as u32;
-                    let nb = lerp_u8(db, acc_b, cov) as u32;
-                    pixels[y * width + x] = (da << 24) | (nr << 16) | (ng << 8) | nb;
-                }
-            }
-        }
-    }
-
-    pixels
+    px
 }
 
 #[inline]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    ((a as f32) + ((b as f32) - (a as f32)) * t).round().clamp(0.0, 255.0) as u8
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+#[inline]
+fn pack(r: f32, g: f32, b: f32, a: f32) -> u32 {
+    let a8 = (a * 255.0).round().clamp(0.0, 255.0);
+    let p = |c: f32| ((c * a).round().clamp(0.0, a8)) as u32;
+    ((a8 as u32) << 24) | (p(r) << 16) | (p(g) << 8) | p(b)
+}
+
+/// Source-over blend of a straight colour with coverage `cov` onto premultiplied `dst`.
+#[inline]
+fn over(dst: u32, c: (u8, u8, u8), cov: f32) -> u32 {
+    if cov <= 0.0 {
+        return dst;
+    }
+    let cov = cov.min(1.0);
+    let inv = 1.0 - cov;
+    let da = ((dst >> 24) & 0xFF) as f32;
+    let dr = ((dst >> 16) & 0xFF) as f32;
+    let dg = ((dst >> 8) & 0xFF) as f32;
+    let db = (dst & 0xFF) as f32;
+    let a = cov * 255.0 + da * inv;
+    let r = c.0 as f32 * cov + dr * inv;
+    let g = c.1 as f32 * cov + dg * inv;
+    let b = c.2 as f32 * cov + db * inv;
+    let q = |v: f32| v.round().clamp(0.0, 255.0) as u32;
+    (q(a) << 24) | (q(r) << 16) | (q(g) << 8) | q(b)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_premul(dst: &mut [u32], w: usize, h: usize, src: &[u32], sw: usize, sh: usize, x0: isize, y0: isize, alpha: f32) {
+    for sy in 0..sh {
+        let dy = y0 + sy as isize;
+        if dy < 0 || dy >= h as isize {
+            continue;
+        }
+        for sx in 0..sw {
+            let dx = x0 + sx as isize;
+            if dx < 0 || dx >= w as isize {
+                continue;
+            }
+            let s = src[sy * sw + sx];
+            let sa = (((s >> 24) & 0xFF) as f32 * alpha) / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let d = &mut dst[dy as usize * w + dx as usize];
+            let inv = 1.0 - sa;
+            let dv = *d;
+            let ch = |shift: u32| -> u32 {
+                let sv = ((s >> shift) & 0xFF) as f32 * alpha;
+                let dc = ((dv >> shift) & 0xFF) as f32;
+                (sv + dc * inv).round().clamp(0.0, 255.0) as u32
+            };
+            *d = (ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_circle(px: &mut [u32], w: usize, h: usize, cx: f32, cy: f32, r: f32, c: (u8, u8, u8), op: f32) {
+    let x0 = (cx - r - 1.0).floor().max(0.0) as usize;
+    let x1 = ((cx + r + 1.0).ceil() as usize).min(w);
+    let y0 = (cy - r - 1.0).floor().max(0.0) as usize;
+    let y1 = ((cy + r + 1.0).ceil() as usize).min(h);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let cov = (r - d + 0.5).clamp(0.0, 1.0) * op;
+            if cov > 0.0 && (px[y * w + x] >> 24) > 0 {
+                px[y * w + x] = over(px[y * w + x], c, cov);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_round_rect(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, c: (u8, u8, u8), op: f32) {
+    let r = rw / 2.0;
+    let cx = x + r;
+    let top = y + r;
+    let bot = (y + rh - r).max(top);
+    let x0 = x.floor().max(0.0) as usize;
+    let x1 = ((x + rw).ceil() as usize).min(w);
+    let y0 = y.floor().max(0.0) as usize;
+    let y1 = ((y + rh).ceil() as usize).min(h);
+    for yy in y0..y1 {
+        let py = yy as f32 + 0.5;
+        let ny = py.clamp(top, bot);
+        for xx in x0..x1 {
+            let d = ((xx as f32 + 0.5 - cx).powi(2) + (py - ny).powi(2)).sqrt();
+            let cov = (r - d + 0.5).clamp(0.0, 1.0) * op;
+            if cov > 0.0 {
+                px[yy * w + xx] = over(px[yy * w + xx], c, cov);
+            }
+        }
+    }
+}
+
+/// Distance from point to segment.
+fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let (vx, vy) = (bx - ax, by - ay);
+    let t = (((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy).max(1e-6)).clamp(0.0, 1.0);
+    ((px - (ax + vx * t)).powi(2) + (py - (ay + vy * t)).powi(2)).sqrt()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_segments(px: &mut [u32], w: usize, h: usize, segs: &[(f32, f32, f32, f32)], half: f32, c: (u8, u8, u8), op: f32) {
+    let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(ax, ay, bx, by) in segs {
+        minx = minx.min(ax.min(bx));
+        miny = miny.min(ay.min(by));
+        maxx = maxx.max(ax.max(bx));
+        maxy = maxy.max(ay.max(by));
+    }
+    let x0 = (minx - half - 1.0).floor().max(0.0) as usize;
+    let x1 = ((maxx + half + 1.0).ceil() as usize).min(w);
+    let y0 = (miny - half - 1.0).floor().max(0.0) as usize;
+    let y1 = ((maxy + half + 1.0).ceil() as usize).min(h);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = segs
+                .iter()
+                .map(|&(ax, ay, bx, by)| seg_dist(fx, fy, ax, ay, bx, by))
+                .fold(f32::MAX, f32::min);
+            let cov = (half - d + 0.5).clamp(0.0, 1.0) * op;
+            if cov > 0.0 {
+                px[y * w + x] = over(px[y * w + x], c, cov);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_check(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, s: f32, c: (u8, u8, u8), scale: f32, op: f32) {
+    let segs = [
+        (x + s * 0.12, y + s * 0.55, x + s * 0.40, y + s * 0.82),
+        (x + s * 0.40, y + s * 0.82, x + s * 0.90, y + s * 0.22),
+    ];
+    stroke_segments(px, w, h, &segs, 0.85 * scale.max(1.0), c, op);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_alert(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, s: f32, c: (u8, u8, u8), scale: f32, op: f32) {
+    fill_circle(px, w, h, x + s / 2.0, y + s / 2.0, s / 2.0, c, op);
+    let dark = palette::SURFACE;
+    let segs = [(x + s / 2.0, y + s * 0.25, x + s / 2.0, y + s * 0.58)];
+    stroke_segments(px, w, h, &segs, 0.8 * scale.max(1.0), dark, op);
+    fill_circle(px, w, h, x + s / 2.0, y + s * 0.76, 0.95 * scale.max(1.0), dark, op);
+}
+
+/// Blends a coverage mask vertically centred on `cy`. Optional sheen `(centre_x, half_width)` brightens a band.
+#[allow(clippy::too_many_arguments)]
+fn blend_text(
+    px: &mut [u32],
+    w: usize,
+    h: usize,
+    t: &TextMask,
+    x: f32,
+    cy: f32,
+    c: (u8, u8, u8),
+    sheen: Option<(f32, f32)>,
+    op: f32,
+) {
+    let x0 = x.round() as isize;
+    let y0 = (cy - t.height as f32 / 2.0).round() as isize;
+    for ty in 0..t.height {
+        let dy = y0 + ty as isize;
+        if dy < 0 || dy >= h as isize {
+            continue;
+        }
+        for tx in 0..t.width {
+            let dx = x0 + tx as isize;
+            if dx < 0 || dx >= w as isize {
+                continue;
+            }
+            let cov = t.coverage[ty * t.width + tx] as f32 / 255.0;
+            if cov <= 0.0 {
+                continue;
+            }
+            let mut col = c;
+            let mut a = cov;
+            if let Some((bx, bw)) = sheen {
+                let k = (1.0 - ((dx as f32 - bx).abs() / bw)).clamp(0.0, 1.0);
+                // Base text at 72%, the sheen lifts toward warm white.
+                a = cov * (0.72 + 0.28 * k);
+                col = (
+                    lerp(c.0 as f32, 255.0, 0.35 * k) as u8,
+                    lerp(c.1 as f32, 245.0, 0.35 * k) as u8,
+                    lerp(c.2 as f32, 225.0, 0.35 * k) as u8,
+                );
+            }
+            let i = dy as usize * w + dx as usize;
+            px[i] = over(px[i], col, a * op);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn renders_non_empty_anti_aliased_capsule() {
-        let buf = render_pill_bgra_premultiplied(156, 36, &EngineState::Listening, 0.5);
-        assert_eq!(buf.len(), 156 * 36);
-        // Corner pixel outside capsule radius must be transparent
-        assert_eq!(buf[0], 0);
-        // Center pixel must be opaque premultiplied ARGB
-        let center = buf[18 * 156 + 78];
-        assert!((center >> 24) > 200);
+    fn frame<'a>(kind: PillKind, levels: &'a [f32], label: Option<TextMask<'a>>) -> PillFrame<'a> {
+        PillFrame { scale: 1.0, kind, levels, phase: 0.3, label, secondary: None, opacity: 1.0, content_opacity: 1.0 }
     }
 
     #[test]
-    fn renders_all_five_visual_states_distinctly() {
-        let idle = render_pill_bgra_premultiplied_ex(196, 40, &EngineState::Idle, 0.0, 0, false);
-        let listen = render_pill_bgra_premultiplied_ex(196, 40, &EngineState::Listening, 0.7, 2, false);
-        let proc_s = render_pill_bgra_premultiplied_ex(196, 40, &EngineState::Processing, 0.0, 4, false);
-        let done = render_pill_bgra_premultiplied_ex(196, 40, &EngineState::ReadyToPaste, 0.0, 0, false);
-        let err = render_pill_bgra_premultiplied_ex(
-            196,
-            40,
-            &EngineState::Error("mic".to_string()),
-            0.0,
-            0,
-            false,
-        );
-        assert_ne!(idle, listen);
-        assert_ne!(listen, proc_s);
-        assert_ne!(proc_s, done);
+    fn idle_is_a_compact_circle_much_smaller_than_v03() {
+        let m = PillMetrics::for_scale(1.0);
+        let w = pill_window_width(1.0, PillKind::Idle, 0, 0);
+        let visible = (w - 2 * m.margin) * m.cap_h;
+        // v0.3 pill was 196 x 40 = 7840 logical px.
+        assert_eq!(w - 2 * m.margin, 36);
+        assert!(visible * 100 / 7840 < 20, "idle footprint {visible} px");
+    }
+
+    #[test]
+    fn listening_footprint_is_at_least_25_percent_smaller_than_v03() {
+        let m = PillMetrics::for_scale(1.0);
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0) - 2 * m.margin;
+        let area = w * m.cap_h;
+        assert!(w <= 140, "listening width {w}");
+        assert!(area * 100 / 7840 <= 75, "listening area {area}");
+    }
+
+    #[test]
+    fn capsule_has_transparent_corners_and_opaque_body() {
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0);
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let buf = render_pill(w, h, &frame(PillKind::Listening, &[0.5; 11], None));
+        assert_eq!(buf[0], 0, "corner must be transparent");
+        assert!((buf[(h / 2) * w + w / 2] >> 24) > 200, "body must be opaque");
+    }
+
+    #[test]
+    fn waveform_follows_measured_levels_not_a_canned_animation() {
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0);
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let silent = render_pill(w, h, &frame(PillKind::Listening, &[0.0; 11], None));
+        let loud = render_pill(w, h, &frame(PillKind::Listening, &[0.9; 11], None));
+        assert_ne!(silent, loud);
+        // Same levels at a different animation phase must render identically (no fake motion).
+        let mut f2 = frame(PillKind::Listening, &[0.4; 11], None);
+        let a = render_pill(w, h, &f2);
+        f2.phase = 9.7;
+        assert_eq!(a, render_pill(w, h, &f2));
+    }
+
+    #[test]
+    fn states_render_distinctly() {
+        let mask = vec![255u8; 20 * 10];
+        let t = TextMask { width: 20, height: 10, coverage: &mask };
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let w = pill_window_width(1.0, PillKind::Error, 20, 0);
+        let done = render_pill(w, h, &frame(PillKind::Done, &[], Some(t)));
+        let err = render_pill(w, h, &frame(PillKind::Error, &[], Some(t)));
+        let proc_s = render_pill(w, h, &frame(PillKind::Processing, &[], Some(t)));
         assert_ne!(done, err);
+        assert_ne!(done, proc_s);
+        let notice = render_pill(w, h, &frame(PillKind::Notice, &[], Some(t)));
+        let attention = render_pill(w, h, &frame(PillKind::Attention, &[], Some(t)));
+        assert_ne!(attention, done);
+        assert_ne!(attention, err);
+        assert_ne!(notice, done);
+        assert_ne!(notice, err);
+        let wi = pill_window_width(1.0, PillKind::Idle, 0, 0);
+        assert_ne!(
+            render_pill(wi, h, &frame(PillKind::Idle, &[], None)),
+            render_pill(wi, h, &frame(PillKind::Disabled, &[], None))
+        );
+    }
+
+    #[test]
+    fn scales_with_dpi() {
+        let h100 = PillMetrics::for_scale(1.0).window_height();
+        let h200 = PillMetrics::for_scale(2.0).window_height();
+        assert_eq!(h200, h100 * 2);
+    }
+
+    #[test]
+    fn icon_downscale_keeps_mark_opaque_at_centre() {
+        let ic = scaled_icon(22);
+        assert!((ic[11 * 22 + 11] >> 24) > 200);
+        assert_eq!(ic[0] >> 24, 0);
+    }
+
+    #[test]
+    fn level_mapping_is_monotonic_and_bounded() {
+        assert_eq!(rms_to_level(0.0), 0.0);
+        assert!(rms_to_level(0.01) < rms_to_level(0.1));
+        assert_eq!(rms_to_level(1.0), 1.0);
     }
 }

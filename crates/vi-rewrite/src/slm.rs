@@ -109,6 +109,8 @@ pub struct LlamaServerSupervisor {
     child: Option<Child>,
     last_used: Instant,
     startup_failed_permanently: bool,
+    /// Set once /health answered for the current child process.
+    healthy: bool,
 }
 
 impl LlamaServerSupervisor {
@@ -125,6 +127,18 @@ impl LlamaServerSupervisor {
             child: None,
             last_used: Instant::now(),
             startup_failed_permanently: false,
+            healthy: false,
+        }
+    }
+
+    /// Starts llama-server without waiting for it to become healthy, so its model load overlaps
+    /// with the user still speaking. `ensure_started` later waits for /health as before.
+    pub fn prewarm(&mut self) {
+        if self.is_running() || self.startup_failed_permanently {
+            return;
+        }
+        if let Err(e) = self.spawn_child() {
+            log::warn!("llama-server prewarm failed: {e:#}");
         }
     }
 
@@ -135,6 +149,7 @@ impl LlamaServerSupervisor {
             }
             self.child = None;
         }
+        self.healthy = false;
         false
     }
 
@@ -150,6 +165,7 @@ impl LlamaServerSupervisor {
     }
 
     pub fn stop(&mut self) {
+        self.healthy = false;
         if let Some(mut ch) = self.child.take() {
             let _ = ch.kill();
             let _ = ch.wait();
@@ -162,9 +178,41 @@ impl LlamaServerSupervisor {
     }
 
     pub fn ensure_started(&mut self) -> Result<u16> {
-        if self.is_running() {
+        if self.is_running() && self.healthy {
             return Ok(self.port);
         }
+        if !self.is_running() {
+            self.spawn_child()?;
+        }
+        let port = self.port;
+        let health_url = format!("http://127.0.0.1:{}/health", port);
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_millis(250))
+            .timeout_read(Duration::from_millis(250))
+            .build();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if !self.is_running() {
+                self.startup_failed_permanently = true;
+                bail!("llama-server process exited prematurely during initialization");
+            }
+            if let Ok(resp) = agent.get(&health_url).call() {
+                if resp.status() == 200 {
+                    self.healthy = true;
+                    self.last_used = Instant::now();
+                    return Ok(port);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        self.stop();
+        self.startup_failed_permanently = true;
+        bail!("llama-server health check timed out on port {}", port)
+    }
+
+    /// Spawns the llama-server child (loopback only) and records its port. Does not wait.
+    fn spawn_child(&mut self) -> Result<()> {
         if self.startup_failed_permanently {
             bail!("llama-server previously failed startup check in this session");
         }
@@ -235,30 +283,9 @@ impl LlamaServerSupervisor {
         let child = cmd.spawn().context("failed to spawn llama-server")?;
         self.child = Some(child);
         self.port = port;
-
-        let health_url = format!("http://127.0.0.1:{}/health", port);
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_millis(250))
-            .timeout_read(Duration::from_millis(250))
-            .build();
-
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if !self.is_running() {
-                self.startup_failed_permanently = true;
-                bail!("llama-server process exited prematurely during initialization");
-            }
-            if let Ok(resp) = agent.get(&health_url).call() {
-                if resp.status() == 200 {
-                    self.last_used = Instant::now();
-                    return Ok(port);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(80));
-        }
-        self.stop();
-        self.startup_failed_permanently = true;
-        bail!("llama-server health check timed out on port {}", port)
+        self.healthy = false;
+        self.last_used = Instant::now();
+        Ok(())
     }
 
     pub fn rewrite(

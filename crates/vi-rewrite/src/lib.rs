@@ -39,6 +39,16 @@ impl RewriteEngine {
         Self { slm }
     }
 
+    /// Starts the local grammar model in the background when this dictation may use it.
+    pub fn prewarm(&mut self, mode: WritingMode) {
+        if matches!(mode, WritingMode::Exact | WritingMode::TerminalCode) {
+            return; // these modes never use the language model
+        }
+        if let Some(s) = &mut self.slm {
+            s.prewarm();
+        }
+    }
+
     pub fn maybe_unload_idle(&mut self, idle_secs: u64) -> bool {
         if let Some(s) = &mut self.slm {
             s.maybe_unload_if_idle(idle_secs)

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # key, file, first line, last line, substrings that mark highlighted lines
 EXCERPTS = [
-    ("privacy", "crates/vi-core/src/types.rs", 98, 122,
+    ("privacy", "crates/vi-core/src/types.rs", 176, 216,
      ["/// 100% local processing", "#[default]", "MaxPrivacyOffline,", "pub fn allows_network",
       "!matches!(self, ProcessingProfile::MaxPrivacyOffline)"]),
     ("config", "crates/vi-core/src/config.rs", 9, 30,

@@ -198,6 +198,28 @@ mod win_impl {
         let _ = SendInput(2, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
     }
 
+    /// True when the foreground window is a standard dialog (`#32770`) owned by KeyReed itself.
+    fn own_dialog_in_foreground() -> bool {
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                return false;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg, &mut pid);
+            if pid != GetCurrentProcessId() {
+                return false;
+            }
+            let mut buf = [0u16; 16];
+            let n = GetClassNameW(fg, buf.as_mut_ptr(), buf.len() as i32);
+            n > 0 && String::from_utf16_lossy(&buf[..n as usize]) == "#32770"
+        }
+    }
+
     unsafe extern "system" fn ll_keyboard_proc(
         code: i32,
         wparam: WPARAM,
@@ -233,10 +255,12 @@ mod win_impl {
                         }
                     }
 
-                    // Emergency Escape cancel while active
+                    // Emergency Escape cancel while active — except when KeyReed's own dialog
+                    // (e.g. "Ask before inserting") is in front: Escape must reach it as Cancel.
                     if is_down
                         && vk == cfg.cancel_vk
                         && cfg.active_recording_or_busy.load(Ordering::Relaxed)
+                        && !own_dialog_in_foreground()
                     {
                         mods.ptt_combo_latched = false;
                         let _ = ctx.tx.try_send(HotkeyEvent::EmergencyCancel);

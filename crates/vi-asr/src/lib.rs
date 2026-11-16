@@ -78,10 +78,15 @@ impl SileroVad {
 
     /// Segments 16 kHz mono audio into active speech chunks (max ~22s per chunk).
     /// Eliminates silence/fan/keyboard noise before ASR to prevent hallucinations and speed up CPU decode.
+    ///
+    /// Each detected segment is widened with real audio (300 ms before, 250 ms after) and overlapping
+    /// spans are merged: Silero often fires a little late on soft onsets ("um, I checked…" said quietly),
+    /// which dropped the first word(s) in live microphone tests.
     pub fn extract_speech_segments(&mut self, samples_16k: &[f32]) -> Vec<Vec<f32>> {
         if samples_16k.is_empty() {
             return Vec::new();
         }
+        let mut spans: Vec<(usize, usize)> = Vec::new();
         unsafe {
             (self.api.vad_reset)(self.ptr);
             let window = 512usize;
@@ -97,21 +102,59 @@ impl SileroVad {
             }
             (self.api.vad_flush)(self.ptr);
 
-            let mut segments = Vec::new();
             while (self.api.vad_empty)(self.ptr) == 0 {
                 let seg_ptr = (self.api.vad_front)(self.ptr);
                 if !seg_ptr.is_null() {
                     let seg = &*seg_ptr;
                     if seg.n > 0 && !seg.samples.is_null() {
-                        let slice = std::slice::from_raw_parts(seg.samples, seg.n as usize);
-                        segments.push(slice.to_vec());
+                        // The C struct's `start` is int32_t; only the low 32 bits are defined.
+                        let start = (seg.start as u64 & 0xFFFF_FFFF) as u32 as usize;
+                        spans.push((start, start + seg.n as usize));
                     }
                     (self.api.destroy_speech_segment)(seg_ptr);
                 }
                 (self.api.vad_pop)(self.ptr);
             }
-            segments
         }
+        pad_and_merge_spans(&spans, samples_16k.len(), 4_800, 4_000)
+            .into_iter()
+            .map(|(a, b)| samples_16k[a..b].to_vec())
+            .collect()
+    }
+}
+
+/// Widens speech spans by `pre`/`post` samples (clamped to the buffer) and merges overlaps.
+fn pad_and_merge_spans(spans: &[(usize, usize)], len: usize, pre: usize, post: usize) -> Vec<(usize, usize)> {
+    let mut v: Vec<(usize, usize)> = spans
+        .iter()
+        .filter(|(a, b)| a < b && *a < len)
+        .map(|&(a, b)| (a.saturating_sub(pre), (b + post).min(len)))
+        .collect();
+    v.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(v.len());
+    for (a, b) in v {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::pad_and_merge_spans;
+
+    #[test]
+    fn pads_clamps_and_merges() {
+        // two segments 0.4 s apart merge after padding; padding never leaves the buffer
+        let s = pad_and_merge_spans(&[(2_000, 10_000), (16_400, 30_000)], 32_000, 4_800, 4_000);
+        assert_eq!(s, vec![(0, 32_000)]);
+        // far-apart segments stay separate
+        let s = pad_and_merge_spans(&[(10_000, 20_000), (60_000, 70_000)], 100_000, 4_800, 4_000);
+        assert_eq!(s, vec![(5_200, 24_000), (55_200, 74_000)]);
+        // garbage start beyond the buffer is ignored
+        assert!(pad_and_merge_spans(&[(200_000, 200_100)], 1_000, 10, 10).is_empty());
     }
 }
 
