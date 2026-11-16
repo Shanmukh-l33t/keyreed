@@ -19,7 +19,7 @@ Windows may report no capture device, or desktop apps may be blocked. Check Sett
 By default (**Auto Insert**), KeyReed types the finished text directly into the focused window via Win32 `SendInput`. It automatically falls back to the clipboard (so you can press **Ctrl+V**) for password fields (`ES_PASSWORD`), elevated Administrator windows (UIPI), or when the target window lost focus during processing.
 
 **A recording was thrown away.**
-A lost key release, or the 120 second cap, discards the audio on purpose. It does not transcribe and does not change the clipboard. Escape also cancels.
+A lost key release, or the 30 minute cap, discards the audio on purpose. It does not transcribe and does not change the clipboard. Escape also cancels.
 
 **Spoken symbols like "forward slash" are not applied.**
 Full spoken command symbols (`dash`, `double dash`, `pipe`, `forward slash`) apply in Terminal / Code mode. Spoken Windows paths (`C colon backslash Dev`), IPv4 addresses (`10 dot 0 dot 0 dot 1`), semantic versions (`v 0 dot 2 dot 0`), filenames (`auth_middleware dot rs`), and emails (`support at example dot com`) are formatted automatically across `Smart`, `Technical`, `Professional`, and `Terminal / Code` modes.
