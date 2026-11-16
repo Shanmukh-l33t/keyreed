@@ -110,8 +110,8 @@ impl PillMetrics {
             margin,
             cap_h,
             icon,
-            // Content starts just right of the icon well (a circle of diameter cap_h).
-            content_x: margin + cap_h - (3.0 * s).round() as usize,
+            // Content starts 5 dp right of the icon well (well edge = margin + cap_h - 3 dp), so text never touches it.
+            content_x: margin + cap_h + (2.0 * s).round() as usize,
             pad_right: (13.0 * s).round() as usize,
             gap: (6.0 * s).round() as usize,
             glyph: (12.0 * s).round() as usize,
