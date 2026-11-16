@@ -1,0 +1,13 @@
+{
+  "name": "keyreed-website",
+  "version": "1.0.0",
+  "description": "KeyReed website - open-source, local-first voice dictation for Windows",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Serving static files. Use a local server.'",
+    "build": "echo 'No build step required for static site.'"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^1.1.1"
+  }
+}

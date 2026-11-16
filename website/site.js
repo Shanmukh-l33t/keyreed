@@ -1,5 +1,10 @@
 /* KeyReed website: navigation, reveal-on-scroll, FAQ, copy buttons, release info, source viewer.
    No dependencies. Everything degrades to a fully readable static page without JavaScript. */
+
+// Vercel Web Analytics
+import { inject } from '@vercel/analytics';
+inject();
+
 (() => {
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
