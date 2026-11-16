@@ -11,6 +11,13 @@ pub struct Tier0Output {
 }
 
 static RE_MULTI_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]{2,}").unwrap());
+/// A stray "Mm"/"Mhm" hallucinated from trailing noise, only right after a finished sentence
+/// (never units like "5 mm").
+static RE_TRAILING_MM: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)([.!?])\s+(?:m{2,}|mhm+|hm+)[-–—]*[.!?]?\s*$").unwrap());
+/// The same sound at the very start of a dictation, followed by a comma/dash.
+static RE_LEADING_MM: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*(?:m{2,}|mhm+)[-–—,.]+\s*").unwrap());
+
 static RE_FILLERS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(um+|uh+|uhm+|erm+|er+|hmm+|ah+)\b[,.]?\s*").unwrap()
 });
@@ -542,6 +549,8 @@ pub fn run_tier0(
     }
 
     if mode != WritingMode::Exact {
+        s = RE_TRAILING_MM.replace(&s, "$1").to_string();
+        s = RE_LEADING_MM.replace(&s, "").to_string();
         s = RE_FILLERS.replace_all(&s, "").to_string();
         s = dedup_adjacent_stutters(&s);
         // Resolve spoken self-repairs ("push to Tuesday, sorry no wait, Wednesday" -> "push to Wednesday")
@@ -675,6 +684,32 @@ pub fn run_tier0(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_stray_trailing_mm_but_keeps_millimetres() {
+        let dict = PersonalDictionary::default();
+        let out = run_tier0("the website is going down on port 8080. Mm-.", 1.0, WritingMode::Smart, AppCategory::General, &dict);
+        assert!(out.text.ends_with("8080."), "{}", out.text);
+        let units = run_tier0("use a 5 mm bolt and a 10 mm washer.", 1.0, WritingMode::Smart, AppCategory::General, &dict);
+        assert!(units.text.contains("5 mm") && units.text.contains("10 mm"), "{}", units.text);
+        let exact = run_tier0("port 8080. Mm-.", 1.0, WritingMode::Exact, AppCategory::General, &dict);
+        assert!(exact.text.to_lowercase().contains("mm"), "Exact keeps everything: {}", exact.text);
+    }
+
+    /// Settings and onboarding display `WritingMode::example()` pairs. They must be real Tier-0 output.
+    #[test]
+    fn writing_mode_ui_examples_match_real_tier0_output() {
+        let dict = PersonalDictionary::default();
+        let mut failures = Vec::new();
+        for mode in WritingMode::ALL {
+            let (spoken, written) = mode.example();
+            let out = run_tier0(spoken, 1.0, mode, AppCategory::General, &dict);
+            if out.text != written {
+                failures.push(format!("{mode:?}: expected {written:?}, got {:?}", out.text));
+            }
+        }
+        assert!(failures.is_empty(), "UI examples drifted from Tier-0:\n{}", failures.join("\n"));
+    }
 
     #[test]
     fn polishes_master_prompt_example_conservatively() {

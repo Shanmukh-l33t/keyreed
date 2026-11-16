@@ -29,18 +29,17 @@
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** release **0.3.0** (Windows 11 x64 verified). The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** release **0.4.0** (Windows 11 x64 verified). The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`17.8 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+1. Download **`KeyReed-Setup-x64.exe`** (`17.9 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
 2. Run it. Windows SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
-3. On first launch, KeyReed opens **Settings** automatically if the default speech model is not installed yet. Click **Download** next to **Local Speech Engine** to download `Parakeet TDT 0.6B v2` (~460 MB, with live MB/% progress, cancellation support, and compile-time SHA-256 verification).
-4. Pick your microphone in **Settings** and click **Test Mic** to verify your input level.
-5. Focus any text field, hold **Right Ctrl**, speak, and release.
-6. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
+3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
+4. Focus any text field, hold **Right Ctrl**, speak, and release.
+5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.3.0-windows-x64-full-offline.zip`, which already contains the speech and grammar models.
+No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-0.4.0-windows-x64-full-offline.zip`, which already contains the speech and grammar models.
 
 ## Why KeyReed
 
@@ -60,19 +59,21 @@ No Rust, Python, Visual Studio or command line needed. Prefer one offline downlo
   &nbsp;&nbsp;
   <img src="assets/screenshots/floating-pill.png" alt="The KeyReed floating microphone pill on the Windows desktop" width="46%" />
 </p>
-<p align="center"><sub>Real captures from KeyReed 0.3.0 on Windows 11.</sub></p>
+<p align="center"><sub>Real captures from KeyReed 0.4.0 on Windows 11.</sub></p>
 
 The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow. It is an illustration, not a recording.
 
 ## Features
 
 - **Hold-to-talk or toggle-to-talk.** Right Ctrl by default; the shortcut is a preset list in Settings. Escape cancels a recording.
+- **Compact icon-first floating listener.** `36×36` logical pixels at idle (with zero background timer activity), expanding smoothly to `98×36` with an 11-bar measured microphone RMS waveform while recording, deliberate 380 ms hover expansion, quiet 1.6 s mode-switch hints, and Per-Monitor-v2 DPI scaling across multi-monitor setups.
+- **10-page instant-apply Settings & 4-step guided onboarding.** Organised sidebar navigation (`Get started`, `General`, `Dictation`, `Writing`, `Output`, `Microphone`, `Speech models`, `Processing`, `Privacy`, `About`) where every toggle, choice card, dropdown, and personal dictionary entry saves immediately.
 - **Writing modes.** See [below](#writing-modes). Cycle them with Ctrl+Shift+Space, or let automatic app-context adaptation choose.
 - **Grammar correction.** Deterministic Tier 0 rules first (fillers, stutters, spoken self-corrections, casing, your vocabulary), then an optional local grammar model, then guards that fall back to Tier 0 if the model output drifts.
 - **Personal vocabulary.** Teach it names and jargon in Settings (used both for Sherpa transducer hotword biasing and Tier 0 casing).
 - **Output choice.** Auto Insert (default: types into the focused field, falls back to the clipboard for password fields or elevated windows), Clipboard Only, or Ask Before Inserting (3-option `Yes` / `No` / `Cancel` dialog).
-- **Microphone selection & diagnostics**, a non-activating floating mic pill with 50 ms live waveform animation, **Test Mic** diagnostics, audio cues, **Reset Defaults**, and optional startup with Windows (off by default).
-- **Six speech models**, all verified against compile-time SHA-256 pins with live in-Settings download progress and `[Installed Offline]` status indicators. See [docs/architecture.md](docs/architecture.md#speech-models).
+- **Microphone selection & diagnostics**, live level meter and plain-language health verdicts (`Sounds good`, `Quiet`, `No sound`, `Too loud`), automatic fallback to the default microphone when a device is unplugged, audio cues, **Reset to defaults**, and optional startup with Windows (off by default).
+- **Six speech models**, all verified against compile-time SHA-256 pins with measured CPU speeds, live MB/% download progress, cancellation, and one-click model switching. See [docs/architecture.md](docs/architecture.md#speech-models).
 - **Optional cloud profiles** (Balanced, Maximum Accuracy) for people who bring their own API key.
 
 ## Writing modes

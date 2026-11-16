@@ -4,6 +4,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=keyreed.rc");
+    println!("cargo:rerun-if-changed=keyreed.manifest");
     println!("cargo:rerun-if-changed=../../assets/keyreed.ico");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

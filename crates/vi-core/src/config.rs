@@ -153,9 +153,47 @@ impl AppConfig {
 
     pub fn load_or_default(path: &Path) -> Self {
         match fs::read_to_string(path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            Ok(raw) => {
+                let (cfg, dropped) = Self::parse_lenient(&raw);
+                if !dropped.is_empty() {
+                    // Keep the user's original file so nothing is silently lost.
+                    let _ = fs::write(path.with_file_name("config.invalid.json"), &raw);
+                    eprintln!("KeyReed: ignored invalid settings {dropped:?}; original saved as config.invalid.json");
+                }
+                cfg
+            }
             Err(_) => Self::default(),
         }
+    }
+
+    /// Parses a config file, keeping every valid top-level setting and falling back to the
+    /// default only for settings that are missing or invalid. Returns the names of dropped keys.
+    pub fn parse_lenient(raw: &str) -> (Self, Vec<String>) {
+        if let Ok(cfg) = serde_json::from_str::<Self>(raw) {
+            return (cfg, Vec::new());
+        }
+        let Ok(serde_json::Value::Object(user)) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return (Self::default(), vec!["<unreadable file>".to_string()]);
+        };
+        let Ok(mut merged) = serde_json::to_value(Self::default()) else {
+            return (Self::default(), vec!["<internal>".to_string()]);
+        };
+        let mut dropped = Vec::new();
+        for (k, v) in user {
+            let mut trial = merged.clone();
+            if let Some(obj) = trial.as_object_mut() {
+                if !obj.contains_key(&k) {
+                    continue; // unknown key from another version: ignore quietly
+                }
+                obj.insert(k.clone(), v);
+            }
+            if serde_json::from_value::<Self>(trial.clone()).is_ok() {
+                merged = trial;
+            } else {
+                dropped.push(k);
+            }
+        }
+        (serde_json::from_value(merged).unwrap_or_default(), dropped)
     }
 
     pub fn save_atomic(&self, path: &Path) -> Result<()> {
@@ -174,6 +212,28 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_invalid_setting_does_not_wipe_the_others() {
+        let mut cfg = AppConfig::default();
+        cfg.default_writing_mode = WritingMode::Technical;
+        cfg.local_asr_model = "moonshine-base-en-int8".into();
+        let mut v = serde_json::to_value(&cfg).unwrap();
+        v["output_mode"] = serde_json::json!("DirectTyping"); // wrong case: invalid
+        v["future_setting"] = serde_json::json!(true); // unknown key: ignored
+        let (loaded, dropped) = AppConfig::parse_lenient(&v.to_string());
+        assert_eq!(dropped, vec!["output_mode".to_string()]);
+        assert_eq!(loaded.default_writing_mode, WritingMode::Technical);
+        assert_eq!(loaded.local_asr_model, "moonshine-base-en-int8");
+        assert_eq!(loaded.output_mode, OutputMode::DirectTyping); // default for the dropped key
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let reloaded = AppConfig::load_or_default(&path);
+        assert_eq!(reloaded.local_asr_model, "moonshine-base-en-int8");
+        assert!(dir.path().join("config.invalid.json").exists(), "original kept for the user");
+    }
 
     #[test]
     fn default_config_uses_auto_insert_and_offline_privacy() {

@@ -1,0 +1,54 @@
+{
+ "description": "Warm ASR decode time per 10 s of speech, KeyReed v0.3.0 engine (unchanged in v0.4.0), CLI --transcribe-wav --repeat 4 --llm-model none; first (cold) run of each clip excluded. Clips: fixture_smart.wav (6.8 s), sq_05_identifiers.wav, sq_08_long.wav. Windows 11 laptop, CPU only.",
+ "date": "2026-11-16",
+ "models": [
+  {
+   "id": "parakeet-tdt-0.6b-v2-int8",
+   "median_s_per_10s": 1.535,
+   "warm_runs": 9,
+   "min_s_per_10s": 1.386,
+   "max_s_per_10s": 1.678,
+   "peak_working_set_mb": 888
+  },
+  {
+   "id": "parakeet-tdt-0.6b-v3-int8",
+   "median_s_per_10s": 1.662,
+   "warm_runs": 9,
+   "min_s_per_10s": 1.451,
+   "max_s_per_10s": 2.157,
+   "peak_working_set_mb": 897
+  },
+  {
+   "id": "moonshine-base-en-int8",
+   "median_s_per_10s": 0.671,
+   "warm_runs": 9,
+   "min_s_per_10s": 0.64,
+   "max_s_per_10s": 0.852,
+   "peak_working_set_mb": 390
+  },
+  {
+   "id": "moonshine-tiny-en-int8",
+   "median_s_per_10s": 0.523,
+   "warm_runs": 9,
+   "min_s_per_10s": 0.402,
+   "max_s_per_10s": 0.701,
+   "peak_working_set_mb": 246
+  },
+  {
+   "id": "sense-voice-small-int8",
+   "median_s_per_10s": 0.668,
+   "warm_runs": 9,
+   "min_s_per_10s": 0.634,
+   "max_s_per_10s": 0.811,
+   "peak_working_set_mb": 350
+  },
+  {
+   "id": "whisper-small.en-int8",
+   "median_s_per_10s": 7.922,
+   "warm_runs": 9,
+   "min_s_per_10s": 5.571,
+   "max_s_per_10s": 8.916,
+   "peak_working_set_mb": 1076
+  }
+ ]
+}

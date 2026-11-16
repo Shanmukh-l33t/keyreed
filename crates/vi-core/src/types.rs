@@ -35,6 +35,61 @@ impl WritingMode {
         }
     }
 
+    /// Compact label used where space is tight (floating listener, menus).
+    pub fn short_label(self) -> &'static str {
+        match self {
+            WritingMode::Smart => "Smart",
+            WritingMode::Exact => "Exact",
+            WritingMode::Professional => "Professional",
+            WritingMode::Casual => "Casual",
+            WritingMode::Technical => "Technical",
+            WritingMode::TerminalCode => "Code",
+        }
+    }
+
+    /// One-sentence, plain-language explanation shown in Settings and onboarding.
+    pub fn description(self) -> &'static str {
+        match self {
+            WritingMode::Smart => "Removes filler words and false starts, fixes punctuation and casing.",
+            WritingMode::Exact => "Keeps every word you said. Only adds basic casing and punctuation.",
+            WritingMode::Professional => "Clear, workplace-ready phrasing for email and documents.",
+            WritingMode::Casual => "Relaxed tone for chat. Keeps contractions and your phrasing.",
+            WritingMode::Technical => "Preserves file names, identifiers, versions, paths and numbers.",
+            WritingMode::TerminalCode => "Turns spoken flags and symbols into commands. Never presses Enter.",
+        }
+    }
+
+    /// A real before/after pair produced by the deterministic Tier-0 engine.
+    /// `vi-rewrite` has a regression test that asserts each pair, so the UI never shows invented output.
+    pub fn example(self) -> (&'static str, &'static str) {
+        match self {
+            WritingMode::Smart => (
+                "um i i think the the build pipeline is stuck on step 3 uh again",
+                "I think the build pipeline is stuck on step 3 again.",
+            ),
+            WritingMode::Exact => (
+                "um so the build is stuck on step 3",
+                "Um so the build is stuck on step 3.",
+            ),
+            WritingMode::Professional => (
+                "please revert back once the deployment is completed on staging",
+                "Please reply once the deployment is completed on staging.",
+            ),
+            WritingMode::Casual => (
+                "i will be 10 mins late stuck in traffic",
+                "I'll be 10 mins late stuck in traffic",
+            ),
+            WritingMode::Technical => (
+                "update auth underscore middleware dot rs to return http 401",
+                "Update auth_middleware.rs to return HTTP 401.",
+            ),
+            WritingMode::TerminalCode => (
+                "git checkout dash b fix slash login",
+                "git checkout -b fix/login",
+            ),
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             WritingMode::Smart => WritingMode::Exact,
@@ -69,6 +124,13 @@ impl ActivationMode {
             ActivationMode::ToggleToTalk => "Toggle to Talk",
         }
     }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            ActivationMode::HoldToTalk => "Hold the shortcut while you speak. Release to finish.",
+            ActivationMode::ToggleToTalk => "Press once to start, press again to finish.",
+        }
+    }
 }
 
 /// Output delivery mode. Auto Insert (`DirectTyping`) is the default primary experience.
@@ -92,6 +154,22 @@ impl OutputMode {
             OutputMode::AskBeforeInserting => "Ask Before Inserting",
         }
     }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            OutputMode::DirectTyping => "Auto Insert",
+            OutputMode::Clipboard => "Clipboard only",
+            OutputMode::AskBeforeInserting => "Ask before inserting",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            OutputMode::DirectTyping => "Types the text into the app you were using. Password boxes, admin windows and focus changes fall back to the clipboard.",
+            OutputMode::Clipboard => "Copies the text. You paste it yourself with Ctrl+V.",
+            OutputMode::AskBeforeInserting => "Shows a preview first. Yes inserts, No copies, Cancel discards.",
+        }
+    }
 }
 
 /// Processing & privacy preference tier (Master Prompt Section 8 & 12).
@@ -113,6 +191,22 @@ impl ProcessingProfile {
             ProcessingProfile::MaxPrivacyOffline => "Maximum Privacy (100% Offline)",
             ProcessingProfile::Balanced => "Balanced (Local First)",
             ProcessingProfile::MaxAccuracy => "Maximum Accuracy (Hybrid / Cloud)",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            ProcessingProfile::MaxPrivacyOffline => "On this PC only",
+            ProcessingProfile::Balanced => "Local first",
+            ProcessingProfile::MaxAccuracy => "Cloud when available",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            ProcessingProfile::MaxPrivacyOffline => "Audio and text never leave this computer. Recommended.",
+            ProcessingProfile::Balanced => "Runs locally. May use your cloud key for long or unclear recordings.",
+            ProcessingProfile::MaxAccuracy => "Uses your cloud key when online, falls back to local offline.",
         }
     }
 
@@ -313,5 +407,9 @@ pub struct PipelineResult {
     pub fallback_to_clipboard: bool,
     pub requires_command_confirmation: bool,
     pub warning_note: Option<String>,
+    /// Machine-readable reason when text was not typed directly (e.g. `password_field_protected`,
+    /// `user_cancelled_insert`). `None` when typed directly or in Clipboard-only mode.
+    #[serde(default)]
+    pub delivery_reason: Option<String>,
     pub metrics: PipelineMetrics,
 }
