@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Drive a KeyReed setup EXE through its real wizard and screenshot every page (Windows, stdlib only).
 
-  python3 scripts/installer/drive_setup.py dist/KeyReed-Setup-TEST.exe OUTDIR [--cancel] [--fail DIR] [--uninstall]
+  python3 scripts/installer/drive_setup.py dist/KeyReed-Setup-TEST.exe OUTDIR [--cancel] [--fail DIR]
+  python3 scripts/installer/drive_setup.py <install dir>/Uninstall.exe OUTDIR --uninstall
 
-Pages are captured from the screen (what a user sees), buttons are real BM_CLICKs on the wizard's
-own controls. Only run it against the --test build (own registry keys / folders); see keyreed.nsi.
+Every screen is captured with PrintWindow (what a user sees); buttons are real BM_CLICKs on the
+KeyReedSetup buttons. Only run it against the --test build (own registry keys / folders); see keyreed.nsi.
 """
 import ctypes, ctypes.wintypes as wt, subprocess, sys, time, struct
 from pathlib import Path
@@ -51,59 +52,78 @@ def shot(hwnd, path):
     g.DeleteObject(bmp); g.DeleteDC(mdc); u.ReleaseDC(0, sdc)
 
 
+def overlay(hwnd, timeout=10):
+    """The KeyReedSetup window that covers the wizard (scripts/installer/kr_setup.c)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        o = u.FindWindowExW(hwnd, None, "KeyReedSetup", None)
+        if o:
+            return o
+        time.sleep(0.1)
+    return None
+
+
+# Control ids of the KeyReedSetup buttons.
+PRIMARY, SECONDARY, CHANGE, OPTION = 2001, 2002, 2003, 2004
+
+
 def click(hwnd, ctl):
-    b = u.GetDlgItem(hwnd, ctl)
+    """Click a KeyReed button (ids above) on the overlay of wizard `hwnd`."""
+    b = u.GetDlgItem(overlay(hwnd), ctl)
     assert b, f"control {ctl} not found"
     u.PostMessageW(b, BM_CLICK, 0, 0)
 
 
 def btn_text(hwnd, ctl):
-    b = u.GetDlgItem(hwnd, ctl)
+    b = u.GetDlgItem(overlay(hwnd), ctl)
     n = 64; s = ctypes.create_unicode_buffer(n); u.GetWindowTextW(b, s, n); return s.value
 
 
-def wait_btn(hwnd, ctl, want, timeout=60):
+def wait_btn(hwnd, ctl, want, timeout=120):
     end = time.time() + timeout
     while time.time() < end:
-        if want in btn_text(hwnd, ctl).replace("&", "") and u.IsWindowEnabled(u.GetDlgItem(hwnd, ctl)):
+        if u.IsWindow(hwnd) and want in btn_text(hwnd, ctl):
             return True
-        time.sleep(0.1)
+        time.sleep(0.05)
     return False
+
+
+def run(exe, out, title, flags, args=()):
+    p = subprocess.Popen([str(exe), *args])
+    hw = find(title, None if "uninstall" in title.lower() else p.pid)
+    assert hw, f"{title} window not found"
+    assert overlay(hw), "KeyReed screen not found"
+    u.SetForegroundWindow(hw); time.sleep(0.8)
+    shot(hw, out / "01_welcome.bmp")
+    if "--cancel" in flags:
+        click(hw, SECONDARY); time.sleep(0.8)
+        print("cancel path captured"); return p, hw
+    click(hw, PRIMARY)
+    frames, t0 = 0, time.time()
+    while time.time() - t0 < 120:
+        shot(hw, out / f"progress_{frames:03d}.bmp"); frames += 1
+        if btn_text(hw, PRIMARY) in ("Finish", "Close") or btn_text(hw, SECONDARY) == "Close":
+            break
+        time.sleep(0.05)
+    print("progress frames:", frames, "in %.1fs" % (time.time() - t0))
+    time.sleep(1.0)  # let the one-off completion ring finish drawing
+    shot(hw, out / "03_finish.bmp")
+    if btn_text(hw, SECONDARY) == "Close":
+        print("install failed: failure screen captured"); return p, hw
+    click(hw, PRIMARY)
+    return p, hw
 
 
 def main():
     exe, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
     flags = sys.argv[3:]
-    args = [str(exe)] + (["/D=" + flags[flags.index("--fail") + 1]] if "--fail" in flags else [])
-    p = subprocess.Popen(args)
-    hw = find("Setup", p.pid)
-    assert hw, "setup window not found"
-    u.SetForegroundWindow(hw); time.sleep(0.6)
-    pages = ["01_welcome"]
-    shot(hw, out / "01_welcome.bmp")
-    if "--cancel" in flags:
-        click(hw, IDCANCEL); time.sleep(0.8)
-        dlg = find("Setup", p.pid)  # abort confirmation is a message box
-        shot(hw, out / "cancel_confirm.bmp")
-        print("cancel path captured; buttons:", btn_text(hw, IDCANCEL)); return
-    click(hw, IDOK); time.sleep(0.7); shot(hw, out / "02_directory.bmp")
-    click(hw, IDOK); time.sleep(0.7); shot(hw, out / "03_components.bmp")
-    click(hw, IDOK)  # Install
-    frames, t0, installing = 0, time.time(), False
-    while time.time() - t0 < 120:
-        shot(hw, out / f"progress_{frames:03d}.bmp"); frames += 1
-        en = u.IsWindowEnabled(u.GetDlgItem(hw, IDOK))
-        installing = installing or not en
-        if (installing or time.time() - t0 > 3) and en:
-            break  # the Next/Close button is enabled again: the engine has finished
-        time.sleep(0.1)
-    time.sleep(0.5)
-    print("progress frames:", frames, "in %.1fs" % (time.time() - t0), "| button:", btn_text(hw, IDOK))
-    shot(hw, out / "05_finish.bmp")  # MUI moves to the Finish page by itself when the install succeeds
-    if "--fail" in flags:
-        return
-    click(hw, IDOK)
-    p.wait(timeout=30); print("setup exit code", p.returncode)
+    args = ["/D=" + flags[flags.index("--fail") + 1]] if "--fail" in flags else []
+    title = "Uninstall" if "--uninstall" in flags else "Setup"
+    p, _ = run(exe, out, title, flags, args)
+    try:
+        p.wait(timeout=30); print("exit code", p.returncode)
+    except subprocess.TimeoutExpired:
+        print("still running (waiting on a dialog)")
 
 
 if __name__ == "__main__":

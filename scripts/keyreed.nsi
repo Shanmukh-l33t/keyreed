@@ -4,15 +4,17 @@
 ; Uninstall removes the installed program files. It does not delete
 ; %LOCALAPPDATA%\Keyreed, which holds settings.
 ;
-; Look: MUI2 wizard with KeyReed artwork (installer\welcome.bmp, header.bmp, made by
-; installer\gen_art.py from assets\keyreed-icon.png) and a native progress page drawn by the
-; KeyReedWave plugin (installer\kr_wave.c). Build with scripts\build-installer.sh.
+; Look: every screen (welcome, install animation, finish, and the same for uninstall) is drawn by
+; the KeyReedSetup plugin (installer\kr_setup.c) over the wizard window; NSIS still does all of the
+; installing. Install progress and status shown on screen are read from NSIS's own progress bar and
+; status text. Build with scripts\build-installer.sh.
 ;
 ; /DSANDBOX_TEST builds a copy that uses its own registry keys, install folder and Start menu
 ; folder and never kills running processes or touches the Run key, so the wizard can be exercised
 ; on a machine that has a real KeyReed installed. It is for testing only and is never released.
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 !define APP_NAME "KeyReed"
 !define APP_VERSION "0.5.0"
@@ -45,39 +47,29 @@ SetCompressor /SOLID lzma
 Icon "..\assets\keyreed.ico"
 UninstallIcon "..\assets\keyreed.ico"
 BrandingText "KeyReed ${APP_VERSION}"
+ManifestDPIAware true
 ShowInstDetails hide
 ShowUninstDetails hide
 
 !addplugindir /x86-unicode "installer\plugins"
 
 !define MUI_ABORTWARNING
+!define MUI_UNABORTWARNING
 !define MUI_ICON "..\assets\keyreed.ico"
 !define MUI_UNICON "..\assets\keyreed.ico"
-!define MUI_HEADERIMAGE
-!define MUI_HEADERIMAGE_BITMAP "installer\header.bmp"
-!define MUI_HEADERIMAGE_UNBITMAP "installer\header.bmp"
-!define MUI_HEADERIMAGE_RIGHT
-!define MUI_WELCOMEFINISHPAGE_BITMAP "installer\welcome.bmp"
-!define MUI_UNWELCOMEFINISHPAGE_BITMAP "installer\welcome.bmp"
+!define MUI_CUSTOMFUNCTION_GUIINIT GuiInit
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.GuiInit
 
-!define MUI_WELCOMEPAGE_TITLE "Welcome to KeyReed"
-!define MUI_WELCOMEPAGE_TEXT "Voice it. Everywhere.$\r$\n$\r$\nKeyReed turns speech into polished text in any Windows application.$\r$\n$\r$\nSetup installs KeyReed ${APP_VERSION} for your Windows account only, so it does not need administrator rights. Speech models are not part of this installer; you download them later from inside KeyReed.$\r$\n$\r$\nClick Next to continue."
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Setup will install KeyReed in the folder below. To install in a different folder, click Browse and select another folder. Your KeyReed settings are kept separately and are not affected."
-!define MUI_FINISHPAGE_TITLE "KeyReed is installed"
-!define MUI_FINISHPAGE_TEXT "KeyReed ${APP_VERSION} has been installed.$\r$\n$\r$\nIt runs from the system tray. After you launch it, the Get started page in Settings walks you through your first dictation."
-!ifndef SANDBOX_TEST
-  !define MUI_FINISHPAGE_RUN "$INSTDIR\keyreed.exe"
-  !define MUI_FINISHPAGE_RUN_TEXT "Launch KeyReed"
-!endif
-!insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_DIRECTORY
-!insertmacro MUI_PAGE_COMPONENTS
-; The show callback belongs to the page inserted right after it, so it is defined here, not earlier.
+Page custom WelcomeShow WelcomeLeave
+; The show callback belongs to the page inserted right after it.
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW InstFilesShow
 !insertmacro MUI_PAGE_INSTFILES
-!insertmacro MUI_PAGE_FINISH
-!insertmacro MUI_UNPAGE_CONFIRM
+Page custom FinishShow FinishLeave
+
+UninstPage custom un.WelcomeShow
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.InstFilesShow
 !insertmacro MUI_UNPAGE_INSTFILES
+UninstPage custom un.FinishShow
 !insertmacro MUI_LANGUAGE "English"
 
 VIProductVersion "0.5.0.0"
@@ -88,36 +80,102 @@ VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 KeyReed"
 VIAddVersionKey "CompanyName" "KeyReed"
 
+Function GuiInit
+  KeyReedSetup::Init "install"
+FunctionEnd
+
+Function un.GuiInit
+  KeyReedSetup::Init "uninstall"
+FunctionEnd
+
+Function WelcomeShow
+  nsDialogs::Create 1018
+  Pop $0
+  KeyReedSetup::Welcome "install" "${APP_VERSION}"
+  nsDialogs::Show
+FunctionEnd
+
 Function InstFilesShow
-  KeyReedWave::Start
+  KeyReedSetup::Progress "install"
 FunctionEnd
 
 Function .onInstSuccess
-  KeyReedWave::Success
+  KeyReedSetup::Success
 FunctionEnd
 
 Function .onInstFailed
-  KeyReedWave::Failed
-  SetDetailsView show
+  KeyReedSetup::Failed
 FunctionEnd
+
+Function FinishShow
+  nsDialogs::Create 1018
+  Pop $0
+  KeyReedSetup::Finish "install"
+  nsDialogs::Show
+FunctionEnd
+
+Function FinishLeave
+  KeyReedSetup::Option "launch"
+  Pop $0
+  ${If} $0 == "1"
+!ifdef SANDBOX_TEST
+    ; The test build never starts a second KeyReed next to the user's real one.
+    Exec '"$INSTDIR\keyreed.exe" --version'
+!else
+    Exec '"$INSTDIR\keyreed.exe"'
+!endif
+  ${EndIf}
+FunctionEnd
+
+Function un.WelcomeShow
+  nsDialogs::Create 1018
+  Pop $0
+  KeyReedSetup::Welcome "uninstall" "${APP_VERSION}"
+  nsDialogs::Show
+FunctionEnd
+
+Function un.InstFilesShow
+  KeyReedSetup::Progress "uninstall"
+FunctionEnd
+
+Function un.onUninstSuccess
+  KeyReedSetup::Success
+FunctionEnd
+
+Function un.onUninstFailed
+  KeyReedSetup::Failed
+FunctionEnd
+
+Function un.FinishShow
+  nsDialogs::Create 1018
+  Pop $0
+  KeyReedSetup::Finish "uninstall"
+  nsDialogs::Show
+FunctionEnd
+
+; Show one human stage name in the status line; NSIS's per-file log lines go only to the hidden list.
+!macro STAGE TEXT
+  SetDetailsPrint both
+  DetailPrint "${TEXT}"
+  SetDetailsPrint listonly
+!macroend
 
 Section "KeyReed" SecApp
   SectionIn RO
-  DetailPrint "Preparing installation"
+  !insertmacro STAGE "Preparing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::Exec 'taskkill /F /IM keyreed.exe'
   nsExec::Exec 'taskkill /F /IM llama-server.exe'
 !endif
-  DetailPrint "Installing application files"
+  !insertmacro STAGE "Installing application files"
   ClearErrors
-  SetDetailsPrint listonly
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD_DIR}\*.*"
   SetDetailsPrint both
   IfErrors 0 +3
     SetErrorLevel 2
     Abort "Could not write the application files into $INSTDIR (check folder permissions or disk space)."
-  DetailPrint "Registering the uninstaller"
+  !insertmacro STAGE "Registering KeyReed with Windows"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${REG_APP}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${REG_APP}" "Version" "${APP_VERSION}"
@@ -130,28 +188,32 @@ Section "KeyReed" SecApp
   WriteRegStr HKCU "${REG_UNINST}" "Publisher" "KeyReed"
   WriteRegDWORD HKCU "${REG_UNINST}" "NoModify" 1
   WriteRegDWORD HKCU "${REG_UNINST}" "NoRepair" 1
-  DetailPrint "Creating Start menu shortcuts"
+  !insertmacro STAGE "Creating shortcuts"
   CreateDirectory "${SM_DIR}"
   CreateShortcut "${SM_DIR}\KeyReed.lnk" "$INSTDIR\keyreed.exe" "" "$INSTDIR\keyreed.exe" 0
   CreateShortcut "${SM_DIR}\KeyReed Settings.lnk" "$INSTDIR\keyreed.exe" "--settings" "$INSTDIR\keyreed.exe" 0
   CreateShortcut "${SM_DIR}\Uninstall KeyReed.lnk" "$INSTDIR\Uninstall.exe"
+  SetAutoClose true
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
-  DetailPrint "Creating the desktop shortcut"
+  !insertmacro STAGE "Creating the desktop shortcut"
   CreateShortcut "${DESKTOP_LNK}" "$INSTDIR\keyreed.exe"
 SectionEnd
 
 Section "Uninstall"
+  !insertmacro STAGE "Closing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
   nsExec::ExecToLog 'taskkill /F /IM llama-server.exe'
 !endif
+  !insertmacro STAGE "Removing shortcuts"
   Delete "${DESKTOP_LNK}"
   Delete "${SM_DIR}\KeyReed.lnk"
   Delete "${SM_DIR}\KeyReed Settings.lnk"
   Delete "${SM_DIR}\Uninstall KeyReed.lnk"
   RMDir "${SM_DIR}"
+  !insertmacro STAGE "Removing program files"
   RMDir /r "$INSTDIR\models"
   RMDir /r "$INSTDIR"
   Delete "$INSTDIR\keyreed.exe"
@@ -163,15 +225,20 @@ Section "Uninstall"
 !ifndef SANDBOX_TEST
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Keyreed"
 !endif
+  !insertmacro STAGE "Unregistering KeyReed"
   DeleteRegKey HKCU "${REG_UNINST}"
   DeleteRegValue HKCU "${REG_APP}" "InstallDir"
   DeleteRegValue HKCU "${REG_APP}" "Version"
   DeleteRegKey /ifempty HKCU "${REG_APP}"
+  SetAutoClose true
 SectionEnd
 
-LangString DESC_App ${LANG_ENGLISH} "KeyReed application and native speech/grammar runtime (models download on demand in Settings)."
-LangString DESC_Desktop ${LANG_ENGLISH} "Optional shortcut on the desktop."
-!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} $(DESC_App)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} $(DESC_Desktop)
-!insertmacro MUI_FUNCTION_DESCRIPTION_END
+Function WelcomeLeave
+  KeyReedSetup::Option "desktop"
+  Pop $0
+  ${If} $0 == "0"
+    SectionSetFlags ${SecDesktop} 0
+  ${Else}
+    SectionSetFlags ${SecDesktop} ${SF_SELECTED}
+  ${EndIf}
+FunctionEnd
