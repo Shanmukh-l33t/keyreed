@@ -3127,7 +3127,10 @@ unsafe fn show_children(st: &St) {
     let card = MODAL.with(|m| m.borrow().is_some());
     for (c, h) in &st.ctrls {
         let own = matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM);
-        ShowWindow(*h, if card == own { SW_SHOWNA } else { SW_HIDE });
+        // A card hides the page, not the frame: the navigation and the header's window buttons stay visible
+        // (their commands are already refused while a card is up), so the window never looks broken.
+        let show = if card { own || fixed_in_place(&c.kind) } else { !own };
+        ShowWindow(*h, if show { SW_SHOWNA } else { SW_HIDE });
     }
 }
 
