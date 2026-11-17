@@ -32,7 +32,7 @@ use vi_win32::{
     harden_and_init_process, is_spec_physically_down, perf_trace_record,
     prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
     set_autostart_enabled, system_available_ram_mb, timing_mark, write_clipboard_unicode,
-    DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
+    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
 };
 #[cfg(windows)]
 use vi_win32::ui::{
@@ -244,6 +244,11 @@ fn with_engine_or_rules<R>(
 }
 
 /// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
+/// Registers the Quick Fix chord with the hook. The Composer chord is left out of beta.1 (the bar is not wired).
+fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
+    hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
+}
+
 fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngine> {
     let spec = find_model_spec(&cfg.local_asr_model)
         .with_context(|| format!("ASR model '{}' not in catalog", cfg.local_asr_model))?;
@@ -1875,6 +1880,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
         Arc::clone(&busy_flag),
         initial_cfg.app_enabled && initial_cfg.ptt_enabled,
     )?);
+    register_extra_chords(&hk_engine, &initial_cfg);
 
     let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
     let init_paths = RuntimePaths::discover(&initial_cfg);
@@ -2283,6 +2289,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     def_cfg.ptt_hotkey.clone(),
                                     def_cfg.mode_cycle_hotkey.clone(),
                                 );
+                                register_extra_chords(&hk_for_worker, &def_cfg);
                                 hk_for_worker.set_enabled(true);
                                 cfg = def_cfg;
                                 // Save and show the defaults first; rebuilding the engines re-verifies the
@@ -2336,6 +2343,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     new_cfg.ptt_hotkey.clone(),
                                     new_cfg.mode_cycle_hotkey.clone(),
                                 );
+                                register_extra_chords(&hk_for_worker, &new_cfg);
                                 hk_for_worker.set_enabled(new_cfg.app_enabled && new_cfg.ptt_enabled);
                                 let llm_changed = cfg.local_llm_model != new_cfg.local_llm_model;
                                 // The listener position is owned by the coordinator (drag saves bypass the UI snapshot).
