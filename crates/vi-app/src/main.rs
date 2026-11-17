@@ -953,15 +953,55 @@ impl InferenceSupervisor {
     }
 }
 
+/// The start/stop cue: queued to the default output device and never waited on, so the coordinator
+/// is not held for it and it does not depend on the system beep driver being present.
 fn play_subtle_earcon(enabled: bool, is_start: bool) {
     if !enabled {
         return;
     }
     #[cfg(windows)]
-    unsafe {
-        let freq = if is_start { 660u32 } else { 880u32 };
-        let _ = windows_sys::Win32::System::Diagnostics::Debug::Beep(freq, 28);
+    {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        static TONES: std::sync::OnceLock<(Vec<u8>, Vec<u8>)> = std::sync::OnceLock::new();
+        // Both live for the process, which SND_MEMORY | SND_ASYNC requires while the tone plays.
+        let (start, stop) = TONES.get_or_init(|| (tone_wav(660.0), tone_wav(880.0)));
+        let wav = if is_start { start } else { stop };
+        unsafe {
+            PlaySoundW(
+                wav.as_ptr() as *const u16,
+                std::ptr::null_mut(),
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
     }
+}
+
+/// 40 ms sine with 5 ms fades as a mono 16-bit 44.1 kHz WAV: what `PlaySoundW` reads from memory.
+#[cfg(windows)]
+fn tone_wav(freq: f32) -> Vec<u8> {
+    const RATE: u32 = 44_100;
+    const FRAMES: u32 = RATE * 40 / 1000;
+    const FADE: u32 = RATE * 5 / 1000;
+    let data_len = FRAMES * 2;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // bytes per second
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for i in 0..FRAMES {
+        let ramp = i.min(FRAMES - 1 - i).min(FADE) as f32 / FADE as f32;
+        let s = (std::f32::consts::TAU * freq * i as f32 / RATE as f32).sin() * ramp * 0.28;
+        wav.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+    }
+    wav
 }
 
 fn parse_mode_str(s: &str) -> WritingMode {
@@ -2106,6 +2146,17 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let start_epoch = Instant::now();
             let now_ms = || start_epoch.elapsed().as_millis() as u64;
 
+            // Open the microphone once, stopped, so the first press starts capturing in milliseconds
+            // instead of paying the WASAPI open (see ActiveCapture::prewarm). Runs on this thread
+            // because the warm client is thread-local, and costs this startup only.
+            let t_warm = Instant::now();
+            let warm_ok = ActiveCapture::prewarm(cfg.selected_microphone.as_deref());
+            timing_mark(&format!(
+                "mic_prewarm ok={} ms={:.1}",
+                warm_ok,
+                t_warm.elapsed().as_secs_f64() * 1000.0
+            ));
+
             let ticker = tick(Duration::from_millis(75));
 
             loop {
@@ -2697,30 +2748,40 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         timing_mark("coordinator_start_recording");
                         supervisor.session_keydown_at = Some(Instant::now());
                         transient_state_until = None;
-                        let t_fg = Instant::now();
-                        let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-                        let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
-                        captured_fg_ctx = if cur_fg.hwnd != 0 && (cur_fg.process_id != std::process::id() || practice) {
-                            last_external_fg_ctx = cur_fg.clone();
-                            cur_fg
-                        } else {
-                            last_external_fg_ctx.clone()
-                        };
-                        supervisor.session_target_id_ms = t_fg.elapsed().as_secs_f64() * 1000.0;
+                        // The microphone first: everything else can wait behind a running capture, the
+                        // first syllable cannot.
                         let t_mic = Instant::now();
                         match ActiveCapture::start(cfg.selected_microphone.as_deref()) {
                             Ok(cap) => {
                                 supervisor.session_mic_init_ms = t_mic.elapsed().as_secs_f64() * 1000.0;
-                                timing_mark("mic_started");
+                                timing_mark(&format!(
+                                    "mic_started warm={} start_ms={:.1}",
+                                    cap.was_warm(),
+                                    cap.start_ms()
+                                ));
                                 gui_for_worker.set_level_source(Some(cap.level_handle()));
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
+                                // The cue goes out before the work that is not on the audio path.
+                                play_subtle_earcon(cfg.audio_cues_enabled, true);
                                 gui_for_worker.sync(EngineState::Listening, 0.0, None);
+                                let t_fg = Instant::now();
+                                let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                                let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
+                                captured_fg_ctx = if cur_fg.hwnd != 0 && (cur_fg.process_id != std::process::id() || practice) {
+                                    last_external_fg_ctx = cur_fg.clone();
+                                    cur_fg
+                                } else {
+                                    last_external_fg_ctx.clone()
+                                };
+                                supervisor.session_target_id_ms = t_fg.elapsed().as_secs_f64() * 1000.0;
                                 if cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy {
+                                    let t_live = Instant::now();
                                     supervisor.begin_live_session(&cfg);
                                     supervisor.prewarm_slm(&cfg);
+                                    timing_mark(&format!("live_session_ms={:.1}", t_live.elapsed().as_secs_f64() * 1000.0));
                                 }
-                                play_subtle_earcon(cfg.audio_cues_enabled, true);
+                                timing_mark(&format!("press_path_ms={:.1}", t_mic.elapsed().as_secs_f64() * 1000.0));
                             }
                             Err(e) => {
                                 timing_mark("mic_error");
@@ -3121,6 +3182,157 @@ fn main() -> Result<()> {
             "{} desktop GUI daemon requires Windows 10/11; on Linux use `--transcribe-wav <path>` or `cargo test`",
             PRODUCT_NAME
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod earcon_tests {
+    use super::*;
+
+    /// The cue only plays if winmm accepts the buffer: check the WAV it is given and ask winmm.
+    #[test]
+    fn tone_is_a_40ms_wav_the_sound_api_accepts() {
+        let wav = tone_wav(660.0);
+        let be16 = |at: usize| u16::from_le_bytes([wav[at], wav[at + 1]]);
+        let be32 = |at: usize| u32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]]);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(be16(20), 1, "PCM");
+        assert_eq!(be16(22), 1, "mono");
+        assert_eq!(be32(24), 44_100);
+        assert_eq!(be16(34), 16);
+        assert_eq!(wav.len(), 44 + 44_100 * 40 / 1000 * 2);
+        assert_eq!(be16(44), 0, "the tone has to fade in");
+        let played = unsafe {
+            windows_sys::Win32::Media::Audio::PlaySoundW(
+                wav.as_ptr() as *const u16,
+                std::ptr::null_mut(),
+                windows_sys::Win32::Media::Audio::SND_MEMORY
+                    | windows_sys::Win32::Media::Audio::SND_ASYNC
+                    | windows_sys::Win32::Media::Audio::SND_NODEFAULT,
+            )
+        };
+        assert_ne!(played, 0, "winmm rejected the generated WAV (the cue would be silent)");
+    }
+
+    /// The cue must cost the press path nothing: it is queued, not played to completion. The first
+    /// call also loads winmm, which is why it is measured separately.
+    #[test]
+    fn start_cue_does_not_block() {
+        let t = Instant::now();
+        play_subtle_earcon(true, true);
+        let first = t.elapsed();
+        let t = Instant::now();
+        play_subtle_earcon(true, true);
+        assert!(
+            t.elapsed() < Duration::from_millis(15),
+            "the cue blocked the coordinator (first call {first:?})"
+        );
+        println!("earcon: first call {first:?}, steady state {:?}", t.elapsed());
+    }
+}
+
+/// Press-to-audio measurement for the Hold-to-Talk path. Ignored by default because it needs a real
+/// microphone: `cargo test -p vi-app --release -- --ignored press_path_bench --nocapture`.
+#[cfg(all(test, windows))]
+mod press_path_bench {
+    use super::*;
+
+    const PRESSES: usize = 6;
+
+    /// `KEYREED_BENCH_MIC` picks the device, `KEYREED_BENCH_HOLD_MS` how long the clip lasts after
+    /// the first sample (a real press is held for about a second), `KEYREED_BENCH_GAP_MS` the silence
+    /// between clips.
+    fn bench_env() -> (Option<String>, u64, u64) {
+        let num = |name: &str, default: u64| {
+            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        };
+        let mic = std::env::var("KEYREED_BENCH_MIC").ok().filter(|s| !s.trim().is_empty());
+        (mic, num("KEYREED_BENCH_HOLD_MS", 0), num("KEYREED_BENCH_GAP_MS", 0))
+    }
+
+    /// One press in the order the StartRecording arm runs it: target app, microphone, first sample.
+    fn one_press(mic: Option<&str>, hold_ms: u64, gap_ms: u64) -> (bool, f64, f64, f64) {
+        if gap_ms > 0 {
+            std::thread::sleep(Duration::from_millis(gap_ms));
+        }
+        let t0 = Instant::now();
+        let _fg = capture_foreground_context(true);
+        let fg_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let cap = ActiveCapture::start(mic).expect("microphone");
+        let mic_ms = cap.start_ms();
+        let warm = cap.was_warm();
+        let mut first_ms = f64::NAN;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if cap.first_frame_ms() > 0.0 {
+                first_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if hold_ms > 0 {
+            std::thread::sleep(Duration::from_millis(hold_ms));
+        }
+        cap.stop_and_take_16k();
+        (warm, fg_ms, mic_ms, first_ms)
+    }
+
+    fn percentile(values: &[f64], p: f64) -> f64 {
+        let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if v.is_empty() {
+            return f64::NAN;
+        }
+        let rank = ((p / 100.0) * v.len() as f64).ceil() as usize;
+        v[rank.clamp(1, v.len()) - 1]
+    }
+
+    fn report(label: &str, rows: &[(bool, f64, f64, f64)]) {
+        for (warm, fg, mic, first) in rows {
+            println!("{label} warm={warm} fg_ms={fg:.1} mic_ms={mic:.1} press_to_first_audio_ms={first:.1}");
+        }
+        let firsts: Vec<f64> = rows.iter().map(|r| r.3).collect();
+        let mics: Vec<f64> = rows.iter().map(|r| r.2).collect();
+        println!(
+            "{label} n={} press_to_first_audio p50={:.1} p95={:.1} | mic_start p50={:.1} p95={:.1}",
+            rows.len(),
+            percentile(&firsts, 50.0),
+            percentile(&firsts, 95.0),
+            percentile(&mics, 50.0),
+            percentile(&mics, 95.0)
+        );
+        assert!(firsts.iter().all(|x| x.is_finite()), "a press never delivered audio");
+    }
+
+    /// The cold path: a fresh thread has no warm client, so every press pays the device open.
+    #[test]
+    #[ignore = "needs a real microphone"]
+    fn press_path_bench_cold() {
+        let (mic, hold, gap) = bench_env();
+        let rows: Vec<(bool, f64, f64, f64)> = (0..PRESSES)
+            .map(|_| {
+                let mic = mic.clone();
+                std::thread::spawn(move || one_press(mic.as_deref(), hold, gap)).join().unwrap()
+            })
+            .collect();
+        assert!(rows.iter().all(|r| !r.0), "a cold press reused a warm client");
+        report("cold", &rows);
+    }
+
+    /// The warm path: one prewarm, then every press starts the client it already owns.
+    #[test]
+    #[ignore = "needs a real microphone"]
+    fn press_path_bench_warm() {
+        let (mic, hold, gap) = bench_env();
+        assert!(ActiveCapture::prewarm(mic.as_deref()), "prewarm could not open the microphone");
+        let rows: Vec<(bool, f64, f64, f64)> = (0..PRESSES).map(|_| one_press(mic.as_deref(), hold, gap)).collect();
+        assert!(rows.iter().all(|r| r.0), "a warm press fell back to a cold open");
+        report("warm", &rows);
+        // A warm press must also replace the client it used, or only the first press is fast.
+        let later = ActiveCapture::start(mic.as_deref()).expect("microphone");
+        assert!(later.was_warm(), "clip did not leave a warm client");
+        later.stop_and_take_16k();
     }
 }
 
