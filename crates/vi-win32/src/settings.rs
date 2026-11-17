@@ -2755,6 +2755,7 @@ mod tests {
             last_outcome: None,
             hint: None,
             processing_note: None,
+            quick_fix: None,
         }
     }
 

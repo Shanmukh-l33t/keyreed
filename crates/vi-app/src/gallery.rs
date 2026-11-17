@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vi_core::{AppConfig, EngineState};
 use vi_win32::ui::win_gui::{self, WinGuiHandle};
-use vi_win32::ui::{DownloadProgress, DownloadStage, MicTestStatus, MicVerdict, ReadyOutcome};
+use vi_win32::ui::{DownloadProgress, DownloadStage, MicTestStatus, MicVerdict, QuickFixStage, ReadyOutcome};
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -126,7 +126,8 @@ impl Gallery {
         // A generous crop around the listener so the screenshot shows it in desktop context.
         let cx = (rc.left + rc.right) / 2;
         let cy = (rc.top + rc.bottom) / 2;
-        capture(cx - 170, cy - 50, 340, 100, &self.dir.join(format!("{name}.bmp")))?;
+        let (cw, ch) = ((w + 80).max(340), (h + 60).max(100)); // wide states (Quick Fix chips) must not be cropped
+        capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")))?;
         let dbg = win_gui::pill_debug_info();
         self.report.push(serde_json::json!({
             "shot": name,
@@ -232,6 +233,40 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.shot_pill("pill_15_mode_hint", "Mode switched by shortcut: brief hint instead of a notification")?;
     pump_for(1800);
     g.shot_pill("pill_16_hint_expired", "Hint collapses back to idle by itself")?;
+
+    // ---- Quick Fix pill (plan F1 and F4): mid-motion and settled ----
+    g.gui.quick_fix(QuickFixStage::Working);
+    pump_for(250);
+    g.shot_pill("pill_20_fixing", "Quick Fix working: one band of light per 600 ms")?;
+    g.gui.quick_fix(QuickFixStage::Fixed { changes: 4, can_deepen: true });
+    pump_for(90);
+    g.shot_pill("pill_21a_fixed_mid", "Quick Fix done, mid pop: tick drawing, count rolling")?;
+    pump_for(500);
+    g.shot_pill("pill_21b_fixed", "Quick Fix done, at rest: Undo and Deeper chips")?;
+    g.gui.quick_fix(QuickFixStage::Fixed { changes: 12, can_deepen: false });
+    pump_for(500);
+    g.shot_pill("pill_21c_fixed_no_deeper", "Two-digit count, no deeper pass available")?;
+    g.gui.quick_fix(QuickFixStage::Undone { changes: 4 });
+    pump_for(70);
+    g.shot_pill("pill_22a_undo_mid", "Undo: tick unwinding, count rolling down")?;
+    pump_for(500);
+    g.shot_pill("pill_22b_undone", "Undone")?;
+    g.gui.quick_fix(QuickFixStage::LooksGood);
+    pump_for(400);
+    g.shot_pill("pill_23_looks_good", "Nothing needed changing")?;
+    g.gui.quick_fix(QuickFixStage::Notice("Spelling only".into()));
+    pump_for(400);
+    g.shot_pill("pill_24_spelling_only", "Grammar model missing: spelling and rules only")?;
+    g.gui.quick_fix(QuickFixStage::Refused("Select some text first".into()));
+    pump_for(60);
+    g.shot_pill("pill_25a_refused_shake", "Refusal, mid shake")?;
+    pump_for(400);
+    g.shot_pill("pill_25b_refused", "Refusal, at rest")?;
+    g.gui.quick_fix(QuickFixStage::Refused("Administrator window".into()));
+    pump_for(400);
+    g.shot_pill("pill_25c_refused_admin", "Refusal: administrator window")?;
+    pump_for(1800);
+    g.shot_pill("pill_26_quick_fix_gone", "Everything returns to idle by itself; the animation timer is off")?;
 
     // ---- Settings pages ----
     vi_win32::settings::open(Some(vi_win32::settings::PAGE_GENERAL));

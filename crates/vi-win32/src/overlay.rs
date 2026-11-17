@@ -10,6 +10,8 @@
 //! | Processing   | mark + "Transcribing" with a moving sheen        | text-sized         |
 //! | Done         | mark + check + "Inserted" / "Copied"             | text-sized         |
 //! | Error        | mark + alert + short plain-language reason       | text-sized         |
+//! | Fixing       | mark + "Fixing", one band of light sweeping      | text-sized         |
+//! | Fixed        | mark + tick + "Fixed · N changes" + Undo/Deeper  | text-sized         |
 //!
 //! The window itself is `WS_EX_LAYERED | WS_EX_NOACTIVATE`; this module only produces pixels.
 //! Text is rasterised by the caller (GDI, grayscale AA) and passed in as a coverage mask so the
@@ -38,6 +40,10 @@ pub enum PillKind {
     /// Needs the user's attention but is not an error (e.g. review a command before pasting).
     Attention,
     Error,
+    /// Quick Fix is working: one band of light sweeps across the capsule (plan F4).
+    Fixing,
+    /// Quick Fix replaced text: tick, change count and the Undo and Deeper chips.
+    Fixed,
 }
 
 /// Brand colours (from website/styles.css dark theme) as straight RGB.
@@ -56,6 +62,59 @@ pub mod palette {
     pub const AMBER_TEXT: (u8, u8, u8) = (0xFD, 0xE6, 0x8A);
     /// Slightly lifted circle behind the mark so the keycap's dark body keeps its silhouette.
     pub const WELL: (u8, u8, u8) = (0x1B, 0x29, 0x23);
+}
+
+/// Time curves for the Quick Fix pill (plan F4). Each is a pure function of the milliseconds since the stage began;
+/// pass `f32::INFINITY` for reduced motion and every curve returns its resting value.
+pub mod motion {
+    use std::f32::consts::PI;
+
+    /// Longest motion, the pop and the tick (the plan's budget is 250 ms per transition).
+    pub const TICK_MS: f32 = 200.0;
+    const COUNT_MS: f32 = 180.0;
+    const NOD_MS: f32 = 160.0;
+    const SHAKE_MS: f32 = 200.0;
+    /// After this the pill is at rest.
+    pub const SETTLE_MS: f32 = 250.0;
+
+    fn ease_out(t: f32) -> f32 {
+        1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+    }
+
+    /// Capsule pulse 0..1..0 (scale to 108 percent and back).
+    pub fn pop(ms: f32) -> f32 {
+        if ms >= TICK_MS { 0.0 } else { (PI * ms.max(0.0) / TICK_MS).sin() }
+    }
+
+    /// How much of the tick is drawn while it draws itself.
+    pub fn tick(ms: f32) -> f32 {
+        ease_out(ms / TICK_MS)
+    }
+
+    /// How much of the tick remains while it unwinds (undo).
+    pub fn tick_unwind(ms: f32) -> f32 {
+        1.0 - ease_out(ms / TICK_MS)
+    }
+
+    /// The change count rolling up from zero to `n`.
+    pub fn count_up(ms: f32, n: u32) -> u32 {
+        (n as f32 * ease_out(ms / COUNT_MS)).round() as u32
+    }
+
+    /// The change count rolling back down from `n` to zero.
+    pub fn count_down(ms: f32, n: u32) -> u32 {
+        n - count_up(ms, n)
+    }
+
+    /// Vertical offset in logical pixels: a 2 px dip and back ("Looks good" nods).
+    pub fn nod(ms: f32) -> f32 {
+        if ms >= NOD_MS { 0.0 } else { 2.0 * (PI * ms.max(0.0) / NOD_MS).sin() }
+    }
+
+    /// Horizontal offset in logical pixels: two short shakes of 6 px in 200 ms (errors and refusals).
+    pub fn shake(ms: f32) -> f32 {
+        if ms >= SHAKE_MS { 0.0 } else { 6.0 * (1.0 - ms.max(0.0) / SHAKE_MS) * (4.0 * PI * ms.max(0.0) / SHAKE_MS).sin() }
+    }
 }
 
 /// Grayscale text coverage mask (0..=255), row-major.
@@ -79,7 +138,14 @@ pub struct PillFrame<'a> {
     /// Primary label (mode name, status word, error reason).
     pub label: Option<TextMask<'a>>,
     /// Optional secondary label shown after the primary one in a dimmer colour (e.g. shortcut).
+    /// On `Fixed` it is the first action chip ("Undo").
     pub secondary: Option<TextMask<'a>>,
+    /// On `Fixed`, the second action chip ("Deeper").
+    pub tertiary: Option<TextMask<'a>>,
+    /// Capsule pulse 0..=1 (the "pop" after a fix); 0 for every other state.
+    pub pop: f32,
+    /// How much of the tick is drawn, 0..=1; 1 for every state that is not animating a tick.
+    pub tick: f32,
     /// Opacity multiplier for the whole frame (0..=1).
     pub opacity: f32,
     /// Opacity of state content (labels, glyphs, bars) so it can fade in after a change.
@@ -130,16 +196,53 @@ impl PillMetrics {
 }
 
 /// Width of the window (including shadow margin) required for `kind` with the given label widths.
-pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w: usize) -> usize {
+pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w: usize, tertiary_w: usize) -> usize {
     let m = PillMetrics::for_scale(scale);
     let content = match kind {
         PillKind::Idle | PillKind::Disabled => return m.cap_h + 2 * m.margin,
         PillKind::Listening => m.wave_width(),
         PillKind::Done | PillKind::Error | PillKind::Attention => m.glyph + m.gap + label_w,
         PillKind::IdleHover => label_w + if secondary_w > 0 { m.gap + secondary_w } else { 0 },
-        PillKind::Processing | PillKind::Notice => label_w,
+        PillKind::Processing | PillKind::Notice | PillKind::Fixing => label_w,
+        PillKind::Fixed => {
+            let chips: f32 = [secondary_w, tertiary_w]
+                .iter()
+                .filter(|w| **w > 0)
+                .map(|w| m.gap as f32 + chip_width(scale, *w))
+                .sum();
+            m.glyph + m.gap + label_w + chips.ceil() as usize
+        }
     };
-    m.content_x + content + m.pad_right + m.margin
+    let tail = if kind == PillKind::Fixed && secondary_w + tertiary_w > 0 { chip_inset(scale).round() as usize } else { m.pad_right };
+    m.content_x + content + tail + m.margin
+}
+
+fn chip_height(scale: f32) -> f32 {
+    22.0 * scale
+}
+
+fn chip_width(scale: f32, text_w: usize) -> f32 {
+    text_w as f32 + 16.0 * scale
+}
+
+/// Space above, below and after the chips so they sit inside the capsule's curve.
+fn chip_inset(scale: f32) -> f32 {
+    ((PILL_HEIGHT * scale) - chip_height(scale)) / 2.0
+}
+
+/// Window-relative `(x0, x1)` of each action chip on a `Fixed` pill, for the given text widths (zero = absent).
+/// The renderer and the click handler both use this, so a click lands on what is drawn.
+pub fn fixed_chips(scale: f32, label_w: usize, texts: [usize; 2]) -> Vec<(f32, f32)> {
+    let m = PillMetrics::for_scale(scale);
+    let mut x = (m.content_x + m.glyph + m.gap + label_w) as f32;
+    let mut out = Vec::new();
+    for w in texts.into_iter().filter(|w| *w > 0) {
+        x += m.gap as f32;
+        let cw = chip_width(scale, w);
+        out.push((x, x + cw));
+        x += cw;
+    }
+    out
 }
 
 /// Maps an RMS value (linear, 0..1) to a perceptual 0..1 level using a -55 dBFS .. -15 dBFS window.
@@ -197,7 +300,8 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         return px;
     }
     let m = PillMetrics::for_scale(f.scale);
-    let margin = m.margin as f32;
+    // The pop grows the capsule into its shadow margin (about 4 percent on every side at the peak).
+    let margin = m.margin as f32 - f.pop.clamp(0.0, 1.0) * 0.04 * m.cap_h as f32;
     let cap_h = (height as f32 - 2.0 * margin).max(4.0);
     let cap_w = (width as f32 - 2.0 * margin).max(cap_h);
     let radius = cap_h * 0.5;
@@ -215,6 +319,8 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         PillKind::Notice => (palette::TEXT_2, 0.35, palette::SURFACE),
         PillKind::Attention => (palette::WARN, 0.75, palette::SURFACE),
         PillKind::Error => (palette::ROSE, 0.80, palette::SURFACE),
+        PillKind::Fixing => (palette::EMERALD_2, 0.55, palette::SURFACE),
+        PillKind::Fixed => (palette::EMERALD_2, 0.70, palette::SURFACE),
     };
     let body_alpha = 0.96f32;
     let opacity = f.opacity.clamp(0.0, 1.0);
@@ -235,7 +341,19 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                 let r = lerp(surface.0 as f32, accent.0 as f32, border_t);
                 let g = lerp(surface.1 as f32, accent.1 as f32, border_t);
                 let b = lerp(surface.2 as f32, accent.2 as f32, border_t);
-                col = (r, g, b, body_alpha * cov);
+                // One band of light, once per 600 ms, only while Quick Fix is working.
+                let lift = if f.kind == PillKind::Fixing {
+                    let band_x = margin + cap_w * ((f.phase / 0.6).fract() * 1.5 - 0.25);
+                    0.22 * (1.0 - ((pxf - band_x).abs() / (cap_h * 0.9))).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                col = (
+                    lerp(r, palette::MINT.0 as f32, lift),
+                    lerp(g, palette::MINT.1 as f32, lift),
+                    lerp(b, palette::MINT.2 as f32, lift),
+                    body_alpha * cov,
+                );
             }
             // Shadow outside the body (black, quadratic fall-off over the margin).
             if d > -0.5 && d < shadow_r {
@@ -284,23 +402,42 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                 fill_round_rect(&mut px, width, height, bx, cy - half, m.bar_w, half * 2.0, c, opacity);
             }
         }
-        PillKind::Done | PillKind::Error | PillKind::Attention => {
+        PillKind::Done | PillKind::Error | PillKind::Attention | PillKind::Fixed => {
             let g = m.glyph as f32;
             let gx = content_x;
             let gy = cy - g / 2.0;
             match f.kind {
-                PillKind::Done => draw_check(&mut px, width, height, gx, gy, g, palette::EMERALD_2, f.scale, opacity),
+                PillKind::Done | PillKind::Fixed => {
+                    draw_check(&mut px, width, height, gx, gy, g, palette::EMERALD_2, f.scale, f.tick, opacity)
+                }
                 PillKind::Attention => draw_alert(&mut px, width, height, gx, gy, g, palette::WARN, f.scale, opacity),
                 _ => draw_alert(&mut px, width, height, gx, gy, g, palette::ROSE, f.scale, opacity),
             }
             if let Some(t) = f.label {
                 let c = match f.kind {
-                    PillKind::Done => palette::MINT,
+                    PillKind::Done | PillKind::Fixed => palette::MINT,
                     PillKind::Attention => palette::AMBER_TEXT,
                     _ => palette::ROSE_TEXT,
                 };
                 let tx = content_x + g + m.gap as f32;
                 blend_text(&mut px, width, height, &t, tx, cy, c, None, opacity);
+            }
+            if f.kind == PillKind::Fixed {
+                let label_w = f.label.map_or(0, |t| t.width);
+                let texts = [f.secondary, f.tertiary];
+                let widths = [texts[0].map_or(0, |t| t.width), texts[1].map_or(0, |t| t.width)];
+                let ch = chip_height(f.scale);
+                let mut spans = fixed_chips(f.scale, label_w, widths).into_iter();
+                for t in texts.into_iter().flatten().filter(|t| t.width > 0) {
+                    let Some((x0, x1)) = spans.next() else { break };
+                    fill_hcapsule(&mut px, width, height, x0, cy - ch / 2.0, x1 - x0, ch, palette::EMERALD, 0.18 * opacity);
+                    blend_text(&mut px, width, height, &t, x0 + (x1 - x0 - t.width as f32) / 2.0, cy, palette::MINT, None, opacity);
+                }
+            }
+        }
+        PillKind::Fixing => {
+            if let Some(t) = f.label {
+                blend_text(&mut px, width, height, &t, content_x, cy, palette::MINT, None, opacity);
             }
         }
         PillKind::Processing => {
@@ -479,12 +616,42 @@ fn stroke_segments(px: &mut [u32], w: usize, h: usize, segs: &[(f32, f32, f32, f
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_check(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, s: f32, c: (u8, u8, u8), scale: f32, op: f32) {
-    let segs = [
-        (x + s * 0.12, y + s * 0.55, x + s * 0.40, y + s * 0.82),
-        (x + s * 0.40, y + s * 0.82, x + s * 0.90, y + s * 0.22),
-    ];
-    stroke_segments(px, w, h, &segs, 0.85 * scale.max(1.0), c, op);
+fn draw_check(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, s: f32, c: (u8, u8, u8), scale: f32, progress: f32, op: f32) {
+    let (a, b, c3) = ((x + s * 0.12, y + s * 0.55), (x + s * 0.40, y + s * 0.82), (x + s * 0.90, y + s * 0.22));
+    // The tick draws itself: the first stroke takes the first third of the progress, the second the rest.
+    let p = progress.clamp(0.0, 1.0);
+    let first = (p * 3.0).min(1.0);
+    let second = ((p - 1.0 / 3.0) * 1.5).clamp(0.0, 1.0);
+    let at = |from: (f32, f32), to: (f32, f32), t: f32| (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+    let mut segs = Vec::with_capacity(2);
+    if first > 0.0 {
+        let e = at(a, b, first);
+        segs.push((a.0, a.1, e.0, e.1));
+    }
+    if second > 0.0 {
+        let e = at(b, c3, second);
+        segs.push((b.0, b.1, e.0, e.1));
+    }
+    if !segs.is_empty() {
+        stroke_segments(px, w, h, &segs, 0.85 * scale.max(1.0), c, op);
+    }
+}
+
+/// Anti-aliased horizontal capsule (radius = half the height) with straight colour `c` at `alpha`.
+#[allow(clippy::too_many_arguments)]
+fn fill_hcapsule(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, cw: f32, ch: f32, c: (u8, u8, u8), alpha: f32) {
+    let r = ch / 2.0;
+    let (left, right, cy) = (x + r, (x + cw - r).max(x + r), y + r);
+    for yy in (y.floor().max(0.0) as usize)..((y + ch).ceil() as usize).min(h) {
+        for xx in (x.floor().max(0.0) as usize)..((x + cw).ceil() as usize).min(w) {
+            let (fx, fy) = (xx as f32 + 0.5, yy as f32 + 0.5);
+            let d = ((fx - fx.clamp(left, right)).powi(2) + (fy - cy).powi(2)).sqrt();
+            let cov = (r - d + 0.5).clamp(0.0, 1.0) * alpha;
+            if cov > 0.0 {
+                px[yy * w + xx] = over(px[yy * w + xx], c, cov);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -548,13 +715,25 @@ mod tests {
     use super::*;
 
     fn frame<'a>(kind: PillKind, levels: &'a [f32], label: Option<TextMask<'a>>) -> PillFrame<'a> {
-        PillFrame { scale: 1.0, kind, levels, phase: 0.3, label, secondary: None, opacity: 1.0, content_opacity: 1.0 }
+        PillFrame {
+            scale: 1.0,
+            kind,
+            levels,
+            phase: 0.3,
+            label,
+            secondary: None,
+            tertiary: None,
+            pop: 0.0,
+            tick: 1.0,
+            opacity: 1.0,
+            content_opacity: 1.0,
+        }
     }
 
     #[test]
     fn idle_is_a_compact_circle_much_smaller_than_v03() {
         let m = PillMetrics::for_scale(1.0);
-        let w = pill_window_width(1.0, PillKind::Idle, 0, 0);
+        let w = pill_window_width(1.0, PillKind::Idle, 0, 0, 0);
         let visible = (w - 2 * m.margin) * m.cap_h;
         // v0.3 pill was 196 x 40 = 7840 logical px.
         assert_eq!(w - 2 * m.margin, 36);
@@ -564,7 +743,7 @@ mod tests {
     #[test]
     fn listening_footprint_is_at_least_25_percent_smaller_than_v03() {
         let m = PillMetrics::for_scale(1.0);
-        let w = pill_window_width(1.0, PillKind::Listening, 0, 0) - 2 * m.margin;
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0) - 2 * m.margin;
         let area = w * m.cap_h;
         assert!(w <= 140, "listening width {w}");
         assert!(area * 100 / 7840 <= 75, "listening area {area}");
@@ -572,7 +751,7 @@ mod tests {
 
     #[test]
     fn capsule_has_transparent_corners_and_opaque_body() {
-        let w = pill_window_width(1.0, PillKind::Listening, 0, 0);
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0);
         let h = PillMetrics::for_scale(1.0).window_height();
         let buf = render_pill(w, h, &frame(PillKind::Listening, &[0.5; 11], None));
         assert_eq!(buf[0], 0, "corner must be transparent");
@@ -581,7 +760,7 @@ mod tests {
 
     #[test]
     fn waveform_follows_measured_levels_not_a_canned_animation() {
-        let w = pill_window_width(1.0, PillKind::Listening, 0, 0);
+        let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0);
         let h = PillMetrics::for_scale(1.0).window_height();
         let silent = render_pill(w, h, &frame(PillKind::Listening, &[0.0; 11], None));
         let loud = render_pill(w, h, &frame(PillKind::Listening, &[0.9; 11], None));
@@ -598,7 +777,7 @@ mod tests {
         let mask = vec![255u8; 20 * 10];
         let t = TextMask { width: 20, height: 10, coverage: &mask };
         let h = PillMetrics::for_scale(1.0).window_height();
-        let w = pill_window_width(1.0, PillKind::Error, 20, 0);
+        let w = pill_window_width(1.0, PillKind::Error, 20, 0, 0);
         let done = render_pill(w, h, &frame(PillKind::Done, &[], Some(t)));
         let err = render_pill(w, h, &frame(PillKind::Error, &[], Some(t)));
         let proc_s = render_pill(w, h, &frame(PillKind::Processing, &[], Some(t)));
@@ -610,7 +789,7 @@ mod tests {
         assert_ne!(attention, err);
         assert_ne!(notice, done);
         assert_ne!(notice, err);
-        let wi = pill_window_width(1.0, PillKind::Idle, 0, 0);
+        let wi = pill_window_width(1.0, PillKind::Idle, 0, 0, 0);
         assert_ne!(
             render_pill(wi, h, &frame(PillKind::Idle, &[], None)),
             render_pill(wi, h, &frame(PillKind::Disabled, &[], None))
@@ -636,5 +815,63 @@ mod tests {
         assert_eq!(rms_to_level(0.0), 0.0);
         assert!(rms_to_level(0.01) < rms_to_level(0.1));
         assert_eq!(rms_to_level(1.0), 1.0);
+    }
+
+    #[test]
+    fn motion_curves_start_neutral_and_come_to_rest() {
+        use motion::*;
+        assert_eq!((pop(0.0), tick(0.0), count_up(0.0, 4), nod(0.0), shake(0.0)), (0.0, 0.0, 0, 0.0, 0.0));
+        assert!(pop(TICK_MS / 2.0) > 0.99);
+        assert_eq!((pop(TICK_MS), tick(TICK_MS), count_up(180.0, 4), nod(160.0), shake(200.0)), (0.0, 1.0, 4, 0.0, 0.0));
+        assert_eq!((tick_unwind(0.0), tick_unwind(TICK_MS), count_down(0.0, 4), count_down(180.0, 4)), (1.0, 0.0, 4, 0));
+        // Reduced motion passes infinity and gets the resting values.
+        let rest = f32::INFINITY;
+        assert_eq!((pop(rest), tick(rest), count_up(rest, 7), nod(rest), shake(rest)), (0.0, 1.0, 7, 0.0, 0.0));
+        // The shake stays within 6 px and really moves both ways.
+        let xs: Vec<f32> = (0..200).map(|i| shake(i as f32)).collect();
+        assert!(xs.iter().all(|x| x.abs() <= 6.0) && xs.iter().any(|x| *x > 1.0) && xs.iter().any(|x| *x < -1.0));
+    }
+
+    #[test]
+    fn fixed_pill_has_chips_inside_the_window_and_the_tick_draws_itself() {
+        let (label_w, undo_w, deeper_w) = (92, 28, 40);
+        let w = pill_window_width(1.0, PillKind::Fixed, label_w, undo_w, deeper_w);
+        let chips = fixed_chips(1.0, label_w, [undo_w, deeper_w]);
+        assert_eq!(chips.len(), 2);
+        assert!(chips[0].1 < chips[1].0, "chips must not overlap");
+        assert!(chips[1].1 < w as f32 - PillMetrics::for_scale(1.0).margin as f32, "chips stay inside the capsule");
+        assert_eq!(fixed_chips(1.0, label_w, [undo_w, 0]).len(), 1);
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let mask = vec![255u8; 100 * 10];
+        let t = |n: usize| TextMask { width: n, height: 10, coverage: &mask[..n * 10] };
+        let mut f = frame(PillKind::Fixed, &[], Some(t(label_w)));
+        f.secondary = Some(t(undo_w));
+        f.tertiary = Some(t(deeper_w));
+        let full = render_pill(w, h, &f);
+        f.tick = 0.0;
+        let none = render_pill(w, h, &f);
+        f.tick = 0.4;
+        let part = render_pill(w, h, &f);
+        assert!(full != none && part != none && part != full, "tick progress must change the pixels");
+        f.tick = 1.0;
+        f.pop = 1.0;
+        assert_ne!(render_pill(w, h, &f), full, "the pop must change the capsule");
+    }
+
+    #[test]
+    fn fixing_pill_sweeps_one_band_that_moves_with_the_phase() {
+        let mask = vec![255u8; 40 * 10];
+        let t = TextMask { width: 40, height: 10, coverage: &mask };
+        let w = pill_window_width(1.0, PillKind::Fixing, 40, 0, 0);
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let mut f = frame(PillKind::Fixing, &[], Some(t));
+        f.phase = 0.0;
+        let a = render_pill(w, h, &f);
+        f.phase = 0.3;
+        let b = render_pill(w, h, &f);
+        f.phase = 0.6; // one full sweep later: back where it began
+        let c = render_pill(w, h, &f);
+        assert_ne!(a, b);
+        assert_eq!(a, c);
     }
 }

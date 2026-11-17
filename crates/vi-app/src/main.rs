@@ -2226,6 +2226,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     supervisor = InferenceSupervisor::new(&cfg);
                                 }
                             }
+                            // Wired to the Quick Fix coordinator in P2.6.
+                            Ok(UiAction::QuickFixUndo) | Ok(UiAction::QuickFixDeeper) => {}
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);
