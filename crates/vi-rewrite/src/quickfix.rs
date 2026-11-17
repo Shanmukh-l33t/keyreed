@@ -85,7 +85,8 @@ impl Policy {
 pub struct EditClassTable {
     unknown: Policy,
     contexts: HashMap<String, Policy>,
-    classes: HashMap<String, Policy>,
+    /// Per class: its policy, and the policies that replace it in single app categories.
+    classes: HashMap<String, (Policy, HashMap<String, Policy>)>,
 }
 
 impl EditClassTable {
@@ -96,30 +97,32 @@ impl EditClassTable {
 
     pub fn parse(json: &str) -> Result<Self> {
         let v: serde_json::Value = serde_json::from_str(json).context("edit-class table is not JSON")?;
-        let policies = |key: &str, field: Option<&str>| -> Result<HashMap<String, Policy>> {
-            v[key]
-                .as_object()
-                .ok_or_else(|| anyhow!("edit-class table: no {key}"))?
-                .iter()
-                .map(|(k, p)| {
-                    let name = match field {
-                        Some(f) => p[f].as_str(),
-                        None => p.as_str(),
-                    };
-                    Ok((k.clone(), Policy::parse(name.ok_or_else(|| anyhow!("edit-class table: {k} has no policy"))?)?))
-                })
-                .collect()
-        };
+        let named = |what: &str, p: &serde_json::Value| -> Result<Policy> { Policy::parse(p.as_str().ok_or_else(|| anyhow!("edit-class table: {what} has no policy"))?) };
+        let contexts = v["contexts"].as_object().ok_or_else(|| anyhow!("edit-class table: no contexts"))?;
+        let classes = v["classes"].as_object().ok_or_else(|| anyhow!("edit-class table: no classes"))?;
         Ok(Self {
             unknown: Policy::parse(v["unknown_class"].as_str().unwrap_or("review_only"))?,
-            contexts: policies("contexts", None)?,
-            classes: policies("classes", Some("policy"))?,
+            contexts: contexts.iter().map(|(k, p)| Ok((k.clone(), named(k, p)?))).collect::<Result<_>>()?,
+            classes: classes
+                .iter()
+                .map(|(k, c)| {
+                    let overrides = match c["contexts"].as_object() {
+                        Some(o) => o.iter().map(|(ctx, p)| Ok((ctx.clone(), named(ctx, p)?))).collect::<Result<_>>()?,
+                        None => HashMap::new(),
+                    };
+                    Ok((k.clone(), (named(k, &c["policy"])?, overrides)))
+                })
+                .collect::<Result<_>>()?,
         })
     }
 
     pub fn policy(&self, class: &str, context: AppCategory) -> Policy {
         let cap = self.contexts.get(context_name(context)).copied().unwrap_or(Policy::Silent);
-        self.classes.get(class).copied().unwrap_or(self.unknown).min(cap)
+        let own = match self.classes.get(class) {
+            Some((base, overrides)) => overrides.get(context_name(context)).copied().unwrap_or(*base),
+            None => self.unknown,
+        };
+        own.min(cap)
     }
 }
 
@@ -192,8 +195,17 @@ impl QuickFixEngine {
 
     pub fn fix(&mut self, text: &str, context: AppCategory) -> Result<QuickFix> {
         let mut edits = Vec::new();
+        // Where capitalisation edits are off (chat, notes, code), lower case is the writer's style: an edit that fixes
+        // something else keeps the lower-case start of the words it replaces.
+        let keep_lower = self.table.policy("capitalisation", context) == Policy::Off;
         for (a, b) in sentence_ranges(text) {
-            for c in self.fix_sentence(&text[a..b])? {
+            for mut c in self.fix_sentence(&text[a..b])? {
+                if keep_lower {
+                    lower_start(&text[a + c.start..a + c.end], &mut c.rep);
+                    if c.rep == text[a + c.start..a + c.end] {
+                        continue;
+                    }
+                }
                 let policy = self.table.policy(&c.class, context);
                 if policy != Policy::Off {
                     edits.push(Edit { start: a + c.start, length: c.end - c.start, replacement: c.rep, layer: c.layer, class: c.class, confidence: c.conf, silent: policy == Policy::Silent });
@@ -282,7 +294,7 @@ fn sentence_ranges(text: &str) -> Vec<(usize, usize)> {
 fn spelling_fix(word: &str, suggestions: &[String]) -> Option<String> {
     let plain = |t: &str| t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'') && t.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let len = word.chars().count();
-    if len < 3 || !plain(word) || !word.chars().any(|c| "aeiouy".contains(c)) || SHELL_WORDS.contains(&word) {
+    if len < 3 || word.contains('\'') || !plain(word) || !word.chars().any(|c| "aeiouy".contains(c)) || SHELL_WORDS.contains(&word) {
         return None;
     }
     // "didnt": the word list holds the contractions without their apostrophe, so this comes before the list check.
@@ -292,9 +304,20 @@ fn spelling_fix(word: &str, suggestions: &[String]) -> Option<String> {
     if is_known_word(word) {
         return None;
     }
-    let mut candidates = suggestions.iter().filter(|fix| plain(fix) && !fix.contains('\'') && is_known_word(fix) && edit_distance(word, fix) == 1 && (len > 3 || COMMON_SHORT.contains(&fix.as_str())));
+    let mut candidates = suggestions.iter().filter(|fix| plain(fix) && !fix.contains('\'') && word.strip_suffix('s') != Some(fix.as_str()) && is_known_word(fix) && edit_distance(word, fix) == 1 && (len > 3 || COMMON_SHORT.contains(&fix.as_str())));
     let first = candidates.next()?;
     candidates.next().is_none().then(|| first.clone())
+}
+
+/// Gives `rep` a lower-case first letter when the text it replaces starts lower case (the pronoun "I" excepted).
+fn lower_start(orig: &str, rep: &mut String) {
+    let mut chars = rep.chars();
+    let Some(first) = chars.next() else { return };
+    let pronoun_i = rep == "I" || rep.starts_with("I ") || rep.starts_with("I'");
+    if orig.chars().next().is_some_and(char::is_lowercase) && first.is_uppercase() && !pronoun_i {
+        let lowered: String = first.to_lowercase().chain(chars).collect();
+        *rep = lowered;
+    }
 }
 
 /// Optimal string alignment distance: insertions, deletions, substitutions and swapped neighbours cost one each.
@@ -431,7 +454,11 @@ fn classify(text: &str, a: usize, b: usize, rep: &str) -> String {
     let punctuation = |ws: &[String]| !ws.is_empty() && ws.iter().all(|w| !w.chars().any(char::is_alphanumeric));
     let all_in = |ws: &[String], set: &[&str]| !ws.is_empty() && ws.iter().all(|w| set.contains(&w.as_str()));
     let class = if !orig.is_empty() && orig.to_lowercase() == rep.to_lowercase() {
-        "capitalisation"
+        if rep.chars().count() > 1 && rep == rep.to_uppercase() {
+            "capitalisation_upper"
+        } else {
+            "capitalisation"
+        }
     } else if rep.is_empty() {
         let prev = words(&text[..a]).pop();
         let next = words(&text[b..]).into_iter().next();
@@ -491,7 +518,7 @@ mod tests {
     }
 
     fn engine(edits: Vec<RawEdit>) -> QuickFixEngine {
-        QuickFixEngine::new(Box::new(Script(edits, "")))
+        QuickFixEngine::new(Box::new(Script(edits, ""))).with_table(EditClassTable::parse(r#"{"contexts":{},"classes":{}}"#).unwrap())
     }
 
     #[test]
@@ -575,6 +602,8 @@ mod tests {
         assert_eq!(one("informations", &["information's"]), None, "only contractions get an apostrophe");
         assert_eq!(one("sudo", &["sudor"]), None);
         assert_eq!(one("dont", &["don't"]).as_deref(), Some("don't"));
+        assert_eq!(one("i'll", &["ill"]), None, "dropping an apostrophe is not a typo fix");
+        assert_eq!(one("companys", &["company"]), None, "a dropped plural or possessive s is not a typo fix");
         // Three unknown words in one sentence: not typos.
         let mut e = engine(vec![]).with_speller(Box::new(Fixed(vec![("recieve", vec!["receive"]), ("hte", vec!["the"]), ("adn", vec!["and"])])));
         assert!(e.fix("recieve hte adn", AppCategory::General).unwrap().edits.is_empty());
@@ -587,6 +616,19 @@ mod tests {
         assert_eq!(edit_distance("teh", "the"), 1);
         assert_eq!(edit_distance("recieve", "receive"), 1);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn lower_case_style_is_kept_where_capitalisation_is_off() {
+        // "your" -> "You're": in chat the fix keeps the writer's lower case; in e-mail it stands as the model made it.
+        let one = |ctx| engine(vec![edit(0, 4, "You're")]).fix("your going to love it", ctx).unwrap().corrected;
+        let strict = EditClassTable::parse(r#"{"contexts":{},"classes":{"capitalisation":{"policy":"off"}}}"#).unwrap();
+        let chat = engine(vec![edit(0, 4, "You're")]).with_table(strict).fix("your going to love it", AppCategory::Chat).unwrap();
+        assert_eq!(chat.corrected, "you're going to love it");
+        assert_eq!(one(AppCategory::Email), "You're going to love it");
+        let mut s = String::from("I'm");
+        lower_start("i'm", &mut s);
+        assert_eq!(s, "I'm", "the pronoun I stays");
     }
 
     #[test]
@@ -609,11 +651,15 @@ mod tests {
         assert_eq!(t.policy("spelling", AppCategory::Email), Policy::Silent);
         assert_eq!(t.policy("spelling", AppCategory::CodeEditor), Policy::ReviewOnly);
         assert_eq!(t.policy("spelling", AppCategory::Terminal), Policy::Off);
+        let t2 = EditClassTable::parse(r#"{"contexts":{},"classes":{"capitalisation":{"policy":"review_only","contexts":{"chat":"off","email":"silent"}}}}"#).unwrap();
+        assert_eq!((t2.policy("capitalisation", AppCategory::Chat), t2.policy("capitalisation", AppCategory::Email), t2.policy("capitalisation", AppCategory::Notes)), (Policy::Off, Policy::Silent, Policy::ReviewOnly));
         assert_eq!(t.policy("article", AppCategory::Email), Policy::Off);
         assert_eq!(t.policy("whatever", AppCategory::Email), Policy::ReviewOnly);
         assert!(EditClassTable::parse(r#"{"classes":{"a":{"policy":"loud"}},"contexts":{}}"#).is_err());
         let b = EditClassTable::builtin();
         assert_eq!(b.policy("agreement", AppCategory::General), Policy::ReviewOnly);
+        assert_eq!((b.policy("doubled_word", AppCategory::Email), b.policy("capitalisation", AppCategory::Chat), b.policy("capitalisation", AppCategory::Email)), (Policy::Silent, Policy::Off, Policy::Silent));
+        assert_eq!((b.policy("doubled_word", AppCategory::Terminal), b.policy("doubled_word", AppCategory::CodeEditor)), (Policy::Off, Policy::ReviewOnly));
     }
 
     #[test]
@@ -624,6 +670,7 @@ mod tests {
         assert_eq!(c("the the cat", 4, 8, ""), "doubled_word");
         assert_eq!(c("I have book", 7, 7, "a "), "article");
         assert_eq!(c("hello world", 0, 5, "Hello"), "capitalisation");
+        assert_eq!(c("im here", 0, 2, "IM"), "capitalisation_upper");
         assert_eq!(c("a cat", 1, 1, ","), "punctuation");
         assert_eq!(c("two cat", 4, 7, "cats"), "inflection_cued");
         assert_eq!(c("he go home", 3, 5, "goes"), "inflection_cued");

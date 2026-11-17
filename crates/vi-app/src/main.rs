@@ -1044,7 +1044,7 @@ impl vi_rewrite::quickfix::Speller for WindowsSpelling {
 
 /// `--eval-quickfix-jsonl <in> <out>` writes `{id, output, edits}` lines (the form `bench/score_quickfix.py` reads);
 /// `--eval-typed-jsonl <in> [<out>]` writes the one JSON document `bench/score_typed.py` reads (stdout without `<out>`).
-/// Inputs are gate cases (`id`, `input`, `app_context`). Offsets in the output are in characters. The model folder is
+/// Inputs are gate cases (`id`, `input`, `app_context` or `context`). Offsets in the output are in characters. The model folder is
 /// `--grammar-model`, else `KEYREED_GRAMMAR_MODEL`, else `<models>/gector-bert-en`; `--threads N` sets the intra-op threads;
 /// `--spell` adds the Windows spell checker; `--gate-candidates` reports every edit class, including those the shipped table switches off.
 fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
@@ -1081,7 +1081,7 @@ fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
     for line in raw.lines().filter(|l| !l.trim().is_empty()) {
         let mut case: serde_json::Value = serde_json::from_str(line)?;
         let text = case["input"].as_str().context("case without input")?.to_string();
-        let context = parse_category_str(case["app_context"].as_str().unwrap_or("general"));
+        let context = parse_category_str(case["app_context"].as_str().or(case["context"].as_str()).unwrap_or("general"));
         let started = Instant::now();
         let result = engine.fix(&text, context)?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
