@@ -35,3 +35,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Windows hosts only: the MSVC target embeds keyreed.rc (the gnu target uses windres in build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
