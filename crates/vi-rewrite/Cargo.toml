@@ -13,3 +13,5 @@ regex.workspace = true
 once_cell.workspace = true
 ureq.workspace = true
 log.workspace = true
+# The grammar tagger runs through the onnxruntime.dll that ships beside sherpa-onnx (loaded at run time, nothing downloaded).
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"] }

@@ -16,6 +16,8 @@ pub enum AsrArchitecture {
     MoonshineV2,
     SenseVoice,
     Whisper,
+    /// Not a speech model: the Quick Fix grammar tagger (GECToR), installed by the same verified path.
+    GectorTagger,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,8 +117,194 @@ pub const ASR_CATALOG: &[AsrModelSpec] = &[
     },
 ];
 
+/// Quick Fix grammar models: downloaded, verified and installed exactly like the speech models.
+/// The archive is KeyReed's own mirror of the int8 quantisation of `proofbird/gector-bert-en`
+/// (Apache-2.0; LICENSE and NOTICE are inside the archive).
+pub const GRAMMAR_CATALOG: &[AsrModelSpec] = &[AsrModelSpec {
+    id: "gector-bert-en-int8",
+    display_name: "Grammar tagger (GECToR BERT, INT8, English)",
+    architecture: AsrArchitecture::GectorTagger,
+    folder_name: "gector-bert-en-int8",
+    download_url: "https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.0.0-beta.1/gector-bert-en-int8.tar.bz2",
+    expected_sha256: "5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0",
+    approx_download_mb: 70,
+    approx_ram_mb: 250,
+    languages: "en",
+    license: "Apache-2.0",
+    supports_hotwords: false,
+}];
+
+/// A local writing model (GGUF) for the Composer and the deeper pass. Integrity figures live in
+/// `integrity::GGUF_PINS`; downloads are HTTPS from a pinned repository revision and are refused
+/// unless the SHA-256 matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WritingModelSpec {
+    /// The file name without `.gguf`, which is also what `local_llm_model` holds.
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub file_name: &'static str,
+    pub download_url: &'static str,
+    pub approx_download_mb: u32,
+    pub approx_ram_mb: u32,
+    pub license: &'static str,
+    /// Ships with the app and is the default when nothing else is installed.
+    pub bundled: bool,
+}
+
+pub const BUNDLED_WRITING_MODEL_ID: &str = "Qwen3.5-0.8B-Q4_K_M";
+
+pub const WRITING_MODELS: &[WritingModelSpec] = &[
+    WritingModelSpec {
+        id: BUNDLED_WRITING_MODEL_ID,
+        display_name: "Qwen3.5 0.8B (built in)",
+        file_name: "Qwen3.5-0.8B-Q4_K_M.gguf",
+        download_url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_K_M.gguf",
+        approx_download_mb: 508,
+        approx_ram_mb: 900,
+        license: "Apache-2.0",
+        bundled: true,
+    },
+    WritingModelSpec {
+        id: "Qwen3.5-2B-Q4_K_M",
+        display_name: "Qwen3.5 2B",
+        file_name: "Qwen3.5-2B-Q4_K_M.gguf",
+        download_url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf",
+        approx_download_mb: 1222,
+        approx_ram_mb: 2000,
+        license: "Apache-2.0",
+        bundled: false,
+    },
+    WritingModelSpec {
+        id: "Qwen3.5-4B-Q4_K_M",
+        display_name: "Qwen3.5 4B",
+        file_name: "Qwen3.5-4B-Q4_K_M.gguf",
+        download_url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf",
+        approx_download_mb: 2614,
+        approx_ram_mb: 3600,
+        license: "Apache-2.0",
+        bundled: false,
+    },
+];
+
+pub fn find_writing_model(id: &str) -> Option<&'static WritingModelSpec> {
+    WRITING_MODELS.iter().find(|m| m.id.eq_ignore_ascii_case(id) || m.file_name.eq_ignore_ascii_case(id))
+}
+
+pub fn bundled_writing_model() -> &'static WritingModelSpec {
+    WRITING_MODELS.iter().find(|m| m.bundled).expect("one bundled writing model")
+}
+
+impl WritingModelSpec {
+    pub fn pin(&self) -> &'static crate::integrity::GgufPin {
+        crate::integrity::gguf_pin(self.file_name).expect("every writing model has a pin")
+    }
+}
+
+/// Verifies `<models_dir>/<file>` against the model's pin and returns its path. An unlisted,
+/// missing or altered file is an error; callers must not load it.
+pub fn verify_writing_model(models_dir: &Path, spec: &WritingModelSpec) -> Result<PathBuf> {
+    let path = models_dir.join(spec.file_name);
+    crate::integrity::verify_gguf(&path)?;
+    Ok(path)
+}
+
+/// Downloads a writing model into `models_dir` over HTTPS, checking the pinned SHA-256 and size.
+pub fn download_writing_model(
+    models_dir: &Path,
+    spec: &WritingModelSpec,
+    cancel_flag: Option<&AtomicBool>,
+    on_progress: Option<&dyn Fn(u64, Option<u64>)>,
+) -> Result<PathBuf> {
+    let dest = models_dir.join(spec.file_name);
+    download_verified_with_progress(spec.download_url, &dest, spec.pin().sha256, cancel_flag, on_progress)?;
+    if fs::metadata(&dest)?.len() != spec.pin().size {
+        let _ = fs::remove_file(&dest);
+        bail!("{} has the wrong size after download", spec.file_name);
+    }
+    Ok(dest)
+}
+
+/// What the machine offers, for choosing a writing model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hardware {
+    pub ram_mb: u64,
+    pub logical_processors: u32,
+    pub discrete_gpu: bool,
+}
+
+/// Windows reports a little less than the installed RAM (a 16 GB PC shows about 15.6 GB), so the
+/// thresholds sit just off the round numbers.
+const RAM_16_GB_MB: u64 = 15_000;
+const RAM_8_GB_MB: u64 = 8_500;
+/// The light profile (plan section H1) is four or fewer logical processors.
+const MIN_CPU_THREADS_FOR_BIGGER: u32 = 5;
+
+/// The recommended writing model: the built-in 0.8B on 8 GB or less; otherwise 4B with a discrete
+/// GPU or 16 GB or more, else 2B. Without a GPU, four or fewer logical processors step the
+/// choice down one size, because a larger model on two threads is too slow to use (the plan's light profile).
+pub fn recommended_writing_model(hw: Hardware) -> &'static WritingModelSpec {
+    let pick = |id: &str| find_writing_model(id).expect("listed model");
+    if hw.ram_mb <= RAM_8_GB_MB {
+        return bundled_writing_model();
+    }
+    let slow_cpu = !hw.discrete_gpu && hw.logical_processors < MIN_CPU_THREADS_FOR_BIGGER;
+    if hw.discrete_gpu || hw.ram_mb >= RAM_16_GB_MB {
+        pick(if slow_cpu { "Qwen3.5-2B-Q4_K_M" } else { "Qwen3.5-4B-Q4_K_M" })
+    } else if slow_cpu {
+        bundled_writing_model()
+    } else {
+        pick("Qwen3.5-2B-Q4_K_M")
+    }
+}
+
+/// Which writing model is loaded. The local server holds at most one: switching is
+/// unload, then load, and recording a load while another is resident is refused.
+#[derive(Debug, Default)]
+pub struct ResidentModel {
+    id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchStep {
+    /// Already loaded.
+    Keep,
+    Load,
+    /// Unload this one first.
+    UnloadThenLoad(String),
+}
+
+impl ResidentModel {
+    pub fn resident(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    pub fn plan(&self, wanted: &str) -> SwitchStep {
+        match self.id.as_deref() {
+            Some(cur) if cur == wanted => SwitchStep::Keep,
+            Some(cur) => SwitchStep::UnloadThenLoad(cur.to_string()),
+            None => SwitchStep::Load,
+        }
+    }
+
+    pub fn mark_unloaded(&mut self) {
+        self.id = None;
+    }
+
+    /// Records a finished load. Refused (and nothing recorded) if a different model is still
+    /// resident, so two can never be tracked as loaded.
+    pub fn mark_loaded(&mut self, id: &str) -> Result<()> {
+        match self.id.as_deref() {
+            Some(cur) if cur != id => bail!("{cur} is still loaded; unload it before loading {id}"),
+            _ => {
+                self.id = Some(id.to_string());
+                Ok(())
+            }
+        }
+    }
+}
+
 pub fn find_model_spec(id: &str) -> Option<&'static AsrModelSpec> {
-    ASR_CATALOG.iter().find(|m| m.id == id || m.folder_name == id)
+    ASR_CATALOG.iter().chain(GRAMMAR_CATALOG).find(|m| m.id == id || m.folder_name == id)
 }
 
 /// Validates a relative archive path against zip-slip, parent traversal, and symlink attacks
@@ -361,7 +549,7 @@ mod tests {
     #[test]
     fn every_catalog_entry_is_https_and_sha256_pinned() {
         assert!(!ASR_CATALOG.is_empty());
-        for m in ASR_CATALOG {
+        for m in ASR_CATALOG.iter().chain(GRAMMAR_CATALOG) {
             assert!(
                 m.download_url.starts_with("https://"),
                 "{} URL is not HTTPS: {}",
@@ -382,6 +570,77 @@ mod tests {
             );
             assert!(m.approx_download_mb > 0);
         }
+    }
+
+    #[test]
+    fn writing_models_are_pinned_https_and_match_their_files() {
+        assert_eq!(WRITING_MODELS.iter().filter(|m| m.bundled).count(), 1);
+        assert_eq!(bundled_writing_model().id, "Qwen3.5-0.8B-Q4_K_M");
+        for m in WRITING_MODELS {
+            assert_eq!(format!("{}.gguf", m.id), m.file_name, "the id must be the file stem");
+            assert!(m.download_url.starts_with("https://huggingface.co/unsloth/Qwen3.5-"), "{}", m.id);
+            assert!(m.download_url.ends_with(m.file_name), "{}", m.id);
+            // Pinned to a commit, not a moving branch.
+            let rev = m.download_url.split("/resolve/").nth(1).unwrap().split('/').next().unwrap();
+            assert!(rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()), "{}", m.id);
+            assert_eq!(m.license, "Apache-2.0");
+            let pin = m.pin();
+            assert_eq!(pin.sha256.len(), 64);
+            let mb = (pin.size as f64 / (1024.0 * 1024.0)).round() as i64;
+            assert!((mb - m.approx_download_mb as i64).abs() <= 1, "{} {} vs {}", m.id, mb, m.approx_download_mb);
+            assert_eq!(find_writing_model(m.file_name), Some(m));
+        }
+        assert!(find_writing_model("Qwen3.5-9B-Q4_K_M").is_none());
+    }
+
+    #[test]
+    fn verify_writing_model_refuses_missing_and_altered_files() {
+        let dir = std::env::temp_dir().join(format!("kr-writing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let spec = find_writing_model("Qwen3.5-2B-Q4_K_M").unwrap();
+        assert!(verify_writing_model(&dir, spec).is_err());
+        fs::write(dir.join(spec.file_name), b"altered").unwrap();
+        assert!(verify_writing_model(&dir, spec).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recommendation_follows_ram_gpu_and_cores() {
+        let id = |ram_mb, logical_processors, discrete_gpu| {
+            recommended_writing_model(Hardware { ram_mb, logical_processors, discrete_gpu }).id
+        };
+        // 8 GB or less: the built-in model, even with a GPU (Windows shows ~7.8 GB for 8 GB).
+        assert_eq!(id(7_900, 8, false), "Qwen3.5-0.8B-Q4_K_M");
+        assert_eq!(id(8_192, 12, true), "Qwen3.5-0.8B-Q4_K_M");
+        assert_eq!(id(4_096, 4, false), "Qwen3.5-0.8B-Q4_K_M");
+        // Above 8 GB: 4B with a discrete GPU or 16 GB; otherwise 2B.
+        assert_eq!(id(12_000, 8, false), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(id(12_000, 8, true), "Qwen3.5-4B-Q4_K_M");
+        assert_eq!(id(15_700, 8, false), "Qwen3.5-4B-Q4_K_M");
+        assert_eq!(id(32_000, 16, false), "Qwen3.5-4B-Q4_K_M");
+        // Four or fewer threads and no GPU: one size smaller.
+        assert_eq!(id(32_000, 4, false), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(id(32_000, 5, false), "Qwen3.5-4B-Q4_K_M");
+        assert_eq!(id(32_000, 2, false), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(id(12_000, 2, false), "Qwen3.5-0.8B-Q4_K_M");
+        assert_eq!(id(32_000, 2, true), "Qwen3.5-4B-Q4_K_M");
+    }
+
+    #[test]
+    fn only_one_writing_model_is_resident_at_a_time() {
+        let mut r = ResidentModel::default();
+        assert_eq!(r.plan("a"), SwitchStep::Load);
+        r.mark_loaded("a").unwrap();
+        assert_eq!(r.plan("a"), SwitchStep::Keep);
+        assert_eq!(r.plan("b"), SwitchStep::UnloadThenLoad("a".into()));
+        // Loading b while a is resident is refused and changes nothing.
+        assert!(r.mark_loaded("b").is_err());
+        assert_eq!(r.resident(), Some("a"));
+        r.mark_unloaded();
+        r.mark_loaded("b").unwrap();
+        assert_eq!(r.resident(), Some("b"));
+        r.mark_loaded("b").unwrap(); // idempotent
     }
 
     #[test]

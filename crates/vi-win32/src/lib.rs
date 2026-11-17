@@ -1,5 +1,7 @@
 #[cfg(windows)]
 pub mod canvas;
+#[cfg(windows)]
+pub mod composer;
 pub mod clipboard;
 pub mod context;
 pub mod hotkey;
@@ -7,13 +9,19 @@ pub mod icon_data;
 pub mod overlay;
 pub mod security;
 #[cfg(windows)]
+pub mod selection;
+#[cfg(windows)]
 pub mod settings;
+#[cfg(windows)]
+pub mod spell;
 pub mod typing;
+#[cfg(windows)]
+pub mod uia;
 pub mod ui;
 
-pub use clipboard::{normalize_windows_newlines, read_clipboard_unicode, write_clipboard_unicode};
+pub use clipboard::{input_gate, normalize_windows_newlines, read_clipboard_unicode, write_clipboard_unicode};
 pub use context::{capture_foreground_context, classify_application, is_private_browsing_title};
-pub use hotkey::{is_spec_physically_down, GlobalHotkeyEngine, HotkeyEvent, ModifierState};
+pub use hotkey::{is_spec_physically_down, ChordAction, GlobalHotkeyEngine, HotkeyEvent, ModifierState};
 pub use overlay::{render_pill, PillFrame, PillKind};
 pub use security::{
     current_process_cpu_ms, current_process_memory_mb, dpapi_decrypt_from_b64,

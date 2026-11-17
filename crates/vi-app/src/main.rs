@@ -3,6 +3,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 mod gallery;
+mod quickfix_flow;
+mod textjobs;
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{select, tick};
@@ -30,7 +32,7 @@ use vi_win32::{
     harden_and_init_process, is_spec_physically_down, perf_trace_record,
     prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
     set_autostart_enabled, system_available_ram_mb, timing_mark, write_clipboard_unicode,
-    DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
+    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
 };
 #[cfg(windows)]
 use vi_win32::ui::{
@@ -210,7 +212,9 @@ struct InferenceSupervisor {
     /// first rewrite, so integrity is still enforced but no longer blocks hotkeys at startup.
     pending_slm: Option<crossbeam_channel::Receiver<Option<PathBuf>>>,
     slm_threads: usize,
-    rewrite: RewriteEngine,
+    /// Shared with the text-job worker: a Composer or deeper-fix job holds it while it runs, and
+    /// dictation never waits for it longer than `SLM_LOCK_WAIT` (rules-only cleanup instead).
+    rewrite: Arc<Mutex<RewriteEngine>>,
     last_used: Instant,
     session_keydown_at: Option<Instant>,
     session_mic_init_ms: f64,
@@ -220,7 +224,31 @@ struct InferenceSupervisor {
     session_cold_model: bool,
 }
 
+/// How long dictation waits for the language model when a text job holds it.
+const SLM_LOCK_WAIT: Duration = Duration::from_millis(250);
+
+/// Tier label for a dictation cleaned up by rules only because a text job held the language model.
+const TIER_SLM_BUSY: &str = "tier0_slm_busy";
+
+/// Runs `f` on the shared language-model engine, or on a rules-only engine (second argument
+/// `true`) when the lock is not free within `wait`, so the caller is never blocked by a text job.
+fn with_engine_or_rules<R>(
+    lock: &Mutex<RewriteEngine>,
+    wait: Duration,
+    f: impl FnOnce(&mut RewriteEngine, bool) -> R,
+) -> R {
+    match lock.try_lock_for(wait) {
+        Some(mut eng) => f(&mut eng, false),
+        None => f(&mut RewriteEngine::new(None), true),
+    }
+}
+
 /// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
+/// Registers the Quick Fix chord with the hook. The Composer chord is left out of beta.1 (the bar is not wired).
+fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
+    hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
+}
+
 fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngine> {
     let spec = find_model_spec(&cfg.local_asr_model)
         .with_context(|| format!("ASR model '{}' not in catalog", cfg.local_asr_model))?;
@@ -284,7 +312,7 @@ impl InferenceSupervisor {
             pending_asr: None,
             pending_slm,
             slm_threads: cfg.inference_threads.max(1),
-            rewrite: RewriteEngine::new(None),
+            rewrite: Arc::new(Mutex::new(RewriteEngine::new(None))),
             last_used: Instant::now(),
             session_keydown_at: None,
             session_mic_init_ms: 0.0,
@@ -311,11 +339,15 @@ impl InferenceSupervisor {
             }
         }
         if let Some(rx) = &self.pending_slm {
+            // A text job holds the engine: leave the verified model pending for a later tick.
+            let Some(mut eng) = self.rewrite.try_lock() else { return };
             if let Ok(verified) = rx.try_recv() {
                 self.pending_slm = None;
-                self.install_slm(verified);
+                if let Some(gguf) = verified {
+                    *eng = self.slm_engine(gguf);
+                }
                 if !matches!(cfg.processing_profile, vi_core::ProcessingProfile::MaxAccuracy) {
-                    self.rewrite.prewarm(cfg.default_writing_mode);
+                    eng.prewarm(cfg.default_writing_mode);
                 }
             }
         }
@@ -325,41 +357,47 @@ impl InferenceSupervisor {
     /// llama-server now so its load overlaps with speech. Only for modes that use it.
     fn prewarm_slm(&mut self, cfg: &AppConfig) {
         if !matches!(cfg.processing_profile, vi_core::ProcessingProfile::MaxAccuracy) {
+            // A text job holds the engine, so it is already loaded: nothing to prewarm.
+            let Some(mut eng) = self.rewrite.try_lock() else { return };
             if let Some(rx) = &self.pending_slm {
                 match rx.try_recv() {
                     Ok(v) => {
                         self.pending_slm = None;
-                        self.install_slm(v);
+                        if let Some(gguf) = v {
+                            *eng = self.slm_engine(gguf);
+                        }
                     }
                     Err(_) => return, // still verifying: don't block the hotkey path
                 }
             }
-            self.rewrite.prewarm(cfg.default_writing_mode);
+            eng.prewarm(cfg.default_writing_mode);
         }
     }
 
-    fn install_slm(&mut self, verified: Option<PathBuf>) {
-        if let Some(gguf) = verified {
-            self.rewrite = RewriteEngine::new(Some(LlamaServerSupervisor::new(
-                self.paths.llama_server_bin.clone(),
-                gguf,
-                self.slm_threads,
-            )));
-        }
+    fn slm_engine(&self, gguf: PathBuf) -> RewriteEngine {
+        RewriteEngine::new(Some(LlamaServerSupervisor::new(
+            self.paths.llama_server_bin.clone(),
+            gguf,
+            self.slm_threads,
+        )))
     }
 
     /// Waits for the background grammar-model verification (if still running) and enables the
-    /// local grammar model only when its pinned SHA-256 matched.
-    fn ensure_slm_ready(&mut self) {
+    /// local grammar model only when its pinned SHA-256 matched. Must be called with the engine
+    /// lock held (`eng`), so a pending model is never installed behind a running text job.
+    fn ensure_slm_ready_locked(&mut self, eng: &mut RewriteEngine) {
         if let Some(rx) = self.pending_slm.take() {
             if let Ok(Some(gguf)) = rx.recv() {
-                self.rewrite = RewriteEngine::new(Some(LlamaServerSupervisor::new(
-                    self.paths.llama_server_bin.clone(),
-                    gguf,
-                    self.slm_threads,
-                )));
+                *eng = self.slm_engine(gguf);
             }
         }
+    }
+
+    /// Blocking variant for the command-line tools and tests (no text jobs run there).
+    fn ensure_slm_ready(&mut self) {
+        let lock = self.rewrite.clone();
+        let mut eng = lock.lock();
+        self.ensure_slm_ready_locked(&mut eng);
     }
 
     fn maybe_unload_idle(&mut self, idle_secs: u64) {
@@ -375,7 +413,9 @@ impl InferenceSupervisor {
         } else {
             idle_secs
         };
-        let _ = self.rewrite.maybe_unload_idle(effective_secs);
+        if let Some(mut eng) = self.rewrite.try_lock() {
+            let _ = eng.maybe_unload_idle(effective_secs);
+        }
         if self.asr.is_some() && self.last_used.elapsed() >= Duration::from_secs(effective_secs) {
             self.asr = None;
             self.pending_asr = None;
@@ -389,7 +429,9 @@ impl InferenceSupervisor {
         self.asr = None;
         self.pending_asr = None;
         self.loaded_asr_id.clear();
-        let _ = self.rewrite.maybe_unload_idle(1);
+        if let Some(mut eng) = self.rewrite.try_lock() {
+            let _ = eng.maybe_unload_idle(1);
+        }
     }
 
     fn asr_ready(&self, cfg: &AppConfig) -> bool {
@@ -624,23 +666,35 @@ impl InferenceSupervisor {
         }
 
         // Stage 2: Conservative Meaning-Preserving Grammar & Context Correction + Paragraph Formatting
-        self.ensure_slm_ready();
-        let rw = self.rewrite.process_with_sentences(
-            &raw_transcript,
-            &asr_sentences,
-            speech_ratio,
-            effective_mode,
-            fg_ctx.category,
-            cfg.processing_profile,
-            &cfg.dictionary,
-            Some(&cfg.cloud.llm_endpoint),
-            Some(&cfg.cloud.llm_model),
-            if decrypted_key.is_empty() {
-                None
-            } else {
-                Some(decrypted_key.as_str())
-            },
-        );
+        let lock = self.rewrite.clone();
+        let rw = with_engine_or_rules(&lock, SLM_LOCK_WAIT, |eng, busy| {
+            if !busy {
+                self.ensure_slm_ready_locked(eng);
+            }
+            let mut rw = eng.process_with_sentences(
+                &raw_transcript,
+                &asr_sentences,
+                speech_ratio,
+                effective_mode,
+                fg_ctx.category,
+                cfg.processing_profile,
+                &cfg.dictionary,
+                Some(&cfg.cloud.llm_endpoint),
+                Some(&cfg.cloud.llm_model),
+                // A rules-only stand-in would otherwise prefer the cloud under Balanced.
+                if decrypted_key.is_empty()
+                    || (busy && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy)
+                {
+                    None
+                } else {
+                    Some(decrypted_key.as_str())
+                },
+            );
+            if busy && rw.tier_used == "tier0_fallback" {
+                rw.tier_used = TIER_SLM_BUSY.to_string();
+            }
+            rw
+        });
         decrypted_key.zeroize();
 
         let mic_init_ms = std::mem::replace(&mut self.session_mic_init_ms, 0.0);
@@ -708,6 +762,7 @@ impl InferenceSupervisor {
         let mut warning_note = rw.warning_note.clone();
 
         if deliver_output {
+            let _gate = vi_win32::input_gate();
             match cfg.output_mode {
                 OutputMode::Clipboard => {
                     write_clipboard_unicode(
@@ -931,7 +986,7 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
     if prewarm_before {
         let _ = sup.ensure_asr_loaded(&cfg);
         sup.ensure_slm_ready();
-        sup.rewrite.warm_up_slot(cfg.default_writing_mode);
+        sup.rewrite.lock().warm_up_slot(cfg.default_writing_mode);
     }
     let mut fg = ForegroundContext::default();
     fg.category = cat;
@@ -981,6 +1036,92 @@ struct CorrectionEvalCase {
     must_keep: Vec<String>,
     #[serde(default)]
     must_not_contain: Vec<String>,
+}
+
+#[cfg(windows)]
+struct WindowsSpelling(vi_win32::spell::WindowsSpeller);
+
+#[cfg(windows)]
+impl vi_rewrite::quickfix::Speller for WindowsSpelling {
+    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, Vec<String>)> {
+        self.0.misspellings(text)
+    }
+}
+
+/// `--eval-quickfix-jsonl <in> <out>` writes `{id, output, edits}` lines (the form `bench/score_quickfix.py` reads);
+/// `--eval-typed-jsonl <in> [<out>]` writes the one JSON document `bench/score_typed.py` reads (stdout without `<out>`).
+/// Inputs are gate cases (`id`, `input`, `app_context` or `context`). Offsets in the output are in characters. The model folder is
+/// `--grammar-model`, else `KEYREED_GRAMMAR_MODEL`, else `<models>/gector-bert-en-int8`; `--threads N` sets the intra-op threads;
+/// `--spell` adds the Windows spell checker; `--gate-candidates` reports every edit class, including those the shipped table switches off.
+fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
+    use vi_rewrite::quickfix::{Layer, QuickFixEngine};
+    let flag = if typed_format { "--eval-typed-jsonl" } else { "--eval-quickfix-jsonl" };
+    let pos = args.iter().position(|a| a == flag).context("flag missing")?;
+    let input = PathBuf::from(args.get(pos + 1).with_context(|| format!("missing <in.jsonl> after {flag}"))?);
+    let output = args.get(pos + 2).filter(|a| !a.starts_with("--")).map(PathBuf::from);
+    if output.is_none() && !typed_format {
+        bail!("missing <out.jsonl> after {flag} <in.jsonl>");
+    }
+    let value_of = |name: &str| args.iter().position(|a| a == name).and_then(|p| args.get(p + 1).cloned());
+    let paths = RuntimePaths::discover(&AppConfig::default());
+    let model_dir = value_of("--grammar-model")
+        .or_else(|| env::var("KEYREED_GRAMMAR_MODEL").ok())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.models_dir.join("gector-bert-en-int8"));
+    let threads = value_of("--threads").and_then(|t| t.parse().ok()).unwrap_or(0);
+    let gector = vi_rewrite::gector::Gector::load(&paths.sherpa_lib_dir.join("onnxruntime.dll"), &model_dir, threads)
+        .with_context(|| format!("load the grammar model from {}", model_dir.display()))?;
+    let mut engine = QuickFixEngine::new(Box::new(gector));
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--spell") {
+        engine = engine.with_speller(Box::new(WindowsSpelling(vi_win32::spell::WindowsSpeller::new())));
+    }
+    if args.iter().any(|a| a == "--gate-candidates") {
+        // Every class reported as a candidate (nothing off), so the scorer can grade each class alone.
+        engine = engine.with_table(vi_rewrite::quickfix::EditClassTable::parse(r#"{"unknown_class":"review_only","contexts":{},"classes":{}}"#)?);
+    }
+    engine.fix("This are a warm up sentence.", AppCategory::General)?;
+
+    let raw = std::fs::read_to_string(&input).with_context(|| format!("failed to read {}", input.display()))?;
+    let (mut lines, mut records) = (String::new(), Vec::new());
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let mut case: serde_json::Value = serde_json::from_str(line)?;
+        let text = case["input"].as_str().context("case without input")?.to_string();
+        let context = parse_category_str(case["app_context"].as_str().or(case["context"].as_str()).unwrap_or("general"));
+        let started = Instant::now();
+        let result = engine.fix(&text, context)?;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let chars = |byte: usize| text[..byte].chars().count();
+        let edits: Vec<serde_json::Value> = result
+            .edits
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "start": chars(e.start), "length": chars(e.start + e.length) - chars(e.start), "replacement": e.replacement,
+                    "layer": match e.layer { Layer::Spelling => "spelling", Layer::Rule => "rule", Layer::Grammar => "grammar" },
+                    "class": e.class, "confidence": e.confidence, "silent": e.silent,
+                })
+            })
+            .collect();
+        if typed_format {
+            case["edits"] = edits.into();
+            case["ms"] = ms.into();
+            records.push(case);
+        } else {
+            lines.push_str(&serde_json::json!({"id": case["id"], "output": result.corrected, "edits": edits, "ms": ms}).to_string());
+            lines.push_str("\n");
+        }
+    }
+    if typed_format {
+        let doc = serde_json::json!({"engine": "keyreed quick fix (gector-bert-en + rules)", "records": records}).to_string();
+        match output {
+            Some(path) => std::fs::write(path, doc)?,
+            None => println!("{doc}"),
+        }
+    } else if let Some(path) = output {
+        std::fs::write(path, lines)?;
+    }
+    Ok(())
 }
 
 fn run_eval_correction_jsonl(jsonl_path: &Path, llm_model: &str) -> Result<()> {
@@ -1739,6 +1880,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
         Arc::clone(&busy_flag),
         initial_cfg.app_enabled && initial_cfg.ptt_enabled,
     )?);
+    register_extra_chords(&hk_engine, &initial_cfg);
 
     let mic_names: Vec<String> = list_input_devices().into_iter().map(|d| d.name).collect();
     let init_paths = RuntimePaths::discover(&initial_cfg);
@@ -1763,6 +1905,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     let hk_for_worker = Arc::clone(&hk_engine);
     let download_cancel_flag = Arc::new(AtomicBool::new(false));
     let download_active_flag = Arc::new(AtomicBool::new(false));
+    let (job_ev_tx, job_ev_rx) = crossbeam_channel::unbounded::<vi_core::textjob::TextJobEvent>();
+    let qf_cfg = initial_cfg.clone();
+    let job_tx = textjobs::spawn_text_worker(job_ev_tx, Box::new(move || quickfix_flow::load_engine(&qf_cfg)))?;
 
     std::thread::Builder::new()
         .name("keyreed-coordinator".to_string())
@@ -1789,6 +1934,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut captured_fg_ctx = ForegroundContext::default();
             let mut last_external_fg_ctx = ForegroundContext::default();
             let mut last_completed_text = String::new();
+            // The selection the open Composer works on (memory only; dropped when the Composer closes).
+            let mut composer_target: Option<vi_win32::selection::Captured> = None;
+            let mut quick_fix = quickfix_flow::QuickFixFlow::default();
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
@@ -1818,6 +1966,20 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 physical_key_up_ticks = 0;
                                 pending_action = ptt.on_emergency_cancel("escape_pressed");
                             }
+                            Ok(HotkeyEvent::PttSuperseded) => {
+                                saw_physical_key_down = false;
+                                physical_key_up_ticks = 0;
+                                pending_action = ptt.on_emergency_cancel("superseded_by_chord");
+                            }
+                            Ok(HotkeyEvent::CorrectSelection) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                }
+                            }
+                            // The Composer chord and voice commands arrive with P3.4 and P3.7.
+                            Ok(HotkeyEvent::OpenComposer)
+                            | Ok(HotkeyEvent::VoiceCommandDown)
+                            | Ok(HotkeyEvent::VoiceCommandUp) => {}
                             Ok(HotkeyEvent::CycleMode) => {
                                 cfg.default_writing_mode = cfg.default_writing_mode.next();
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -1846,6 +2008,33 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(UiAction::FloatingMicClicked) => {
                                 pending_action = ptt.on_floating_mic_click(now_ms());
                             }
+                            Ok(UiAction::StartDictation) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                }
+                            }
+                            Ok(UiAction::OpenComposer) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                                    // Never copy from KeyReed's own windows or where the selection service refuses.
+                                    let allowed = ctx.process_id != std::process::id()
+                                        && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
+                                    composer_target = if allowed {
+                                        vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
+                                    } else {
+                                        None
+                                    };
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
+                                        selection: composer_target.as_ref().map(|c| c.text.clone()),
+                                        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
+                                        // The writing model and the route rule come in P3.5 and P3.6.
+                                        route: "On this PC · built-in model".into(),
+                                        cloud: false,
+                                        unavailable: false,
+                                    }));
+                                }
+                            }
+                            Ok(UiAction::ComposerClosed) => drop(composer_target.take()),
                             Ok(UiAction::SavePillPosition(x, y)) => {
                                 cfg.floating_pill_pos = Some((x, y));
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -1869,6 +2058,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Ok(UiAction::CopyLastDictation) => {
                                 if !last_completed_text.is_empty() {
+                                    let _gate = vi_win32::input_gate();
                                     if write_clipboard_unicode(
                                         &last_completed_text,
                                         cfg.privacy.exclude_from_clipboard_history,
@@ -2099,6 +2289,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     def_cfg.ptt_hotkey.clone(),
                                     def_cfg.mode_cycle_hotkey.clone(),
                                 );
+                                register_extra_chords(&hk_for_worker, &def_cfg);
                                 hk_for_worker.set_enabled(true);
                                 cfg = def_cfg;
                                 // Save and show the defaults first; rebuilding the engines re-verifies the
@@ -2152,6 +2343,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     new_cfg.ptt_hotkey.clone(),
                                     new_cfg.mode_cycle_hotkey.clone(),
                                 );
+                                register_extra_chords(&hk_for_worker, &new_cfg);
                                 hk_for_worker.set_enabled(new_cfg.app_enabled && new_cfg.ptt_enabled);
                                 let llm_changed = cfg.local_llm_model != new_cfg.local_llm_model;
                                 // The listener position is owned by the coordinator (drag saves bypass the UI snapshot).
@@ -2164,6 +2356,23 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     supervisor = InferenceSupervisor::new(&cfg);
                                 }
                             }
+                            Ok(UiAction::QuickFixUndo) => quick_fix.undo(&gui_for_worker),
+                            Ok(UiAction::ReviewDone { choice, text, accepted, .. }) => {
+                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker);
+                            }
+                            Ok(UiAction::QuickFixIntroSeen) => {
+                                cfg.quick_fix_intro_seen = true;
+                                let _ = cfg.save_atomic(&cfg_path);
+                            }
+                            // The deeper pass is not in this build: the pill shows no Deeper chip.
+                            Ok(UiAction::QuickFixDeeper)
+                            // Composer actions: wired to the text-job worker and delivery in P3.3 and P3.4.
+                            | Ok(UiAction::ComposerSubmit { .. })
+                            | Ok(UiAction::ComposerFollowUp(_))
+                            | Ok(UiAction::ComposerRegenerate)
+                            | Ok(UiAction::ComposerCancel)
+                            | Ok(UiAction::ComposerDeliver { .. })
+                            | Ok(UiAction::ComposerDictate) => {}
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);
@@ -2176,6 +2385,12 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 supervisor.force_unload_all();
                                 break;
                             }
+                        }
+                    }
+                    recv(job_ev_rx) -> ev => {
+                        // Composer events join in P3.4.
+                        if let Ok(ev) = ev {
+                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
                         }
                     }
                     recv(ticker) -> _ => {
@@ -2331,12 +2546,15 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         res.metrics.used_tier
                                     ));
                                     last_completed_text = res.final_text.clone();
-                                    let outcome = ReadyOutcome::from_pipeline(
+                                    let mut outcome = ReadyOutcome::from_pipeline(
                                         res.delivered_via,
                                         res.fallback_to_clipboard,
                                         res.requires_command_confirmation,
                                         res.delivery_reason.as_deref(),
                                     );
+                                    if outcome == ReadyOutcome::Inserted && res.metrics.used_tier == TIER_SLM_BUSY {
+                                        outcome = ReadyOutcome::InsertedBasic;
+                                    }
                                     ptt.transition_to_ready();
                                     gui_for_worker.set_outcome(outcome.clone());
                                     gui_for_worker.sync(EngineState::ReadyToPaste, 0.0, None);
@@ -2504,6 +2722,13 @@ fn main() -> Result<()> {
         return run_cli_transcribe_wav(&args);
     }
 
+    if args.iter().any(|a| a == "--eval-quickfix-jsonl") {
+        return run_eval_quickfix(&args, false);
+    }
+    if args.iter().any(|a| a == "--eval-typed-jsonl") {
+        return run_eval_quickfix(&args, true);
+    }
+
     if let Some(pos) = args.iter().position(|a| a == "--eval-correction-jsonl") {
         let jsonl = PathBuf::from(
             args.get(pos + 1)
@@ -2574,6 +2799,53 @@ fn main() -> Result<()> {
             "{} desktop GUI daemon requires Windows 10/11; on Linux use `--transcribe-wav <path>` or `cargo test`",
             PRODUCT_NAME
         );
+    }
+}
+
+#[cfg(test)]
+mod slm_lock_tests {
+    use super::*;
+
+    /// A text job holding the language model must not delay dictation: the rules-only result
+    /// arrives within 300 ms (250 ms wait plus rules).
+    #[test]
+    fn held_lock_gives_rules_only_result_quickly() {
+        let run = |eng: &mut RewriteEngine| {
+            eng.process(
+                "so the the meeting tomorrow got moved to four and we was not told about it",
+                0.9,
+                WritingMode::Smart,
+                AppCategory::Chat,
+                vi_core::ProcessingProfile::MaxPrivacyOffline,
+                &vi_core::PersonalDictionary::default(),
+                None,
+                None,
+                None,
+            )
+            .final_text
+        };
+        // Compile the rule regexes first (debug builds take most of a second for that).
+        run(&mut RewriteEngine::new(None));
+        let lock = Arc::new(Mutex::new(RewriteEngine::new(None)));
+        let (held_tx, held_rx) = crossbeam_channel::bounded(0);
+        let holder = {
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                let _g = lock.lock();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(1500));
+            })
+        };
+        held_rx.recv().unwrap();
+        let t = Instant::now();
+        let (busy, text) = with_engine_or_rules(&lock, SLM_LOCK_WAIT, |eng, busy| (busy, run(eng)));
+        assert!(busy);
+        assert!(!text.is_empty());
+        // Well under the 1.5 s hold: it did not wait for the lock (a loaded debug build can take a few hundred ms).
+        assert!(t.elapsed() < Duration::from_millis(1000), "{:?}", t.elapsed());
+        holder.join().unwrap();
+        // Free again: the shared engine is used.
+        assert!(!with_engine_or_rules(&lock, SLM_LOCK_WAIT, |_, busy| busy));
     }
 }
 

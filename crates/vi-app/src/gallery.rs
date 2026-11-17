@@ -12,8 +12,9 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vi_core::{AppConfig, EngineState};
+use vi_win32::composer::{ReviewEdit, ReviewRequest};
 use vi_win32::ui::win_gui::{self, WinGuiHandle};
-use vi_win32::ui::{DownloadProgress, DownloadStage, MicTestStatus, MicVerdict, ReadyOutcome};
+use vi_win32::ui::{DownloadProgress, DownloadStage, MicTestStatus, MicVerdict, QuickFixStage, ReadyOutcome};
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -22,6 +23,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
+
+use windows_sys::Win32::Storage::Xps::PrintWindow;
 
 const CAPTUREBLT: u32 = 0x4000_0000;
 
@@ -67,23 +70,43 @@ fn frame_rect(h: HWND) -> RECT {
     rc
 }
 
-/// Captures a screen rectangle (including layered windows) to a 32-bit BMP.
-fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path) -> Result<()> {
+/// Captures a screen rectangle (including layered windows) to a 32-bit BMP. With `from`, the pixels come from that
+/// window itself (PrintWindow), so a window kept always on top (Task Manager, say) cannot cover the capture.
+fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path, from: Option<HWND>) -> Result<()> {
     unsafe {
         let screen = GetDC(std::ptr::null_mut());
         let mem = CreateCompatibleDC(screen);
+        let src = from.map(window_rect);
+        let (bw, bh) = src.map_or((w, h), |r| (r.right - r.left, r.bottom - r.top));
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h;
+        bmi.bmiHeader.biWidth = bw;
+        bmi.bmiHeader.biHeight = -bh;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
         let bmp = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
         let old = SelectObject(mem, bmp as _);
-        BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
-        let pixels = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+        let (ox, oy) = match (from, src) {
+            (Some(win), Some(r)) => {
+                PrintWindow(win, mem, 2 /* PW_RENDERFULLCONTENT */);
+                (x - r.left, y - r.top)
+            }
+            _ => {
+                BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
+                (0, 0)
+            }
+        };
+        let all = std::slice::from_raw_parts(bits as *const u32, (bw * bh) as usize);
+        let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h {
+            for col in 0..w {
+                let (sx, sy) = (col + ox, row + oy);
+                let p = if sx >= 0 && sy >= 0 && sx < bw && sy < bh { all[(sy * bw + sx) as usize] } else { 0 };
+                pixels.extend_from_slice(&p.to_le_bytes());
+            }
+        }
         SelectObject(mem, old);
         DeleteObject(bmp as _);
         DeleteDC(mem);
@@ -126,7 +149,8 @@ impl Gallery {
         // A generous crop around the listener so the screenshot shows it in desktop context.
         let cx = (rc.left + rc.right) / 2;
         let cy = (rc.top + rc.bottom) / 2;
-        capture(cx - 170, cy - 50, 340, 100, &self.dir.join(format!("{name}.bmp")))?;
+        let (cw, ch) = ((w + 80).max(340), (h + 60).max(100)); // wide states (Quick Fix chips) must not be cropped
+        capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")), None)?;
         let dbg = win_gui::pill_debug_info();
         self.report.push(serde_json::json!({
             "shot": name,
@@ -139,12 +163,42 @@ impl Gallery {
         Ok(())
     }
 
+    fn shot_composer(&mut self, name: &str, note: &str) -> Result<()> {
+        let cls: Vec<u16> = "KeyreedComposerClass".encode_utf16().chain(std::iter::once(0)).collect();
+        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+        anyhow::ensure!(!h.is_null(), "Composer not found");
+        let rc = window_rect(h);
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "composer",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
+    fn shot_review(&mut self, name: &str, note: &str) -> Result<()> {
+        let cls: Vec<u16> = "KeyreedReviewClass\0".encode_utf16().collect();
+        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+        anyhow::ensure!(!h.is_null(), "Review panel not found");
+        let rc = frame_rect(h);
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "review",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
     fn shot_settings(&mut self, name: &str, note: &str) -> Result<()> {
         let cls: Vec<u16> = "KeyreedSettingsClass\0".encode_utf16().collect();
         let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
         anyhow::ensure!(!h.is_null(), "Settings window not found");
         let rc = frame_rect(h);
-        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")))?;
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
         self.report.push(serde_json::json!({
             "shot": name,
             "kind": "settings",
@@ -206,6 +260,7 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
 
     for (name, outcome) in [
         ("pill_07_done_inserted", ReadyOutcome::Inserted),
+        ("pill_07b_done_basic_cleanup", ReadyOutcome::InsertedBasic),
         ("pill_08_done_copied", ReadyOutcome::Copied),
         ("pill_09_review_command", ReadyOutcome::ReviewCommand),
         ("pill_10_discarded", ReadyOutcome::Discarded),
@@ -232,6 +287,150 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     pump_for(1800);
     g.shot_pill("pill_16_hint_expired", "Hint collapses back to idle by itself")?;
 
+    // ---- Quick Fix pill (plan F1 and F4): mid-motion and settled ----
+    g.gui.quick_fix(QuickFixStage::Working);
+    pump_for(250);
+    g.shot_pill("pill_20_fixing", "Quick Fix working: one band of light per 600 ms")?;
+    g.gui.quick_fix(QuickFixStage::Fixed { changes: 4, can_deepen: true });
+    pump_for(90);
+    g.shot_pill("pill_21a_fixed_mid", "Quick Fix done, mid pop: tick drawing, count rolling")?;
+    pump_for(500);
+    g.shot_pill("pill_21b_fixed", "Quick Fix done, at rest: Undo and Deeper chips")?;
+    g.gui.quick_fix(QuickFixStage::Fixed { changes: 12, can_deepen: false });
+    pump_for(500);
+    g.shot_pill("pill_21c_fixed_no_deeper", "Two-digit count, no deeper pass available")?;
+    g.gui.quick_fix(QuickFixStage::Undone { changes: 4 });
+    pump_for(70);
+    g.shot_pill("pill_22a_undo_mid", "Undo: tick unwinding, count rolling down")?;
+    pump_for(500);
+    g.shot_pill("pill_22b_undone", "Undone")?;
+    g.gui.quick_fix(QuickFixStage::LooksGood);
+    pump_for(400);
+    g.shot_pill("pill_23_looks_good", "Nothing needed changing")?;
+    g.gui.quick_fix(QuickFixStage::Notice("Spelling only".into()));
+    pump_for(400);
+    g.shot_pill("pill_24_spelling_only", "Grammar model missing: spelling and rules only")?;
+    g.gui.quick_fix(QuickFixStage::Refused("Select some text first".into()));
+    pump_for(60);
+    g.shot_pill("pill_25a_refused_shake", "Refusal, mid shake")?;
+    pump_for(400);
+    g.shot_pill("pill_25b_refused", "Refusal, at rest")?;
+    g.gui.quick_fix(QuickFixStage::Refused("Administrator window".into()));
+    pump_for(400);
+    g.shot_pill("pill_25c_refused_admin", "Refusal: administrator window")?;
+    pump_for(1800);
+    g.shot_pill("pill_26_quick_fix_gone", "Everything returns to idle by itself; the animation timer is off")?;
+
+    // ---- Review panel (plan F1 and F4) ----
+    let edit = |text: &str, from: &str, to: &str, label: &'static str| {
+        let start = text.find(from).expect("sample contains the word");
+        ReviewEdit { start, end: start + from.len(), replacement: to.to_string(), label }
+    };
+    let sample = "Hi Priya, I hope you are doing well. I recieve your message yesterday and the report are attached. Please let me know if you have any question, and we can discuss on friday. Thanks the the team.";
+    let sample_edits = vec![
+        edit(sample, "recieve", "received", "Spelling"),
+        edit(sample, "are attached", "is attached", "Grammar"),
+        edit(sample, "any question", "any questions", "Grammar"),
+        edit(sample, "friday", "Friday", "Spelling"),
+        edit(sample, " the the", " the", "Rule"),
+    ];
+    let request = |note: Option<&str>| ReviewRequest { original: sample.to_string(), edits: sample_edits.clone(), note: note.map(String::from) };
+    g.gui.show_review(request(None), false);
+    pump_for(75);
+    g.shot_review("review_01_opening", "Review panel mid-open: fading in, underlines drawing left to right")?;
+    pump_for(700);
+    g.shot_review("review_02_settled", "Review panel at rest: changes tinted, underlines relaxed")?;
+    vi_win32::composer::set_state_for_test(true, &[], None, None);
+    pump_for(120);
+    g.shot_review("review_03_show_original", "Show original: each change shows the old word struck through")?;
+    vi_win32::composer::set_state_for_test(false, &[1], Some(2), Some(0));
+    pump_for(120);
+    g.shot_review("review_04_rejected_and_focus", "Second change rejected (shown as the original), third has keyboard focus, first is hovered")?;
+    vi_win32::composer::close();
+    pump_for(100);
+    g.gui.show_review(request(Some("Formatting inside your selection would be lost if you replace it.")), false);
+    pump_for(700);
+    g.shot_review("review_05_note", "With a note: the copy carried links or a list")?;
+    vi_win32::composer::close();
+    pump_for(100);
+    let long = format!("{sample}
+
+{sample}
+
+{sample}");
+    let long_edits: Vec<ReviewEdit> = (0..3)
+        .flat_map(|k| {
+            let base = k * (sample.len() + 2);
+            sample_edits.iter().map(move |e| ReviewEdit { start: e.start + base, end: e.end + base, ..e.clone() })
+        })
+        .collect();
+    g.gui.show_review(ReviewRequest { original: long, edits: long_edits, note: None }, false);
+    pump_for(800);
+    g.shot_review("review_06_long_text", "Long selection: the text area scrolls, the window stops at its maximum height")?;
+    vi_win32::composer::close();
+    pump_for(100);
+    g.gui.show_review(request(None), true);
+    pump_for(500);
+    g.shot_review("review_07_first_use", "First use: what Quick Fix does, the clipboard, privacy, undo")?;
+    vi_win32::composer::close();
+    pump_for(150);
+
+    // ---- Composer (plan F2 and F4) ----
+    use vi_win32::composer::{composer_bar, ComposerMsg, ComposerRequest};
+    let local = |selection: Option<&str>| ComposerRequest {
+        selection: selection.map(String::from),
+        app: "Outlook".into(),
+        route: "On this PC · Qwen3.5 2B".into(),
+        cloud: false,
+        unavailable: false,
+    };
+    let selected = "Hi team, the release moved to Thursday because the installer still needs signing. Sorry for the late notice.";
+    g.gui.composer(ComposerMsg::Open(local(Some(selected))));
+    pump_for(70);
+    g.shot_composer("composer_01_bloom_mid", "Opening: the bar grows out of the pill, content revealed in place")?;
+    pump_for(500);
+    g.shot_composer("composer_02_selection", "At rest with a selection: context chip, route, input, presets")?;
+    composer_bar::set_state_for_test(Some("Make it warmer and mention the new date"), None, false);
+    pump_for(150);
+    g.shot_composer("composer_03_typed", "A custom instruction typed")?;
+    composer_bar::set_state_for_test(Some(""), Some(1), false);
+    pump_for(150);
+    g.shot_composer("composer_04_chip_focus", "Keyboard focus on the Improve chip (Tab)")?;
+    composer_bar::submit_for_test(1);
+    let reply = "Hi team, a quick update: the release is now on Thursday. The installer still needs to be signed, so we moved it by two days. Thanks for your patience, and sorry for the short notice.";
+    let words: Vec<&str> = reply.split_inclusive(' ').collect();
+    for w in &words[..12] {
+        g.gui.composer(ComposerMsg::Token((*w).to_string()));
+        pump_for(25);
+    }
+    g.shot_composer("composer_05_streaming", "Streaming: words rise and fade in; Esc stops")?;
+    for w in &words[12..] {
+        g.gui.composer(ComposerMsg::Token((*w).to_string()));
+        pump_for(10);
+    }
+    g.gui.composer(ComposerMsg::Done(reply.to_string()));
+    pump_for(400);
+    g.shot_composer("composer_06_result", "Result: Replace (Enter), Copy (Ctrl+Enter), Again (Ctrl+R); presets act on the result")?;
+    composer_bar::set_state_for_test(None, None, true);
+    pump_for(200);
+    g.shot_composer("composer_07_editing", "The result as a native edit box after a click")?;
+    g.gui.composer(ComposerMsg::Open(ComposerRequest { cloud: true, route: "Cloud · api.groq.com · gpt-oss-20b".into(), ..local(None) }));
+    pump_for(500);
+    g.shot_composer("composer_08_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
+    g.gui.composer(ComposerMsg::Open(ComposerRequest { unavailable: true, ..local(None) }));
+    pump_for(400);
+    composer_bar::set_state_for_test(Some("Draft a thank-you note"), None, false);
+    composer_bar::submit_for_test(usize::MAX);
+    pump_for(300);
+    g.shot_composer("composer_09_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
+    composer_bar::close();
+    pump_for(30);
+    // Mid-fold is a 140 ms window; on a busy machine (debug build) the fold may already be over.
+    if !composer_bar::hwnd().is_null() {
+        g.shot_composer("composer_10_folding", "Closing: folding back into the pill")?;
+    }
+    pump_for(400);
+
     // ---- Settings pages ----
     vi_win32::settings::open(Some(vi_win32::settings::PAGE_GENERAL));
     pump_for(900);
@@ -251,6 +450,21 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // Shortcut capture field (P2.7) on the Dictation page.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
+    pump_for(400);
+    for (step, name, note) in [
+        (0u8, "shortcut_01_recording", "Quick Fix shortcut field recording: nothing pressed yet"),
+        (1, "shortcut_02_held", "Recording with Ctrl and Win held"),
+        (2, "shortcut_03_refused", "Ctrl + C refused: the reason shows under the row, nothing saved"),
+    ] {
+        vi_win32::settings::shortcut_capture_for_test(step);
+        pump_for(400);
+        g.shot_settings(name, note)?;
+    }
+    vi_win32::settings::shortcut_capture_for_test(9);
+    pump_for(300);
+
     for step in 0..4 {
         vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_START, step);
         pump_for(500);
