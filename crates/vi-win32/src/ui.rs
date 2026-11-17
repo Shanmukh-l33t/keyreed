@@ -17,6 +17,11 @@ pub enum UiAction {
     ToggleAppEnabled,
     TogglePttEnabled,
     FloatingMicClicked,
+    /// A click on the idle pill with "Open the Composer" chosen, or the tray menu item: capture the selection
+    /// where allowed and open the Composer.
+    OpenComposer,
+    /// "Start dictation" from the pill's right-click menu.
+    StartDictation,
     /// Undo the last Quick Fix (pill chip).
     QuickFixUndo,
     /// Ask for the deeper pass on the last Quick Fix (pill chip).
@@ -684,6 +689,8 @@ pub mod win_gui {
     const IDM_OUT_ASK: usize = 1012;
     const IDM_COPY_LAST: usize = 1014;
     const IDM_SETUP_MODEL: usize = 1015;
+    const IDM_START_DICTATION: usize = 1016;
+    const IDM_OPEN_COMPOSER: usize = 1017;
     const IDM_MODE_BASE: usize = 1100;
 
     const IDT_PILL_ANIM: usize = 7002;
@@ -1047,7 +1054,8 @@ pub mod win_gui {
                 } else if !hovered {
                     none(PillKind::Idle)
                 } else if !snap.active_model_ready() {
-                    PillView { kind: PillKind::IdleHover, label: "Set up speech".into(), secondary: "Click".into() }
+                    let how = if snap.config.pill_click_action == vi_core::PillClickAction::Dictate { "Click" } else { "Right-click" };
+                    PillView { kind: PillKind::IdleHover, label: "Set up speech".into(), secondary: how.into() }
                 } else {
                     PillView {
                         kind: PillKind::IdleHover,
@@ -1605,21 +1613,28 @@ pub mod win_gui {
                 } else if on_fixed {
                     // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {
-                    let (clickable, ready, is_error, disabled) = {
+                    let (action, ready, is_error, disabled, idle) = {
                         let m = g.model.lock();
                         (
-                            m.config.floating_mic_clickable,
+                            m.config.pill_click_action,
                             m.active_model_ready(),
                             matches!(m.state, EngineState::Error(_)),
                             matches!(m.state, EngineState::Disabled),
+                            matches!(m.state, EngineState::Idle | EngineState::ReadyToPaste),
                         )
                     };
-                    if !ready {
+                    if action == vi_core::PillClickAction::OpenComposer {
+                        // Writing does not need the speech model; while a recording runs a click is ignored.
+                        if idle {
+                            send(UiAction::OpenComposer);
+                        }
+                    } else if action == vi_core::PillClickAction::Nothing {
+                    } else if !ready {
                         // Recovery action: take the user straight to the thing that needs fixing.
                         crate::settings::open(Some(crate::settings::PAGE_MODELS));
                     } else if is_error {
                         crate::settings::open(None);
-                    } else if clickable && !disabled {
+                    } else if !disabled {
                         send(UiAction::FloatingMicClicked);
                     }
                 }
@@ -1727,6 +1742,10 @@ pub mod win_gui {
         let ow = to_wide(&format!("Output: {}", snap.config.output_mode.title()));
         let _ = AppendMenuW(hmenu, MF_POPUP, hout as usize, ow.as_ptr());
         append(hmenu, MF_STRING, IDM_COPY_LAST, "Copy last dictation");
+        let idle = matches!(snap.state, EngineState::Idle | EngineState::ReadyToPaste);
+        let ready = snap.active_model_ready() && snap.config.app_enabled;
+        append(hmenu, MF_STRING | if idle && ready { 0 } else { MF_GRAYED }, IDM_START_DICTATION, "Start dictation");
+        append(hmenu, MF_STRING | if idle { 0 } else { MF_GRAYED }, IDM_OPEN_COMPOSER, "Open the Composer");
 
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         append(hmenu, MF_STRING, IDM_OPEN_SETTINGS, "Open KeyReed…");
@@ -1828,6 +1847,8 @@ pub mod win_gui {
                     IDM_OUT_TYPE => send(UiAction::SetOutputMode(OutputMode::DirectTyping)),
                     IDM_OUT_ASK => send(UiAction::SetOutputMode(OutputMode::AskBeforeInserting)),
                     IDM_COPY_LAST => send(UiAction::CopyLastDictation),
+                    IDM_START_DICTATION => send(UiAction::StartDictation),
+                    IDM_OPEN_COMPOSER => send(UiAction::OpenComposer),
                     IDM_AUTO_CTX => send(UiAction::ToggleAutoContext),
                     IDM_SHOW_PILL => send(UiAction::ToggleFloatingMicVisible),
                     IDM_OPEN_SETTINGS => crate::settings::open(None),

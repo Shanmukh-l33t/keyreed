@@ -1152,7 +1152,14 @@ fn page_general(b: &mut Builder, m: &SharedUiModel) {
     b.section("Floating listener");
     b.group();
     b.toggle_row(G_PILL, "Show the floating listener", "A small KeyReed button that shows when it's listening.", c.show_floating_mic, true);
-    b.toggle_row(G_PILL_CLICK, "Click the listener to dictate", "Click once to start and again to finish.", c.floating_mic_clickable, c.show_floating_mic);
+    let items: Vec<String> = vi_core::PillClickAction::ALL.iter().map(|a| a.label().to_string()).collect();
+    let sel = vi_core::PillClickAction::ALL.iter().position(|a| *a == c.pill_click_action).unwrap_or(0);
+    let desc = match c.pill_click_action {
+        vi_core::PillClickAction::OpenComposer => "Write or rewrite text. Start dictation with your shortcut or from the right-click menu.",
+        vi_core::PillClickAction::Dictate => "Click once to start and again to finish.",
+        vi_core::PillClickAction::Nothing => "Use the right-click menu to dictate or open the Composer.",
+    };
+    b.combo_row(G_PILL_CLICK, "When you click the listener", desc, C::Text2, items, sel, 220);
     b.button_row(G_PILL_RESET, "Listener position", "Drag it anywhere. Reset puts it back above the taskbar.", "Reset position", BtnStyle::Secondary);
     b.end_group();
     b.section("Feedback");
@@ -2358,9 +2365,9 @@ fn on_command(id: i32, code: u32) {
             let v = !c.show_floating_mic;
             commit(|c| c.show_floating_mic = v)
         }
-        (G_PILL_CLICK, true, _) => {
-            let v = !c.floating_mic_clickable;
-            commit(|c| c.floating_mic_clickable = v)
+        (G_PILL_CLICK, _, CBN_SELCHANGE) => {
+            let a = vi_core::PillClickAction::ALL.get(combo_sel(G_PILL_CLICK)).copied().unwrap_or_default();
+            commit(|c| c.pill_click_action = a)
         }
         (G_PILL_RESET, true, _) => unsafe { crate::ui::win_gui::reset_pill_position() },
         (G_SOUNDS, true, _) => {

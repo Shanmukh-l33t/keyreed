@@ -1840,6 +1840,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut captured_fg_ctx = ForegroundContext::default();
             let mut last_external_fg_ctx = ForegroundContext::default();
             let mut last_completed_text = String::new();
+            // The selection the open Composer works on (memory only; dropped when the Composer closes).
+            let mut composer_target: Option<vi_win32::selection::Captured> = None;
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
@@ -1907,6 +1909,33 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(UiAction::FloatingMicClicked) => {
                                 pending_action = ptt.on_floating_mic_click(now_ms());
                             }
+                            Ok(UiAction::StartDictation) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                }
+                            }
+                            Ok(UiAction::OpenComposer) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                                    // Never copy from KeyReed's own windows or where the selection service refuses.
+                                    let allowed = ctx.process_id != std::process::id()
+                                        && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
+                                    composer_target = if allowed {
+                                        vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
+                                    } else {
+                                        None
+                                    };
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
+                                        selection: composer_target.as_ref().map(|c| c.text.clone()),
+                                        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
+                                        // The writing model and the route rule come in P3.5 and P3.6.
+                                        route: "On this PC · built-in model".into(),
+                                        cloud: false,
+                                        unavailable: false,
+                                    }));
+                                }
+                            }
+                            Ok(UiAction::ComposerClosed) => drop(composer_target.take()),
                             Ok(UiAction::SavePillPosition(x, y)) => {
                                 cfg.floating_pill_pos = Some((x, y));
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2237,8 +2266,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             | Ok(UiAction::ComposerRegenerate)
                             | Ok(UiAction::ComposerCancel)
                             | Ok(UiAction::ComposerDeliver { .. })
-                            | Ok(UiAction::ComposerDictate)
-                            | Ok(UiAction::ComposerClosed) => {}
+                            | Ok(UiAction::ComposerDictate) => {}
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);

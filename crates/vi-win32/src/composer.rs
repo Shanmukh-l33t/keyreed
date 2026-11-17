@@ -10,7 +10,7 @@
 #![cfg(windows)]
 
 mod bar;
-pub use bar::{apply, ComposerMsg, ComposerRequest, COMPOSER_WINDOW_CLASS};
+pub use bar::{app_label, apply, ComposerMsg, ComposerRequest, COMPOSER_WINDOW_CLASS};
 /// The Composer bar (plan F2): open, stream, deliver.
 pub mod composer_bar {
     pub use super::bar::{close, hwnd, set_state_for_test, submit_for_test};

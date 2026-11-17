@@ -166,6 +166,20 @@ pub fn context_label(selection: &str, app: &str) -> String {
     format!("Using selection, {n} character{}{from}", if n == 1 { "" } else { "s" })
 }
 
+/// "OUTLOOK.EXE" -> "Outlook", "msedge.exe" -> "Msedge": a short name for the context chip.
+pub fn app_label(process_name: &str) -> String {
+    let base = process_name.rsplit(['/', std::path::MAIN_SEPARATOR]).next().unwrap_or("");
+    let stem = match base.len().checked_sub(4) {
+        Some(i) if base.is_char_boundary(i) && base[i..].eq_ignore_ascii_case(".exe") => &base[..i],
+        _ => base,
+    };
+    let mut chars = stem.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect(),
+        None => String::new(),
+    }
+}
+
 /// How many whole words of `text` have arrived; the arrival list grows to match, stamped `now`.
 fn note_arrivals(arrived: &mut Vec<Instant>, text: &str, now: Instant) {
     let words = text.split_whitespace().count();
@@ -1145,6 +1159,15 @@ mod tests {
     fn context_label_counts_characters_not_bytes() {
         assert_eq!(context_label("héllo", "Outlook"), "Using selection, 5 characters from Outlook");
         assert_eq!(context_label("a", ""), "Using selection, 1 character");
+    }
+
+    #[test]
+    fn app_label_is_a_short_name() {
+        assert_eq!(app_label("OUTLOOK.EXE"), "Outlook");
+        assert_eq!(app_label("C:\\Program Files\\notepad.exe"), "Notepad");
+        assert_eq!(app_label("winword"), "Winword");
+        assert_eq!(app_label(""), "");
+        assert_eq!(app_label("é.exe"), "É");
     }
 
     #[test]

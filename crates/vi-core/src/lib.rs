@@ -9,7 +9,7 @@ pub mod style;
 pub mod textjob;
 pub mod types;
 
-pub use config::{AppConfig, CloudSettings, PrivacySettings};
+pub use config::{AppConfig, CloudSettings, PillClickAction, PrivacySettings};
 pub use dictionary::{PersonalDictionary, ReplacementRule};
 pub use history::{HistoryEntry, HistoryStore};
 pub use ptt::{PttAction, PttController};

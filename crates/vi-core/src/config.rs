@@ -53,6 +53,28 @@ impl Default for CloudSettings {
     }
 }
 
+/// What a click on the floating pill does (plan C3). While a recording runs, a click never opens anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PillClickAction {
+    #[default]
+    OpenComposer,
+    Dictate,
+    Nothing,
+}
+
+impl PillClickAction {
+    pub const ALL: [PillClickAction; 3] = [PillClickAction::OpenComposer, PillClickAction::Dictate, PillClickAction::Nothing];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PillClickAction::OpenComposer => "Open the Composer",
+            PillClickAction::Dictate => "Start or stop dictation",
+            PillClickAction::Nothing => "Nothing",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub schema_version: u32,
@@ -82,8 +104,9 @@ pub struct AppConfig {
     pub selected_microphone: Option<String>,
     /// Show floating microphone pill on desktop.
     pub show_floating_mic: bool,
-    /// Allow clicking the floating pill to start/stop dictation.
-    pub floating_mic_clickable: bool,
+    /// What a click on the floating pill does (replaces `floating_mic_clickable`; see `migrate`).
+    #[serde(default)]
+    pub pill_click_action: PillClickAction,
     /// Play subtle non-intrusive earcon tones on start/ready/error.
     pub audio_cues_enabled: bool,
     /// Show subtle completion notification when clipboard text is ready.
@@ -125,7 +148,7 @@ impl Default for AppConfig {
             preferred_language: "en".to_string(),
             selected_microphone: None,
             show_floating_mic: true,
-            floating_mic_clickable: true,
+            pill_click_action: PillClickAction::OpenComposer,
             audio_cues_enabled: true,
             notify_on_ready: true,
             idle_unload_seconds: 300,
@@ -185,6 +208,24 @@ impl AppConfig {
     /// Parses a config file, keeping every valid top-level setting and falling back to the
     /// default only for settings that are missing or invalid. Returns the names of dropped keys.
     pub fn parse_lenient(raw: &str) -> (Self, Vec<String>) {
+        let (mut cfg, dropped) = Self::parse_fields(raw);
+        if let Ok(serde_json::Value::Object(user)) = serde_json::from_str::<serde_json::Value>(raw) {
+            cfg.migrate(&user);
+        }
+        (cfg, dropped)
+    }
+
+    /// Settings renamed since an older version: `floating_mic_clickable` false becomes "Nothing", true becomes
+    /// "Open the Composer". A value under the new name always wins.
+    fn migrate(&mut self, user: &serde_json::Map<String, serde_json::Value>) {
+        if !user.contains_key("pill_click_action") {
+            if let Some(clickable) = user.get("floating_mic_clickable").and_then(|v| v.as_bool()) {
+                self.pill_click_action = if clickable { PillClickAction::OpenComposer } else { PillClickAction::Nothing };
+            }
+        }
+    }
+
+    fn parse_fields(raw: &str) -> (Self, Vec<String>) {
         if let Ok(cfg) = serde_json::from_str::<Self>(raw) {
             return (cfg, Vec::new());
         }
@@ -276,6 +317,26 @@ mod tests {
         );
         assert_eq!(loaded.floating_pill_pos, Some((420, 880)));
         assert!(loaded.first_run_completed);
+    }
+
+    #[test]
+    fn floating_mic_clickable_migrates_to_pill_click_action() {
+        let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": false}"#);
+        assert_eq!(c.pill_click_action, PillClickAction::Nothing);
+        let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": true}"#);
+        assert_eq!(c.pill_click_action, PillClickAction::OpenComposer);
+        let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": false, "pill_click_action": "dictate"}"#);
+        assert_eq!(c.pill_click_action, PillClickAction::Dictate, "the new setting wins");
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert_eq!(c.pill_click_action, PillClickAction::OpenComposer);
+        // A full old file (every other setting valid) takes the fast path and is migrated too.
+        let mut old = serde_json::to_value(AppConfig::default()).unwrap();
+        let o = old.as_object_mut().unwrap();
+        o.remove("pill_click_action");
+        o.insert("floating_mic_clickable".into(), serde_json::Value::Bool(false));
+        let (c, dropped) = AppConfig::parse_lenient(&old.to_string());
+        assert!(dropped.is_empty());
+        assert_eq!(c.pill_click_action, PillClickAction::Nothing);
     }
 
     #[test]
