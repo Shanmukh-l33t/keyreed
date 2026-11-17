@@ -74,6 +74,8 @@ const X0: i32 = SIDEBAR_W + 40;
 const CW: i32 = WIN_W - X0 - 40;
 const ROW_H: i32 = 56;
 const ROW_H_SHORT: i32 = 46;
+/// One wheel notch: a whole settings row, so the page lands on row boundaries instead of between them.
+const WHEEL_STEP: i32 = 56;
 const PAD: i32 = 16;
 
 // Control ids.
@@ -937,7 +939,12 @@ pub fn pre_translate(msg: &MSG) -> bool {
             return false;
         }
         if msg.hwnd == h || IsChild(h, msg.hwnd) != 0 {
-            return IsDialogMessageW(h, msg) != 0;
+            let handled = IsDialogMessageW(h, msg) != 0;
+            if handled {
+                // Tab can land on a control below the fold: bring it into view.
+                reveal_focused();
+            }
+            return handled;
         }
     }
     false
@@ -951,6 +958,19 @@ pub fn show_page_for_test(page: usize, step: usize) {
         }
     });
     navigate(page);
+}
+
+/// Gallery hook: (scroll offset, content height, visible height) of the page on show, in design units.
+pub fn scroll_state_for_test() -> (i32, i32, i32) {
+    ST.with(|s| s.borrow().as_ref().map(|st| (st.scroll, st.content_h, st.view_h)).unwrap_or((0, 0, 0)))
+}
+
+/// Gallery hook: one wheel notch sent to control `id`, as Windows sends it when the pointer is over that control.
+pub fn wheel_over_control_for_test(id: i32, delta: i32) -> bool {
+    unsafe {
+        let h = GetDlgItem(hwnd(), id);
+        !h.is_null() && SendMessageW(h, WM_MOUSEWHEEL, (((delta as i16 as u16) as usize) << 16) as WPARAM, 0) == 0
+    }
 }
 
 /// Gallery hook: scroll the content column of the page on show (logical offset, clamped like the wheel).
@@ -2021,6 +2041,7 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     }
     match &c.kind {
         Kind::Edit { cue, .. } => {
+            SetWindowSubclass(hwnd, Some(edit_wheel_subclass), 1, 0);
             if !cue.is_empty() {
                 let w = to_wide(cue);
                 SendMessageW(hwnd, EM_SETCUEBANNER, 1, w.as_ptr() as LPARAM);
@@ -2260,7 +2281,33 @@ fn content_height(items: &[Item], ctrls: &[Ctrl]) -> i32 {
         Item::Divider { y, .. } => *y,
     });
     let ctrls_bottom = ctrls.iter().map(|c| c.r.y + c.r.h);
-    items_bottom.chain(ctrls_bottom).max().unwrap_or(WIN_H).max(WIN_H) + 24
+    let bottom = items_bottom.chain(ctrls_bottom).max().unwrap_or(WIN_H);
+    // 24 px of breathing room under the last row, but a page that fits the window never scrolls and
+    // never shows a scrollbar.
+    (bottom + 24).max(WIN_H)
+}
+
+/// The largest offset a page can scroll to: the part of its content that hangs below the window.
+fn max_scroll(content_h: i32, view_h: i32) -> i32 {
+    (content_h - view_h).max(0)
+}
+
+/// The offset after one step: never negative, never past the end of the page.
+fn next_scroll(cur: i32, delta: i32, content_h: i32, view_h: i32) -> i32 {
+    (cur + delta).clamp(0, max_scroll(content_h, view_h))
+}
+
+/// How far to scroll so the control at `y` (design units) is fully in the view again, 8 px clear of the
+/// edge. `None` when it is already there.
+fn reveal_delta(y: i32, h: i32, scroll: i32, view_h: i32) -> Option<i32> {
+    let (top, bottom) = (y - scroll, y - scroll + h);
+    if bottom > view_h {
+        Some(bottom - view_h + 8)
+    } else if top < 0 {
+        Some(top - 8)
+    } else {
+        None
+    }
 }
 
 fn rebuild(focus_first: bool) {
@@ -2295,12 +2342,15 @@ fn rebuild(focus_first: bool) {
             focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h))
         };
         // Phase 3: store.
-        ST.with(|s| {
-            if let Some(st) = s.borrow_mut().as_mut() {
-                st.ctrls = created;
-                clip_children(st);
-            }
+        let regions = ST.with(|s| {
+            let mut sb = s.borrow_mut();
+            let st = sb.as_mut()?;
+            st.ctrls = created;
+            Some(child_regions(st))
         });
+        if let Some(regions) = regions {
+            apply_regions(&regions);
+        }
         if let Some(h) = target {
             if GetForegroundWindow() == cx.hwnd {
                 SetFocus(h);
@@ -2591,6 +2641,18 @@ unsafe fn paint(st: &St, hdc: HDC) {
             }
         }
     }
+    // Slim scrollbar on the right edge of the content column: shows the page continues, and how far down.
+    let view_h = (rc.bottom as f32 * 96.0 / d as f32).round() as i32;
+    let max = max_scroll(st.content_h, view_h);
+    if max > 0 {
+        let (bar_x, bar_w, top) = (rc.right - s(8), s(4), s(8));
+        let track_h = (rc.bottom - 2 * top).max(1);
+        let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24), track_h);
+        let thumb_y = top + (track_h - thumb_h) * st.scroll / max;
+        let rad = (bar_w / 2) as f32;
+        cv.round_rect(bar_x as f32, top as f32, bar_w as f32, track_h as f32, rad, t.track, 1.0);
+        cv.round_rect(bar_x as f32, thumb_y as f32, bar_w as f32, thumb_h as f32, rad, t.text3, 1.0);
+    }
     cv.clear_clip();
     cv.blit_to(hdc, 0, 0);
 }
@@ -2810,30 +2872,67 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
 // Commands
 // ------------------------------------------------------------------------------------------------
 
-/// Keeps a content control inside the visible part of the scrolling column (the client area right of the
-/// sidebar). A control scrolled past the top or bottom is clipped to nothing instead of hanging over the page.
-unsafe fn clip_children(st: &St) {
-    let mut rc: RECT = std::mem::zeroed();
-    GetClientRect(st.hwnd, &mut rc);
+/// The part of a control still inside the scrolling column (the client area right of the sidebar), in the
+/// control's OWN coordinates: `SetWindowRgn` takes window-relative pixels, so the control's client position
+/// has to be subtracted. Passing client coordinates clipped every control away for good.
+fn child_region(x: i32, y: i32, w: i32, h: i32, view: (i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (left, right, bottom) = view;
+    let (x0, y0) = (x.max(left) - x, y.max(0) - y);
+    let (x1, y1) = ((x + w).min(right) - x, (y + h).min(bottom) - y);
+    // Scrolled out of view: nothing of the control is left, so it is neither painted nor clickable.
+    if x1 <= x0 || y1 <= y0 { (0, 0, 0, 0) } else { (x0, y0, x1, y1) }
+}
+
+/// Where each content control is visible right now, in its own coordinates. Computed without calling the
+/// system, so it can run while `ST` is borrowed; `apply_regions` does the Win32 calls afterwards.
+fn child_regions(st: &St) -> Vec<(HWND, (i32, i32, i32, i32))> {
+    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe { GetClientRect(st.hwnd, &mut rc) };
     let left = sc(SIDEBAR_W + 1, st.dpi);
-    for (c, h) in &st.ctrls {
+    st.ctrls
+        .iter()
         // Navigation never scrolls; clipping it to the content column would hide it.
-        if matches!(c.kind, Kind::Nav { .. }) {
-            continue;
-        }
-        let cr = child_rect(c);
-        let x = sc(cr.x, st.dpi);
-        let y = sc(cr.y - st.scroll, st.dpi);
-        let x0 = x.max(left);
-        let y0 = y.max(0);
-        let x1 = (x + sc(cr.w, st.dpi)).min(rc.right).max(x0);
-        let y1 = (y + sc(cr.h, st.dpi)).min(rc.bottom).max(y0);
+        .filter(|(c, _)| !matches!(c.kind, Kind::Nav { .. }))
+        .map(|(c, h)| {
+            let cr = child_rect(c);
+            let (x, y) = (sc(cr.x, st.dpi), sc(cr.y - st.scroll, st.dpi));
+            (*h, child_region(x, y, sc(cr.w, st.dpi), sc(cr.h, st.dpi), (left, rc.right, rc.bottom)))
+        })
+        .collect()
+}
+
+/// A control scrolled out of view is clipped to nothing, so it is neither painted nor clickable, and one that
+/// scrolls back in is whole again.
+unsafe fn apply_regions(regions: &[(HWND, (i32, i32, i32, i32))]) {
+    for (h, (x0, y0, x1, y1)) in regions {
         // The system owns the region after a successful SetWindowRgn and frees it when it is replaced.
-        let rgn = CreateRectRgn(x0, y0, x1, y1);
+        let rgn = CreateRectRgn(*x0, *y0, (*x1).max(*x0), (*y1).max(*y0));
         if SetWindowRgn(*h, rgn, 1) == 0 {
             DeleteObject(rgn as _);
         }
     }
+}
+
+/// Scrolls the page so the control with keyboard focus is visible (Tab can move focus below the fold).
+fn reveal_focused() {
+    let f = unsafe { GetFocus() };
+    let delta = ST.with(|s| {
+        let b = s.try_borrow().ok()?;
+        let st = b.as_ref()?;
+        let (ctrl, _) = st.ctrls.iter().find(|(_, h)| *h == f)?;
+        reveal_delta(ctrl.r.y, ctrl.r.h, st.scroll, st.view_h)
+    });
+    if let Some(delta) = delta {
+        scroll_by(delta);
+    }
+}
+
+/// The wheel, wherever it lands. Windows sends the wheel to the focused control, so every control forwards
+/// it here instead of swallowing it (that is why the page only scrolled with the pointer on bare canvas).
+fn wheel_scroll(wparam: WPARAM) -> LRESULT {
+    let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+    scroll_by(-(delta * WHEEL_STEP) / 120);
+    0
 }
 
 /// Scrolls the content column (only possible when the window is shorter than the layout).
@@ -2841,8 +2940,11 @@ fn scroll_by(delta: i32) {
     let moved = ST.with(|s| {
         let mut sb = s.borrow_mut();
         let st = sb.as_mut()?;
-        let max = (st.content_h - st.view_h).max(0);
-        let new = (st.scroll + delta).clamp(0, max);
+        // The client height is the truth, in design units (a resize may not have reached WM_SIZE yet).
+        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe { GetClientRect(st.hwnd, &mut rc) };
+        st.view_h = (rc.bottom as f32 * 96.0 / st.dpi as f32).round() as i32;
+        let new = next_scroll(st.scroll, delta, st.content_h, st.view_h);
         if new == st.scroll {
             return None;
         }
@@ -2856,20 +2958,23 @@ fn scroll_by(delta: i32) {
                 (*h, sc(cr.x, st.dpi), sc(cr.y - new, st.dpi))
             })
             .collect();
-        Some((st.hwnd, moves))
+        Some((st.hwnd, moves, child_regions(st)))
     });
-    if let Some((hwnd, moves)) = moved {
+    if let Some((hwnd, moves, regions)) = moved {
         unsafe {
+            // One deferred batch: every control lands in the same frame as the repaint, so no row tears.
+            let mut hdwp = BeginDeferWindowPos(moves.len() as i32);
             for (h, x, y) in moves {
-                SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-            ST.with(|s| {
-                if let Ok(mut b) = s.try_borrow_mut() {
-                    if let Some(st) = b.as_mut() {
-                        clip_children(st);
-                    }
+                if hdwp.is_null() {
+                    SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                } else {
+                    hdwp = DeferWindowPos(hdwp, h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 }
-            });
+            }
+            if !hdwp.is_null() {
+                EndDeferWindowPos(hdwp);
+            }
+            apply_regions(&regions);
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
     }
@@ -3455,10 +3560,21 @@ unsafe fn shortcut_field_msg(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) 
     }
 }
 
+/// A text box would scroll its own text on the wheel; the page scrolls instead.
+unsafe extern "system" fn edit_wheel_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _kind: usize) -> LRESULT {
+    if msg == WM_MOUSEWHEEL {
+        return wheel_scroll(wparam);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
 unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, is_select: usize) -> LRESULT {
     const VK_UP: usize = 0x26;
     const VK_DOWN: usize = 0x28;
     const VK_F4: usize = 0x73;
+    if msg == WM_MOUSEWHEEL {
+        return wheel_scroll(wparam);
+    }
     if is_select == 2 {
         if let Some(r) = shortcut_field_msg(hwnd, msg, wparam, lparam) {
             return r;
@@ -3722,11 +3838,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             });
             0
         }
-        WM_MOUSEWHEEL => {
-            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-            scroll_by(-(delta * 56) / 120);
-            0
-        }
+        WM_MOUSEWHEEL => wheel_scroll(wparam),
         WM_TIMER => {
             if wparam == IDT_ANIM {
                 let (hs, done) = ST.with(|s| {
@@ -3992,6 +4104,63 @@ mod tests {
             let c = ctrls.iter().find(|c| c.id == D_MOUSE + i).unwrap_or_else(|| panic!("mouse row {i} is missing"));
             assert!(matches!(&c.kind, Kind::Combo { items, .. } if items.len() == MouseAction::ALL.len()));
         }
+    }
+
+    /// A tall page must reach every control, and one that fits must not scroll at all.
+    #[test]
+    fn tall_pages_scroll_to_their_last_control() {
+        let m = model();
+        let view = (SIDEBAR_W + 1, WIN_W, WIN_H);
+        for (page, name) in [(PAGE_DICTATION, "dictation"), (PAGE_MODELS, "speech models")] {
+            let (items, ctrls) = build(page, 0, &m, false);
+            let h = content_height(&items, &ctrls);
+            let end = max_scroll(h, WIN_H);
+            assert!(h > WIN_H && end > 0, "{name}: content {h} in a {WIN_H} window scrolls ({end})");
+            for c in ctrls.iter().filter(|c| !matches!(c.kind, Kind::Nav { .. })) {
+                let off = (c.r.y + c.r.h - WIN_H).max(0).min(end);
+                let (x0, y0, x1, y1) = child_region(c.r.x, c.r.y - off, c.r.w, c.r.h, view);
+                assert_eq!(
+                    (x0, y0, x1, y1),
+                    (0, 0, c.r.w, c.r.h),
+                    "{name}: control {} is not whole at offset {off}",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends_and_a_page_that_fits_does_not_move() {
+        assert_eq!(WHEEL_STEP, ROW_H, "one notch lands on a row boundary");
+        assert_eq!(next_scroll(0, -WHEEL_STEP, 1000, WIN_H), 0, "never negative");
+        assert_eq!(next_scroll(0, WHEEL_STEP, 1000, WIN_H), WHEEL_STEP);
+        let end = max_scroll(1000, WIN_H);
+        assert_eq!(next_scroll(end - 10, WHEEL_STEP, 1000, WIN_H), end, "stops at the end");
+        assert_eq!(next_scroll(end, WHEEL_STEP, 1000, WIN_H), end);
+        assert_eq!(max_scroll(WIN_H, WIN_H), 0, "a page that fits does not scroll");
+        assert_eq!(max_scroll(WIN_H - 40, WIN_H), 0);
+        assert_eq!(next_scroll(0, WHEEL_STEP, WIN_H - 40, WIN_H), 0);
+    }
+
+    #[test]
+    fn tabbing_to_a_control_below_the_fold_scrolls_it_into_view() {
+        assert_eq!(reveal_delta(100, 32, 0, WIN_H), None, "already in view: no scroll");
+        assert_eq!(reveal_delta(700, 32, 0, WIN_H), Some(700 + 32 - WIN_H + 8), "just enough to show it");
+        assert_eq!(reveal_delta(300, 32, 400, WIN_H), Some(-108), "scrolled past the top: back down");
+        assert!(reveal_delta(WIN_H - 10, 32, 0, WIN_H).is_some(), "half hidden at the bottom edge");
+        assert!(reveal_delta(640, 32, 0, 660).is_some() && reveal_delta(620, 32, 0, 660).is_none());
+    }
+
+    /// The clip is what makes a control scrolled out of view unpainted and unclickable, and one in view whole.
+    #[test]
+    fn a_control_scrolled_out_of_view_is_clipped_away() {
+        let view = (SIDEBAR_W + 1, WIN_W, WIN_H);
+        assert_eq!(child_region(300, 100, 200, 32, view), (0, 0, 200, 32), "whole when in view");
+        assert_eq!(child_region(300, WIN_H - 10, 200, 32, view), (0, 0, 200, 10), "half past the bottom");
+        assert_eq!(child_region(300, -12, 200, 32, view), (0, 12, 200, 32), "top cut off by scrolling down");
+        assert_eq!(child_region(300, WIN_H + 40, 200, 32, view), (0, 0, 0, 0), "below the window: nothing to paint or click");
+        assert_eq!(child_region(300, -60, 200, 32, view), (0, 0, 0, 0), "above the window");
+        assert_eq!(child_region(10, 100, 200, 32, view), (0, 0, 0, 0), "left of the content column");
     }
 
     #[test]
