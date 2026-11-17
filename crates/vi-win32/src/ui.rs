@@ -21,6 +21,11 @@ pub enum UiAction {
     QuickFixUndo,
     /// Ask for the deeper pass on the last Quick Fix (pill chip).
     QuickFixDeeper,
+    /// The Review panel was closed: what the user chose, the text with the accepted changes applied, and how many
+    /// changes were accepted and rejected (for the acceptance counters). Never logged.
+    ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
+    /// The first-use screen of the Review panel was dismissed.
+    QuickFixIntroSeen,
     SetActivationMode(ActivationMode),
     SetOutputMode(OutputMode),
     SetWritingMode(WritingMode),
@@ -45,6 +50,14 @@ pub enum UiAction {
     ResetToDefaults,
     SessionOrPowerReset,
     Quit,
+}
+
+/// How the Review panel was closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewChoice {
+    Replace,
+    Copy,
+    Dismiss,
 }
 
 /// Stage of a speech-model download, reported by the download worker.
@@ -642,6 +655,7 @@ pub mod win_gui {
     pub const WM_TRAY_CALLBACK: u32 = WM_USER + 40;
     pub const WM_SYNC_UI: u32 = WM_USER + 41;
     pub const WM_SHOW_TOAST: u32 = WM_USER + 42;
+    pub const WM_SHOW_REVIEW: u32 = WM_USER + 44;
     pub const WM_ALREADY_RUNNING: u32 = vi_core::brand::ALREADY_RUNNING_MSG;
     const WM_MOUSEHOVER_U: u32 = 0x02A1;
     const WM_MOUSELEAVE_U: u32 = 0x02A3;
@@ -671,6 +685,7 @@ pub mod win_gui {
         pub(crate) tray_hwnd: Mutex<isize>,
         pub(crate) pill_hwnd: Mutex<isize>,
         pub(crate) toast_buf: Mutex<Option<(String, String, bool)>>,
+        pub(crate) review_buf: Mutex<Option<(crate::composer::ReviewRequest, bool)>>,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -1761,6 +1776,14 @@ pub mod win_gui {
                 }
                 0
             }
+            WM_SHOW_REVIEW => {
+                if let Some(g) = GUI_GLOBALS.get() {
+                    if let Some((req, first_use)) = g.review_buf.lock().take() {
+                        crate::composer::open_review(req, first_use);
+                    }
+                }
+                0
+            }
             WM_ALREADY_RUNNING => {
                 crate::settings::open(None);
                 0
@@ -1914,6 +1937,16 @@ pub mod win_gui {
             }
         }
 
+        /// Opens the Review panel with `request`; `first_use` shows the one-time explanation first.
+        pub fn show_review(&self, request: crate::composer::ReviewRequest, first_use: bool) {
+            if let Some(g) = GUI_GLOBALS.get() {
+                *g.review_buf.lock() = Some((request, first_use));
+            }
+            unsafe {
+                let _ = PostMessageW(self.tray_hwnd as HWND, WM_SHOW_REVIEW, 0, 0);
+            }
+        }
+
         pub fn open_settings(&self) {
             unsafe {
                 let _ = PostMessageW(self.tray_hwnd as HWND, WM_COMMAND, IDM_OPEN_SETTINGS, 0);
@@ -1960,6 +1993,7 @@ pub mod win_gui {
             tray_hwnd: Mutex::new(0),
             pill_hwnd: Mutex::new(0),
             toast_buf: Mutex::new(None),
+            review_buf: Mutex::new(None),
         });
 
         unsafe {
@@ -1985,6 +2019,7 @@ pub mod win_gui {
             reg_class(TRAY_WINDOW_CLASS, Some(tray_wnd_proc));
             reg_class(OVERLAY_WINDOW_CLASS, Some(pill_wnd_proc));
             crate::settings::register_class();
+            crate::composer::register_class();
 
             let tray_cls = to_wide(TRAY_WINDOW_CLASS);
             let tray_hwnd = CreateWindowExW(

@@ -1,5 +1,7 @@
 #[cfg(windows)]
 pub mod canvas;
+#[cfg(windows)]
+pub mod composer;
 pub mod clipboard;
 pub mod context;
 pub mod hotkey;

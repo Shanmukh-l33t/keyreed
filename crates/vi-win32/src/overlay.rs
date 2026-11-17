@@ -386,6 +386,7 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         return px;
     }
 
+    let base = px.clone();
     let content_x = m.content_x as f32;
     let opacity = opacity * f.content_opacity.clamp(0.0, 1.0);
     match f.kind {
@@ -475,7 +476,30 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         }
         _ => {}
     }
+    // Content never paints over the border or outside the capsule, even while the width is still tweening
+    // towards a wider state (labels and chips would otherwise hang past the right edge for a few frames).
+    let inner_r = radius - border_w;
+    for y in 0..height {
+        let py = y as f32 + 0.5;
+        for x in (right_cx.floor().max(0.0) as usize)..width {
+            let pxf = x as f32 + 0.5;
+            let d = ((pxf - right_cx).powi(2) + (py - cy).powi(2)).sqrt() - inner_r;
+            let keep = (0.5 - d).clamp(0.0, 1.0);
+            if keep < 1.0 {
+                let i = y * width + x;
+                px[i] = mix_px(base[i], px[i], keep);
+            }
+        }
+    }
     px
+}
+
+/// Per-channel blend of two premultiplied pixels: `a` at `t = 0`, `b` at `t = 1`.
+fn mix_px(a: u32, b: u32, t: f32) -> u32 {
+    (0..4).fold(0, |out, k| {
+        let (ca, cb) = (((a >> (k * 8)) & 0xFF) as f32, ((b >> (k * 8)) & 0xFF) as f32);
+        out | ((lerp(ca, cb, t).round() as u32) << (k * 8))
+    })
 }
 
 #[inline]
@@ -856,6 +880,17 @@ mod tests {
         f.tick = 1.0;
         f.pop = 1.0;
         assert_ne!(render_pill(w, h, &f), full, "the pop must change the capsule");
+        // Mid-tween the window is narrower than the content: nothing may paint over the border or outside.
+        f.pop = 0.0;
+        let narrow = w / 2;
+        let with = render_pill(narrow, h, &f);
+        let without = render_pill(narrow, h, &frame(PillKind::Fixed, &[], None));
+        let m = PillMetrics::for_scale(1.0);
+        for y in 0..h {
+            for x in narrow - m.margin - 1..narrow {
+                assert_eq!(with[y * narrow + x], without[y * narrow + x], "content leaked at ({x}, {y})");
+            }
+        }
     }
 
     #[test]

@@ -130,34 +130,34 @@ const WM_MOUSELEAVE_U: u32 = 0x02A3;
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct Theme {
-    bg: u32,
-    sidebar: u32,
-    surface: u32,
-    border: u32,
+pub(crate) struct Theme {
+    pub(crate) bg: u32,
+    pub(crate) sidebar: u32,
+    pub(crate) surface: u32,
+    pub(crate) border: u32,
     /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
-    control_border: u32,
-    divider: u32,
-    text: u32,
-    text2: u32,
-    text3: u32,
-    accent: u32,
-    accent_fill: u32,
-    accent_press: u32,
-    accent_soft: u32,
-    hover: u32,
-    hover_card: u32,
-    on_accent: u32,
-    warn_fg: u32,
-    warn_bg: u32,
-    err_fg: u32,
-    err_bg: u32,
-    ok_fg: u32,
-    ok_bg: u32,
-    track: u32,
-    disabled_bg: u32,
-    focus: u32,
-    hc: bool,
+    pub(crate) control_border: u32,
+    pub(crate) divider: u32,
+    pub(crate) text: u32,
+    pub(crate) text2: u32,
+    pub(crate) text3: u32,
+    pub(crate) accent: u32,
+    pub(crate) accent_fill: u32,
+    pub(crate) accent_press: u32,
+    pub(crate) accent_soft: u32,
+    pub(crate) hover: u32,
+    pub(crate) hover_card: u32,
+    pub(crate) on_accent: u32,
+    pub(crate) warn_fg: u32,
+    pub(crate) warn_bg: u32,
+    pub(crate) err_fg: u32,
+    pub(crate) err_bg: u32,
+    pub(crate) ok_fg: u32,
+    pub(crate) ok_bg: u32,
+    pub(crate) track: u32,
+    pub(crate) disabled_bg: u32,
+    pub(crate) focus: u32,
+    pub(crate) hc: bool,
 }
 
 #[repr(C)]
@@ -167,7 +167,7 @@ struct HighContrastW {
     scheme: *mut u16,
 }
 
-fn high_contrast_on() -> bool {
+pub(crate) fn high_contrast_on() -> bool {
     unsafe {
         let mut hc = HighContrastW { cb_size: std::mem::size_of::<HighContrastW>() as u32, dw_flags: 0, scheme: std::ptr::null_mut() };
         let ok = SystemParametersInfoW(0x0042, hc.cb_size, &mut hc as *mut _ as *mut _, 0);
@@ -180,7 +180,7 @@ static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
 /// Re-reads which colour scheme Settings should use: Windows "Choose your default app mode"
 /// (HKCU\...\Themes\Personalize\AppsUseLightTheme). If the value is missing or unreadable the
 /// light theme is used. `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
-fn refresh_dark_mode() {
+pub(crate) fn refresh_dark_mode() {
     let forced = std::env::var("KEYREED_UI_THEME").ok();
     let dark = match forced.as_deref() {
         Some("dark") => true,
@@ -200,7 +200,7 @@ fn system_apps_use_dark() -> bool {
     rc == 0 && data == 0
 }
 
-fn theme() -> Theme {
+pub(crate) fn theme() -> Theme {
     if high_contrast_on() {
         use windows_sys::Win32::Graphics::Gdi::GetSysColor;
         unsafe {
@@ -308,7 +308,7 @@ fn theme() -> Theme {
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum F {
+pub(crate) enum F {
     Display,
     Title,
     Body,
@@ -322,12 +322,12 @@ enum F {
     Brand,
 }
 
-struct Fonts {
+pub(crate) struct Fonts {
     list: Vec<(F, HFONT)>,
 }
 
 impl Fonts {
-    unsafe fn new(dpi: u32) -> Fonts {
+    pub(crate) unsafe fn new(dpi: u32) -> Fonts {
         let s = dpi as f32 / 96.0;
         let face = ui_font_face();
         let display_face = if face.starts_with("Segoe UI Variable") { "Segoe UI Variable Display" } else { "Segoe UI" };
@@ -353,7 +353,7 @@ impl Fonts {
         }
     }
 
-    fn get(&self, f: F) -> HFONT {
+    pub(crate) fn get(&self, f: F) -> HFONT {
         self.list.iter().find(|(k, _)| *k == f).map(|(_, h)| *h).unwrap_or(std::ptr::null_mut())
     }
 }
