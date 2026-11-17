@@ -49,6 +49,20 @@ const PARAKEET_V2: &[FilePin] = &[
     FilePin { relative: "tokens.txt", size: 9_384, sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d" },
 ];
 
+const PARAKEET_110M_EN: &[FilePin] = &[
+    FilePin { relative: "decoder.int8.onnx", size: 3_955_863, sha256: "f7c331c5504c2e593c76ed22b728e3f554af6c4a383dde862e719ced08b1da19" },
+    FilePin { relative: "encoder.int8.onnx", size: 131_113_202, sha256: "0f35509ddeb9b39002fb077d979a9fe74f06eb0bc4dd5c34f512f82e5111d657" },
+    FilePin { relative: "joiner.int8.onnx", size: 1_411_403, sha256: "bf7dff69e9f2cdbe9943d70da358f38b361c115ba0105bae7e908e0d6ec782f6" },
+    FilePin { relative: "tokens.txt", size: 9_953, sha256: "450e56bd2f036fe5b6aa821865838cc5aa9d8b0106134ce9a9ba0664abe6cd10" },
+];
+
+const PARAKEET_ULTRA: &[FilePin] = &[
+    FilePin { relative: "decoder.int8.onnx", size: 11_845_274, sha256: "1fab98fe6c12aded87d2da66272cc9e148d0a0044ce3850a12fe56302ec4a922" },
+    FilePin { relative: "encoder.int8.onnx", size: 652_282_345, sha256: "b43072e1b721f18a3df03fcfeb763ff7c4debdf29843598a3aba2f703e2780a3" },
+    FilePin { relative: "joiner.int8.onnx", size: 6_355_277, sha256: "8a71aaccfdba3d451775507a889afd2257d2e754463fd81095a8c8f290f924c2" },
+    FilePin { relative: "tokens.txt", size: 93_939, sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d" },
+];
+
 const MOONSHINE_TINY: &[FilePin] = &[
     FilePin { relative: "cached_decode.int8.onnx", size: 45_264_830, sha256: "2aff28bba6a03d8dcf5c9feac45462629bae37317442299f28115ad09da773f6" },
     FilePin { relative: "encode.int8.onnx", size: 18_249_187, sha256: "8774dfba578de027ec6595c2c654a0836434489bc963a0db124a7f181f571acb" },
@@ -128,6 +142,8 @@ pub fn pins_for(model_id: &str) -> Option<&'static [FilePin]> {
     let pins = match model_id {
         "parakeet-tdt-0.6b-v2-int8" | "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" => PARAKEET_V2,
         "parakeet-tdt-0.6b-v3-int8" | "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" => PARAKEET_V3,
+        "parakeet-tdt-110m-en-int8" | "sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8" => PARAKEET_110M_EN,
+        "parakeet-tdt-0.6b-ultra-int8" | "sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8" => PARAKEET_ULTRA,
         "moonshine-tiny-en-int8" | "sherpa-onnx-moonshine-tiny-en-int8" => MOONSHINE_TINY,
         "moonshine-base-en-int8" | "sherpa-onnx-moonshine-base-en-int8" => MOONSHINE_BASE,
         "sense-voice-small-int8" | "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17" => SENSE_VOICE,
@@ -656,10 +672,26 @@ mod tests {
     }
 
     #[test]
+    fn every_catalog_model_has_pins_for_the_files_its_loader_asks_for() {
+        for m in crate::catalog::ASR_CATALOG {
+            let pins = pins_for(m.id).unwrap_or_else(|| panic!("missing pins for {}", m.id));
+            assert!(pins_for(m.folder_name).is_some(), "{} folder name has no pins", m.id);
+            assert!(pins.iter().any(|p| p.relative == "tokens.txt" || p.relative.ends_with("-tokens.txt")), "{}", m.id);
+            if m.architecture == crate::catalog::AsrArchitecture::NemoTransducer {
+                for f in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx"] {
+                    assert!(pins.iter().any(|p| p.relative == f), "{} lacks {f}", m.id);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn extracted_archives_match_pins() {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cache/pin-archives/extracted");
         let cases = [
             ("parakeet-tdt-0.6b-v3-int8", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
+            ("parakeet-tdt-110m-en-int8", "sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"),
+            ("parakeet-tdt-0.6b-ultra-int8", "sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8"),
             ("sense-voice-small-int8", "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"),
             ("whisper-small.en-int8", "sherpa-onnx-whisper-small.en"),
         ];
