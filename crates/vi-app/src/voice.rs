@@ -19,6 +19,28 @@ pub enum CaptureTarget {
 /// The longest spoken instruction KeyReed sends: an instruction, not a document.
 pub const MAX_INSTRUCTION_CHARS: usize = 500;
 
+/// A voice-command chord released sooner than this was a tap: the Composer opens for typing instead of
+/// recording. At or after it, the chord was held and the spoken words are the instruction.
+pub const TAP_MS: u64 = 350;
+
+/// What the voice-command chord did between its press and its release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordRelease {
+    /// A tap on a captured selection: open the Composer on it, exactly as the Composer chord does.
+    OpenComposer,
+    /// Held: transcribe the recording and run it as the instruction.
+    Speak,
+}
+
+/// The release decision. Only a selection that was actually captured may open the Composer: with nothing
+/// selected the press already refused, and a tap then opens nothing.
+pub fn release(armed: bool, held_ms: u64) -> Option<ChordRelease> {
+    if !armed {
+        return None;
+    }
+    Some(if held_ms < TAP_MS { ChordRelease::OpenComposer } else { ChordRelease::Speak })
+}
+
 /// Whether a capture for `target` may start: a closed Composer has nowhere to put the words, and a voice
 /// command needs the selection it will rewrite.
 pub fn may_record(target: CaptureTarget, composer_open: bool, has_selection: bool) -> bool {
@@ -93,6 +115,18 @@ mod tests {
         assert!(may_record(CaptureTarget::Composer, true, true));
         assert!(!may_record(CaptureTarget::VoiceCommand, true, false), "nothing selected: no recording");
         assert!(may_record(CaptureTarget::VoiceCommand, true, true));
+    }
+
+    #[test]
+    fn a_short_tap_opens_the_composer_and_a_hold_speaks() {
+        assert_eq!(release(true, 0), Some(ChordRelease::OpenComposer));
+        assert_eq!(release(true, TAP_MS - 1), Some(ChordRelease::OpenComposer));
+        // The threshold belongs to the hold, so the shortest intentional hold is never taken for a tap.
+        assert_eq!(release(true, TAP_MS), Some(ChordRelease::Speak));
+        assert_eq!(release(true, 4_000), Some(ChordRelease::Speak));
+        // Nothing was captured (no selection, or a running dictation): the release does nothing at all.
+        assert_eq!(release(false, 0), None);
+        assert_eq!(release(false, 4_000), None);
     }
 
     #[test]

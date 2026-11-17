@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::time::Instant;
 use vi_core::brand::{PRODUCT_NAME, PRODUCT_TAGLINE, SETTINGS_WINDOW_CLASS, VERSION_STR};
 use vi_core::habits::Dialect;
-use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
+use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, MouseAction, OutputMode, ProcessingProfile, WritingMode};
 use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
@@ -92,6 +92,9 @@ const D_PTT: i32 = 304;
 const D_QF_KEY: i32 = 305;
 const D_QF_REVIEW: i32 = 306;
 const D_VOICE_KEY: i32 = 307;
+const D_COMPOSER_KEY: i32 = 308;
+/// The middle, back and forward button rows of the "Mouse" group, in that order.
+const D_MOUSE: i32 = 320;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
 /// The "Edit" button of the personal dictionary row on the Writing page.
@@ -1328,9 +1331,25 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
         .unwrap_or_else(|| "Your own shortcut. Click the field and press new keys to change it.".into());
     b.shortcut_row(D_HOTKEY, "Push-to-talk shortcut", &note, c, ShortcutRole::Dictation);
     b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
-    b.shortcut_row(D_VOICE_KEY, "Voice command shortcut", "Hold it with text selected, then say what to do with it.", c, ShortcutRole::VoiceCommand);
+    b.shortcut_row(D_VOICE_KEY, "Voice command shortcut", "Tap it for the Composer on the text you have selected, or hold it and say what to do with it.", c, ShortcutRole::VoiceCommand);
+    b.shortcut_row(D_COMPOSER_KEY, "Composer shortcut", "Opens the bar to write, or to rewrite the text you have selected.", c, ShortcutRole::Composer);
     b.toggle_row(D_QF_REVIEW, "Review Quick Fix changes first", "Shows every change before anything is replaced. Turning this off lets KeyReed replace spelling fixes it is sure about, with Undo.", c.quick_fix_always_review, true);
     b.toggle_row(D_PTT, "Listen for the shortcuts", "When off, start dictation from the floating listener instead (its right-click menu, or a click if you set that in General).", c.ptt_enabled, true);
+    b.end_group();
+    b.section("Mouse");
+    b.group();
+    for (i, (label, desc, action)) in [
+        ("Middle button", "Pressing the scroll wheel. Left and right clicks are never used.", c.mouse_middle_action),
+        ("Back button", "The rear side button on most mice.", c.mouse_back_action),
+        ("Forward button", "The front side button on most mice.", c.mouse_forward_action),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let items: Vec<String> = MouseAction::ALL.iter().map(|a| a.label().to_string()).collect();
+        let sel = MouseAction::ALL.iter().position(|a| *a == action).unwrap_or(0);
+        b.combo_row(D_MOUSE + i as i32, label, desc, C::Text2, items, sel, 220);
+    }
     b.end_group();
     b.section("How the shortcut works");
     activation_choices(b, m, D_HOLD, D_TOGGLE);
@@ -2973,6 +2992,14 @@ fn on_command(id: i32, code: u32) {
             let a = vi_core::PillClickAction::ALL.get(combo_sel(G_PILL_CLICK)).copied().unwrap_or_default();
             commit(|c| c.pill_click_action = a)
         }
+        (id, _, CBN_SELCHANGE) if (D_MOUSE..D_MOUSE + 3).contains(&id) => {
+            let a = MouseAction::ALL.get(combo_sel(id)).copied().unwrap_or_default();
+            commit(|c| match id - D_MOUSE {
+                0 => c.mouse_middle_action = a,
+                1 => c.mouse_back_action = a,
+                _ => c.mouse_forward_action = a,
+            })
+        }
         (G_PILL_RESET, true, _) => unsafe { crate::ui::win_gui::reset_pill_position() },
         (G_SOUNDS, true, _) => {
             let v = !c.audio_cues_enabled;
@@ -2982,7 +3009,9 @@ fn on_command(id: i32, code: u32) {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
         }
-        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) | (D_VOICE_KEY, true, _) => start_capture(id),
+        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) | (D_VOICE_KEY, true, _) | (D_COMPOSER_KEY, true, _) => {
+            start_capture(id)
+        }
         (D_HOTKEY, _, CBN_SELCHANGE) | (S_HOTKEY, _, CBN_SELCHANGE) => {
             if let Some((spec, _)) = hotkey_presets().get(combo_sel(id)) {
                 let spec = spec.clone();
@@ -3826,6 +3855,33 @@ mod tests {
         let idle = idx("sense-voice-small-int8");
         assert_eq!(label(idle), "Download");
         assert!(!ctrls.iter().find(|c| c.id == idle).unwrap().enabled, "one download at a time");
+    }
+
+    #[test]
+    fn the_dictation_page_offers_every_chord_and_the_three_mouse_buttons() {
+        let m = model();
+        let (_, ctrls) = build(PAGE_DICTATION, 0, &m, false);
+        for id in [D_HOTKEY, D_QF_KEY, D_VOICE_KEY, D_COMPOSER_KEY] {
+            let c = ctrls.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is missing"));
+            assert!(matches!(c.kind, Kind::Shortcut { .. }), "{id} is a chord field");
+        }
+        for i in 0..3i32 {
+            let c = ctrls.iter().find(|c| c.id == D_MOUSE + i).unwrap_or_else(|| panic!("mouse row {i} is missing"));
+            assert!(matches!(&c.kind, Kind::Combo { items, .. } if items.len() == MouseAction::ALL.len()));
+        }
+    }
+
+    #[test]
+    fn the_general_page_offers_the_composer_on_a_pill_click() {
+        let (_, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        let c = ctrls.iter().find(|c| c.id == G_PILL_CLICK).expect("the pill click choice");
+        match &c.kind {
+            Kind::Combo { items, .. } => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[1], "Open the Composer");
+            }
+            _ => panic!("a drop-down"),
+        }
     }
 
     #[test]
