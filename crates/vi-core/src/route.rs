@@ -98,6 +98,7 @@ mod tests {
                 terms: Vec::new(),
                 cancel: Arc::new(AtomicBool::new(false)),
                 cloud: r.target(&cloud, "sk-live".into()),
+                style_block: None,
             };
             assert!(job.cloud.is_none(), "{kind:?} must never run on the cloud under Maximum Privacy");
         }

@@ -9,6 +9,8 @@ use crossbeam_channel::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use vi_core::textjob::{CloudTarget, Instruction, JobFailure, TextJob, TextJobEvent, TextJobKind};
+use vi_core::habits;
+use vi_core::style::{Scope, StyleStore};
 use vi_core::{AppConfig, ForegroundContext};
 use vi_rewrite::compose::{self, ComposeJob};
 use vi_win32::clipboard::write_clipboard_unicode;
@@ -85,22 +87,30 @@ impl ComposerFlow {
     }
 
     /// A preset or typed instruction: the selection when the user kept it, otherwise a blank draft.
-    pub fn submit(&mut self, cfg: &AppConfig, instruction: Instruction, use_selection: bool, jobs: &Sender<JobRequest>, engine: &SharedEngine) {
+    pub fn submit(
+        &mut self,
+        cfg: &AppConfig,
+        instruction: Instruction,
+        use_selection: bool,
+        jobs: &Sender<JobRequest>,
+        engine: &SharedEngine,
+        style: &StyleStore,
+    ) {
         let source = self.session.submit_source(self.captured.as_ref().map(|c| c.text.as_str()), use_selection);
-        self.start(cfg, instruction, source, jobs, engine);
+        self.start(cfg, instruction, source, jobs, engine, style);
     }
 
     /// A preset pressed on the result: it runs on the latest result.
-    pub fn follow_up(&mut self, cfg: &AppConfig, instruction: Instruction, jobs: &Sender<JobRequest>, engine: &SharedEngine) {
+    pub fn follow_up(&mut self, cfg: &AppConfig, instruction: Instruction, jobs: &Sender<JobRequest>, engine: &SharedEngine, style: &StyleStore) {
         if let Some((instruction, source)) = self.session.follow_up(instruction) {
-            self.start(cfg, instruction, source, jobs, engine);
+            self.start(cfg, instruction, source, jobs, engine, style);
         }
     }
 
     /// Run the last request again, from its original source.
-    pub fn regenerate(&mut self, cfg: &AppConfig, jobs: &Sender<JobRequest>, engine: &SharedEngine) {
+    pub fn regenerate(&mut self, cfg: &AppConfig, jobs: &Sender<JobRequest>, engine: &SharedEngine, style: &StyleStore) {
         if let Some((instruction, source)) = self.session.regenerate() {
-            self.start(cfg, instruction, source, jobs, engine);
+            self.start(cfg, instruction, source, jobs, engine, style);
         }
     }
 
@@ -111,7 +121,7 @@ impl ComposerFlow {
         }
     }
 
-    fn start(&mut self, cfg: &AppConfig, instruction: Instruction, source: String, jobs: &Sender<JobRequest>, engine: &SharedEngine) {
+    fn start(&mut self, cfg: &AppConfig, instruction: Instruction, source: String, jobs: &Sender<JobRequest>, engine: &SharedEngine, style: &StyleStore) {
         if self.job.is_some() {
             return;
         }
@@ -129,6 +139,7 @@ impl ComposerFlow {
             terms: if cfg.dictionary.enabled { cfg.dictionary.vocabulary.clone() } else { Vec::new() },
             cancel: cancel.clone(),
             cloud: self.cloud.clone(),
+            style_block: habits::style_block(style, cfg.dialect, Scope::for_category(self.ctx.category)),
         };
         if jobs.send((job, engine.clone())).is_ok() {
             self.session.started(instruction, source);
@@ -263,15 +274,27 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let engine: SharedEngine = Arc::new(parking_lot::Mutex::new(RewriteEngine::new(None)));
         let mut f = flow();
-        f.submit(&AppConfig::default(), Instruction::Improve, true, &tx, &engine);
+        f.submit(&AppConfig::default(), Instruction::Improve, true, &tx, &engine, &StyleStore::default());
         let (job, _) = rx.try_recv().expect("a job");
         assert_eq!((job.kind, job.instruction), (TextJobKind::Compose, Instruction::Improve));
         assert_eq!(job.source, "", "no selection was captured");
         assert_eq!(job.max_output_tokens, compose::token_limit(&ComposeJob::new(Instruction::Improve, "")));
         assert!(job.cloud.is_none(), "the local route carries no cloud target");
         // A second submit while one runs is dropped.
-        f.submit(&AppConfig::default(), Instruction::Shorter, true, &tx, &engine);
+        f.submit(&AppConfig::default(), Instruction::Shorter, true, &tx, &engine, &StyleStore::default());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_learned_habit_reaches_the_composer_request() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let engine: SharedEngine = Arc::new(parking_lot::Mutex::new(RewriteEngine::new(None)));
+        let mut style = StyleStore::default();
+        assert!(style.set_locked("dialect", Scope::Everywhere, "british", 1));
+        let mut f = flow();
+        f.submit(&AppConfig::default(), Instruction::Fix, true, &tx, &engine, &style);
+        let (job, _) = rx.try_recv().expect("a job");
+        assert!(job.style_block.as_deref().is_some_and(|b| b.contains("British")), "the spelling habit is in the prompt");
     }
 
     #[test]
@@ -287,7 +310,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let engine: SharedEngine = Arc::new(parking_lot::Mutex::new(RewriteEngine::new(None)));
         let mut f = flow();
-        f.submit(&AppConfig::default(), Instruction::Fix, true, &tx, &engine);
+        f.submit(&AppConfig::default(), Instruction::Fix, true, &tx, &engine, &StyleStore::default());
         let (job, _) = rx.try_recv().expect("a job");
         match f.handle(TextJobEvent::Failed { id: job.id, reason: JobFailure::NoWritingModel }) {
             Some(ComposerMsg::Failed { message, settings }) => {

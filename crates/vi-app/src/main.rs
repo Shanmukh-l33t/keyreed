@@ -2462,13 +2462,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             // Voice input into the Composer arrives with P3.7.
                             Ok(UiAction::ComposerDictate) => {}
                             Ok(UiAction::ComposerSubmit { instruction, use_selection }) => {
-                                composer.submit(&cfg, instruction, use_selection, &job_tx, &supervisor.rewrite);
+                                composer.submit(&cfg, instruction, use_selection, &job_tx, &supervisor.rewrite, &style);
                             }
                             Ok(UiAction::ComposerFollowUp(instruction)) => {
-                                composer.follow_up(&cfg, instruction, &job_tx, &supervisor.rewrite);
+                                composer.follow_up(&cfg, instruction, &job_tx, &supervisor.rewrite, &style);
                             }
                             Ok(UiAction::ComposerRegenerate) => {
-                                composer.regenerate(&cfg, &job_tx, &supervisor.rewrite);
+                                composer.regenerate(&cfg, &job_tx, &supervisor.rewrite, &style);
                             }
                             Ok(UiAction::ComposerCancel) => composer.cancel(),
                             Ok(UiAction::ComposerDeliver { how, text }) => composer.deliver(how, &text, &cfg, &gui_for_worker),
