@@ -3698,9 +3698,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 return 0;
             }
             if id == IDCANCEL as i32 {
-                // Esc closes Settings (but not while the user is dictating into the practice box).
-                let listening = snapshot().map(|m| matches!(m.state, EngineState::Listening | EngineState::Processing | EngineState::Correcting)).unwrap_or(false);
-                if !listening {
+                // Esc closes Settings, except while the user is dictating into the practice box. Every other
+                // recording must not trap the window: while one is stuck, Settings is the only way out.
+                if focused_id() != S_PRACTICE {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 }
                 return 0;

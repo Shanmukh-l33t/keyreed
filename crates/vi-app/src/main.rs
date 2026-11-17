@@ -1004,6 +1004,22 @@ fn tone_wav(freq: f32) -> Vec<u8> {
     wav
 }
 
+/// A state that claims a session with no capture behind it is healed after this long.
+const STALE_STATE_HEAL: Duration = Duration::from_secs(2);
+/// A recording that receives no audio at all (muted, unplugged, dead stream) is ended after this long.
+const NO_AUDIO_END: Duration = Duration::from_secs(3);
+
+/// True while the state says a capture or a pipeline is behind it, so the coordinator can tell a
+/// lost transition from a real one.
+fn claims_a_session(state: &EngineState) -> bool {
+    matches!(state, EngineState::Listening | EngineState::Processing | EngineState::Correcting)
+}
+
+/// No frame since the press, or nothing but silence in the latest callback.
+fn capture_has_no_audio(first_frame_ms: f64, rms: f32) -> bool {
+    first_frame_ms <= 0.0 || rms <= 0.0
+}
+
 fn parse_mode_str(s: &str) -> WritingMode {
     match s.trim().to_lowercase().as_str() {
         "exact" => WritingMode::Exact,
@@ -2143,6 +2159,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
+            // Watchdogs (see the ticker): a state with no capture, and a capture that sends no audio.
+            let mut idle_since: Option<Instant> = None;
+            let mut silence_since: Option<Instant> = None;
             let start_epoch = Instant::now();
             let now_ms = || start_epoch.elapsed().as_millis() as u64;
 
@@ -2257,6 +2276,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Ok(UiAction::FloatingMicClicked) => {
                                 pending_action = ptt.on_floating_mic_click(now_ms());
+                            }
+                            Ok(UiAction::CancelRecording) => {
+                                // The tray and the pill's right-click both offer this while a session runs.
+                                pending_action = ptt.on_emergency_cancel("cancelled_from_menu");
                             }
                             Ok(UiAction::StartDictation) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
@@ -2735,8 +2758,22 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 } else {
                                     pending_action = PttAction::StopAndProcess;
                                 }
+                            } else if capture_has_no_audio(mic.first_frame_ms(), mic.current_rms()) {
+                                // Muted, unplugged or a dead stream: end the recording instead of holding the
+                                // app in Listening until the cap.
+                                if silence_since.get_or_insert(Instant::now()).elapsed() >= NO_AUDIO_END {
+                                    silence_since = None;
+                                    log::warn!("no audio from the microphone for {} ms; cancelling", NO_AUDIO_END.as_millis());
+                                    pending_action = ptt.on_emergency_cancel("no_audio");
+                                    gui_for_worker.notify_warning(
+                                        "The microphone is silent",
+                                        "KeyReed heard nothing. Check that the microphone is plugged in and not muted.",
+                                    );
+                                }
                             } else {
-                                gui_for_worker.sync(EngineState::Listening, mic.current_rms(), None);
+                                silence_since = None;
+                                // The chip and the pill render this one value: the controller's own state.
+                                gui_for_worker.sync(ptt.state().clone(), mic.current_rms(), None);
                             }
                         } else {
                             if let Some(deadline) = transient_state_until {
@@ -2745,6 +2782,18 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     ptt.transition_to_idle();
                                     gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                                 }
+                            }
+                            // A state that claims a session with no capture behind it is a lost transition, and
+                            // it makes every action gated on it dead. Heal it instead of staying deaf.
+                            if claims_a_session(ptt.state()) {
+                                if idle_since.get_or_insert(Instant::now()).elapsed() >= STALE_STATE_HEAL {
+                                    idle_since = None;
+                                    log::warn!("state {state:?} with no capture behind it; returning to Idle", state = ptt.state());
+                                    ptt.transition_to_idle();
+                                    gui_for_worker.sync(ptt.state().clone(), 0.0, None);
+                                }
+                            } else {
+                                idle_since = None;
                             }
                             supervisor.poll_background_ready(&cfg);
                             supervisor.maybe_unload_idle(cfg.idle_unload_seconds);
@@ -2774,7 +2823,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 busy_flag.store(true, Ordering::Relaxed);
                                 // The cue goes out before the work that is not on the audio path.
                                 play_subtle_earcon(cfg.audio_cues_enabled, true);
-                                gui_for_worker.sync(EngineState::Listening, 0.0, None);
+                                gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                                 let t_fg = Instant::now();
                                 let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
                                 let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
@@ -3192,6 +3241,33 @@ fn main() -> Result<()> {
             "{} desktop GUI daemon requires Windows 10/11; on Linux use `--transcribe-wav <path>` or `cargo test`",
             PRODUCT_NAME
         );
+    }
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_states_that_need_a_capture_are_healed() {
+        for st in [EngineState::Listening, EngineState::Processing, EngineState::Correcting] {
+            assert!(claims_a_session(&st), "{st:?}");
+        }
+        for st in [
+            EngineState::Idle,
+            EngineState::ReadyToPaste,
+            EngineState::Disabled,
+            EngineState::Error("Mic error: x".into()),
+        ] {
+            assert!(!claims_a_session(&st), "{st:?}");
+        }
+    }
+
+    #[test]
+    fn a_silent_or_frameless_capture_is_dry() {
+        assert!(capture_has_no_audio(0.0, 0.0), "no frame yet");
+        assert!(capture_has_no_audio(12.0, 0.0), "muted");
+        assert!(!capture_has_no_audio(12.0, 0.004), "a quiet room still moves the meter");
     }
 }
 
