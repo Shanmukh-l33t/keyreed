@@ -12,7 +12,7 @@ pub mod style;
 pub mod textjob;
 pub mod types;
 
-pub use config::{AppConfig, CloudSettings, MouseAction, PillClickAction, PrivacySettings};
+pub use config::{AppConfig, AudioCueStyle, CloudSettings, MouseAction, PillClickAction, PrivacySettings};
 pub use dictionary::{PersonalDictionary, ReplacementRule};
 pub use history::{HistoryEntry, HistoryStore};
 pub use ptt::{PttAction, PttController};
