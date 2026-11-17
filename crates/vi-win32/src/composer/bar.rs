@@ -473,6 +473,7 @@ impl Bar {
 // ---------------------------------------------------------------------------------------------------------------
 
 unsafe fn paint(b: &Bar, hdc: HDC, client_w: i32, client_h: i32, ox: i32, oy: i32) {
+    let _pf = crate::perf::frame("composer");
     let t = theme();
     let g = b.geo();
     let Some(mut cv) = Canvas::new(client_w.max(1), client_h.max(1)) else { return };

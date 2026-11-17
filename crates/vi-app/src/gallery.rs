@@ -151,6 +151,24 @@ fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path, from: Option<HWND>) -> R
     Ok(())
 }
 
+/// `KEYREED_UI_PERF=1` frame timing as JSON (null when timing is off).
+fn perf_json() -> serde_json::Value {
+    let s = vi_win32::perf::summary();
+    if s.is_empty() {
+        return serde_json::Value::Null;
+    }
+    let r = |v: f32| (v * 100.0).round() / 100.0;
+    s.into_iter()
+        .map(|(k, v)| {
+            (k.to_string(), serde_json::json!({
+                "frames": v.frames, "frame_ms_p50": r(v.frame_p50), "frame_ms_p95": r(v.frame_p95), "frame_ms_max": r(v.frame_max),
+                "interval_ms_p50": r(v.interval_p50), "interval_ms_p95": r(v.interval_p95),
+            }))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
 struct Gallery {
     dir: PathBuf,
     gui: WinGuiHandle,
@@ -305,7 +323,9 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.shot_pill("pill_01_idle", "Idle: icon only")?;
     let idle_timer = win_gui::pill_debug_info().map(|d| d.3).unwrap_or(true);
     let idle_frames_before = win_gui::pill_debug_info().map(|d| d.4).unwrap_or(0);
+    let idle_cpu = vi_win32::current_process_cpu_ms();
     pump_for(2000);
+    let idle_cpu_pct = (vi_win32::current_process_cpu_ms() - idle_cpu) / 2000.0 * 100.0;
     let idle_frames_after = win_gui::pill_debug_info().map(|d| d.4).unwrap_or(0);
 
     win_gui::set_pill_hover_for_test(true);
@@ -316,18 +336,23 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
 
     // Synthetic speech-like envelope fed through the same sync() path as live capture.
     let env = [0.002f32, 0.01, 0.05, 0.12, 0.2, 0.09, 0.03, 0.15, 0.26, 0.18, 0.07, 0.02, 0.11, 0.22, 0.14, 0.05];
+    vi_win32::perf::reset();
+    let listen_cpu = vi_win32::current_process_cpu_ms();
     let t0 = Instant::now();
     let mut i = 0;
-    while t0.elapsed() < Duration::from_millis(1400) {
+    while t0.elapsed() < Duration::from_millis(3000) {
         g.gui.sync(EngineState::Listening, env[i % env.len()], None);
         i += 1;
         pump_for(70);
     }
+    let listening_cpu_pct = (vi_win32::current_process_cpu_ms() - listen_cpu) / t0.elapsed().as_secs_f64() / 10.0;
+    let listening_perf = perf_json();
     g.shot_pill("pill_03_listening", "Listening: bars follow the RMS values passed to sync() (synthetic levels in this gallery)")?;
     g.gui.sync(EngineState::Listening, 0.0, None);
     pump_for(900);
     g.shot_pill("pill_04_listening_silence", "Listening with silence: bars rest at the floor")?;
 
+    vi_win32::perf::reset();
     g.gui.sync(EngineState::Processing, 0.0, None);
     pump_for(450);
     g.shot_pill("pill_05_processing", "Processing (ASR)")?;
@@ -616,6 +641,18 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // Settings at rest paints nothing; a flipped switch animates only that switch.
+    let transitions_perf = perf_json();
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    vi_win32::perf::reset();
+    pump_for(2000);
+    let settings_idle_frames = vi_win32::perf::frames("settings") + vi_win32::perf::frames("settings_ctrl");
+    for _ in 0..4 {
+        vi_win32::settings::flip_toggle_for_test();
+        pump_for(400);
+    }
+    let toggle_perf = perf_json();
 
     // The Sounds group on the Microphone page, with the cue volume at its top step.
     let mut loud = AppConfig::default();
@@ -764,6 +801,12 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         "scale_percent": scale_pct,
         "idle_animation_timer_running": idle_timer,
         "idle_frames_painted_in_2s": idle_frames_after.saturating_sub(idle_frames_before),
+        "idle_cpu_percent_of_one_core": idle_cpu_pct,
+        "settings_idle_frames_painted_in_2s": settings_idle_frames,
+        "listening_cpu_percent_of_one_core": listening_cpu_pct,
+        "perf_listening": listening_perf,
+        "perf_pill_transitions_and_settings_pages": transitions_perf,
+        "perf_settings_toggle": toggle_perf,
         "shots": g.report,
     });
     std::fs::write(dir.join("gallery_report.json"), serde_json::to_string_pretty(&report)?)?;

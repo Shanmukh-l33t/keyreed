@@ -7,6 +7,7 @@ pub mod context;
 pub mod hotkey;
 pub mod icon_data;
 pub mod overlay;
+pub mod perf;
 pub mod security;
 #[cfg(windows)]
 pub mod selection;

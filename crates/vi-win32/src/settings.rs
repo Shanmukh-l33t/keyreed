@@ -1066,6 +1066,11 @@ pub fn confirm_delete_for_test() {
     ask_delete_learned();
 }
 
+/// Test hook (gallery perf): flips the Notifications switch on the General page the way a click does.
+pub fn flip_toggle_for_test() {
+    on_command(G_NOTIFY, 0);
+}
+
 pub fn dismiss_modal_for_test() {
     close_modal();
 }
@@ -2644,6 +2649,7 @@ fn status_chip(m: &SharedUiModel, t: &Theme) -> (String, u32) {
 }
 
 unsafe fn paint(st: &St, hdc: HDC) {
+    let _pf = crate::perf::frame("settings");
     let t = theme();
     let d = st.dpi;
     let s = |v: i32| sc(v, d);
@@ -2855,6 +2861,7 @@ const ODS_FOCUS: u32 = 0x0010;
 const ODS_NOFOCUSRECT: u32 = 0x0200;
 
 unsafe fn draw_item(st: &St, di: &DrawItem) {
+    let _pf = crate::perf::frame("settings_ctrl");
     let Some((c, _)) = st.ctrls.iter().find(|(c, _)| c.id == di.ctl_id as i32) else { return };
     let t = theme();
     let d = st.dpi;

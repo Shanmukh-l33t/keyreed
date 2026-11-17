@@ -451,6 +451,7 @@ fn button_fill(t: &Theme, hit: Hit, hot: bool) -> (u32, u32, u32) {
 }
 
 unsafe fn paint(p: &mut Panel, hdc: windows_sys::Win32::Graphics::Gdi::HDC) {
+    let _pf = crate::perf::frame("review");
     let t = theme();
     let geo = p.geo();
     p.ensure_layout();

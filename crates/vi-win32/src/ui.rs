@@ -1320,6 +1320,7 @@ pub mod win_gui {
                 }
                 return;
             }
+            let _pf = crate::perf::frame("pill");
             let scale = dpi_scale(hwnd);
             if (scale - pill.last_scale).abs() > 0.01 {
                 // Moved onto a monitor with another DPI: keep the same vertical centre.
