@@ -236,11 +236,12 @@ pub struct Hardware {
 /// thresholds sit just off the round numbers.
 const RAM_16_GB_MB: u64 = 15_000;
 const RAM_8_GB_MB: u64 = 8_500;
-const MIN_CPU_THREADS_FOR_BIGGER: u32 = 4;
+/// The light profile (plan section H1) is four or fewer logical processors.
+const MIN_CPU_THREADS_FOR_BIGGER: u32 = 5;
 
 /// The recommended writing model: the built-in 0.8B on 8 GB or less; otherwise 4B with a discrete
-/// GPU or 16 GB or more, else 2B. Without a GPU, fewer than four logical processors step the
-/// choice down one size, because a larger model on two threads is too slow to use.
+/// GPU or 16 GB or more, else 2B. Without a GPU, four or fewer logical processors step the
+/// choice down one size, because a larger model on two threads is too slow to use (the plan's light profile).
 pub fn recommended_writing_model(hw: Hardware) -> &'static WritingModelSpec {
     let pick = |id: &str| find_writing_model(id).expect("listed model");
     if hw.ram_mb <= RAM_8_GB_MB {
@@ -618,7 +619,9 @@ mod tests {
         assert_eq!(id(12_000, 8, true), "Qwen3.5-4B-Q4_K_M");
         assert_eq!(id(15_700, 8, false), "Qwen3.5-4B-Q4_K_M");
         assert_eq!(id(32_000, 16, false), "Qwen3.5-4B-Q4_K_M");
-        // Two or three threads and no GPU: one size smaller.
+        // Four or fewer threads and no GPU: one size smaller.
+        assert_eq!(id(32_000, 4, false), "Qwen3.5-2B-Q4_K_M");
+        assert_eq!(id(32_000, 5, false), "Qwen3.5-4B-Q4_K_M");
         assert_eq!(id(32_000, 2, false), "Qwen3.5-2B-Q4_K_M");
         assert_eq!(id(12_000, 2, false), "Qwen3.5-0.8B-Q4_K_M");
         assert_eq!(id(32_000, 2, true), "Qwen3.5-4B-Q4_K_M");
