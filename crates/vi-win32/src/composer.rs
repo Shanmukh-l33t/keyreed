@@ -81,6 +81,7 @@ pub fn normalize_edits(original: &str, edits: &[ReviewEdit]) -> Vec<ReviewEdit> 
                 && original[e.start..e.end] != e.replacement
         })
         .cloned()
+        .map(|e| trim_shared_space(original, e))
         .collect();
     valid.sort_by_key(|e| (e.start, e.end));
     let mut out: Vec<ReviewEdit> = Vec::with_capacity(valid.len());
@@ -92,6 +93,21 @@ pub fn normalize_edits(original: &str, edits: &[ReviewEdit]) -> Vec<ReviewEdit> 
         }
     }
     out
+}
+
+/// Moves whitespace that the original span and the replacement share at either end out of the edit, so a change
+/// is marked on its words only (" the the" to " the" marks "the the" to "the", not the space before it).
+fn trim_shared_space(original: &str, mut e: ReviewEdit) -> ReviewEdit {
+    let same_space = |(a, b): &(char, char)| a == b && a.is_whitespace();
+    let span = &original[e.start..e.end];
+    let lead: usize = span.chars().zip(e.replacement.chars()).take_while(same_space).map(|(a, _)| a.len_utf8()).sum();
+    let (span, rep) = (&span[lead..], &e.replacement[lead..]);
+    let trail: usize = span.chars().rev().zip(rep.chars().rev()).take_while(same_space).map(|(a, _)| a.len_utf8()).sum();
+    let trail = trail.min(span.len()).min(rep.len());
+    e.replacement = rep[..rep.len() - trail].to_string();
+    e.start += lead;
+    e.end -= trail;
+    e
 }
 
 /// The original with every accepted edit applied. `edits` must come from `normalize_edits`.
@@ -994,6 +1010,13 @@ mod tests {
         // A boundary inside a multi-byte character is refused.
         assert!(normalize_edits("café x", &[e(3, 4, "e")]).is_empty());
         assert_eq!(normalize_edits("café x", &[e(3, 5, "e")]).len(), 1);
+        // Whitespace both sides share is moved out of the change, so only the words are marked.
+        let t = "Thanks the the team";
+        let got = normalize_edits(t, &[e(6, 14, " the")]);
+        assert_eq!((got[0].start, got[0].end, got[0].replacement.as_str()), (7, 14, "the"));
+        assert_eq!(final_text(t, &got, &[true]), "Thanks the team");
+        let got = normalize_edits("a  b ", &[e(1, 5, " c ")]);
+        assert_eq!((got[0].start, got[0].end, got[0].replacement.as_str()), (2, 4, "c"));
     }
 
     #[test]
