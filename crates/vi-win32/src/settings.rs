@@ -1110,9 +1110,11 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
     b.items.push(Item::Steps { r: r(X0, b.y + 24, CW, 4), current: step, total: 4 });
     b.y += 44;
     let downloading = m.download.as_ref().is_some_and(|d| d.is_active());
+    let toggle = m.config.activation_mode == ActivationMode::ToggleToTalk;
     match step {
         0 => {
-            b.title("Welcome to KeyReed", &format!("Hold {hk}, speak, let go. KeyReed types it wherever your cursor is."));
+            let how = if toggle { format!("Press {hk}, speak, press again.") } else { format!("Hold {hk}, speak, let go.") };
+            b.title("Welcome to KeyReed", &format!("{how} KeyReed types it wherever your cursor is."));
             let w = (CW - 24) / 3;
             let y = b.y;
             let cards: [(&str, &str); 3] = [
@@ -1148,7 +1150,8 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: "Next".into() }, r(X0 + CW - 120, WIN_H - 56, 120, 32), Bg::Content, "Next");
         }
         1 => {
-            b.title("Let KeyReed hear you", &format!("KeyReed listens only while you hold {hk}."));
+            let lead = if toggle { format!("KeyReed listens only between your two presses of {hk}.") } else { format!("KeyReed listens only while you hold {hk}.") };
+            b.title("Let KeyReed hear you", &lead);
             b.group();
             let (items, sel) = mic_items(m);
             b.combo_row(S_MIC, "Microphone", "If it's unplugged, KeyReed uses the Windows default", C::Text2, items, sel, 300);
@@ -1183,7 +1186,8 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             if heard {
                 b.title("That's KeyReed", "It types wherever your cursor is, in any app.");
             } else {
-                b.title("Your turn", &format!("Hold {hk} and say anything, then let go."));
+                let lead = if toggle { format!("Press {hk}, say anything, then press it again.") } else { format!("Hold {hk} and say anything, then let go.") };
+                b.title("Your turn", &lead);
             }
             if !m.active_model_ready() {
                 b.items.push(Item::Banner {
@@ -1199,10 +1203,10 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             b.ctrl(S_PRACTICE, Kind::Edit { text: String::new(), password: false, multiline: true, cue: String::new() }, r(X0, b.y, CW, 104), Bg::Content, "Practice area");
             // One quiet line under the box says what is happening or what to try next.
             let (hint, color) = match (&m.state, PRACTICE_NOTE.with(|c| c.get())) {
-                _ if heard => (format!("It typed what you said. Press {hk} again to try another."), C::Ok),
+                _ if heard => (format!("It typed what you said. Use {hk} again to try another."), C::Ok),
                 (EngineState::Listening, _) => ("Listening…".to_string(), C::Text2),
                 (EngineState::Processing | EngineState::Correcting, _) => ("Typing what you said…".to_string(), C::Working),
-                (_, 1) => (format!("KeyReed didn't hear any words. Keep holding {hk} while you talk, then try again."), C::Warn),
+                (_, 1) => ("KeyReed didn't hear any words. Speak while it's listening, then try again.".to_string(), C::Warn),
                 (_, 3) => ("That didn't work. Try again.".to_string(), C::Warn),
                 _ => (String::new(), C::Text2),
             };
