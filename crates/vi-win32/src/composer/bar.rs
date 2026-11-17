@@ -97,6 +97,8 @@ pub enum ComposerMsg {
     Open(ComposerRequest),
     Token(String),
     Done(String),
+    /// A dictated transcript: it goes into the input, ready to edit or send. The bar stays open.
+    Dictated(String),
     /// One plain sentence; `settings` adds an "Open Settings" action (missing writing model).
     Failed { message: String, settings: bool },
 }
@@ -615,6 +617,18 @@ pub fn apply(msg: ComposerMsg) {
                     SendMessageW(b.input, EM_SETCUEBANNER, 1, cue.as_ptr() as LPARAM);
                     SendMessageW(b.input, EM_SETREADONLY, 0, 0);
                 }
+            }
+        }),
+        ComposerMsg::Dictated(text) => update(|b| {
+            // A single-line input: the transcript's line breaks become spaces.
+            let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let wide = to_wide(&words);
+            unsafe {
+                SetWindowTextW(b.input, wide.as_ptr());
+                // The caret sits after the last word, so the user can keep talking or type on.
+                let end = wide.len().saturating_sub(1);
+                SendMessageW(b.input, EM_SETSEL, end, end as LPARAM);
+                SendMessageW(b.input, EM_SETREADONLY, 0, 0);
             }
         }),
         ComposerMsg::Failed { message, settings } => update(|b| b.stage = Stage::Failed { message, settings }),

@@ -101,6 +101,9 @@ pub struct AppConfig {
     /// Open the Composer (plan F2).
     #[serde(default = "default_composer_hotkey")]
     pub composer_hotkey: HotkeySpec,
+    /// Hold with text selected and say what to do with it (plan P3.7).
+    #[serde(default = "default_voice_command_hotkey")]
+    pub voice_command_hotkey: HotkeySpec,
     pub output_mode: OutputMode,
     pub default_writing_mode: WritingMode,
     pub auto_context_mode: bool,
@@ -162,6 +165,7 @@ impl Default for AppConfig {
             quick_fix_always_review: true,
             quick_fix_intro_seen: false,
             composer_hotkey: default_composer_hotkey(),
+            voice_command_hotkey: default_voice_command_hotkey(),
             output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
             auto_context_mode: true,
@@ -199,6 +203,10 @@ fn default_quick_fix_hotkey() -> HotkeySpec {
 
 fn default_composer_hotkey() -> HotkeySpec {
     crate::shortcut::chord(true, false, false, true, 0x4B) // Ctrl + Win + K
+}
+
+fn default_voice_command_hotkey() -> HotkeySpec {
+    crate::shortcut::chord(true, false, false, true, 0x48) // Ctrl + Win + H
 }
 
 impl AppConfig {
@@ -377,6 +385,16 @@ mod tests {
         assert!(!c.quick_fix_intro_seen);
         let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": false}"#);
         assert!(!c.quick_fix_always_review);
+    }
+
+    #[test]
+    fn the_voice_command_chord_has_a_default_and_keeps_a_saved_one() {
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert_eq!(c.voice_command_hotkey.display_name, "Ctrl + Win + H");
+        let saved = r#"{"voice_command_hotkey": {"ctrl": true, "alt": false, "shift": false, "win": false, "vk": 72, "display_name": "Ctrl + H"}}"#;
+        let (c, dropped) = AppConfig::parse_lenient(saved);
+        assert!(dropped.is_empty());
+        assert_eq!(c.voice_command_hotkey.display_name, "Ctrl + H");
     }
 
     #[test]
