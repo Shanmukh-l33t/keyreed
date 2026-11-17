@@ -56,6 +56,8 @@ pub enum UiAction {
         new_cfg: Box<AppConfig>,
         new_plaintext_api_key: Option<String>,
     },
+    /// The "My style" store was edited in Settings: the coordinator saves it and learns by it.
+    SaveStyleStore(Box<vi_core::style::StyleStore>),
     ClearHistory,
     CopyLastDictation,
     DownloadDefaultModel,
@@ -547,6 +549,8 @@ pub struct SharedUiModel {
     pub processing_note: Option<String>,
     /// Quick Fix state on the listener; shown while the engine is idle.
     pub quick_fix: Option<QuickFixPill>,
+    /// What KeyReed learned (plan F3): the "My style" page reads and edits this copy.
+    pub style: vi_core::style::StyleStore,
 }
 
 /// How long a listener hint stays visible.
@@ -2081,6 +2085,12 @@ pub mod win_gui {
             self.post_sync();
         }
 
+        /// Shows the current style store in Settings (the coordinator owns the file).
+        pub fn set_style(&self, style: vi_core::style::StyleStore) {
+            self.model.lock().style = style;
+            self.post_sync();
+        }
+
         pub fn notify_toast(&self, title: &str, body: &str) {
             self.toast(title, body, false);
         }
@@ -2156,6 +2166,7 @@ pub mod win_gui {
             hint: None,
             processing_note: None,
             quick_fix: None,
+            style: Default::default(),
         }));
 
         let _ = GUI_GLOBALS.set(WinGuiGlobals {

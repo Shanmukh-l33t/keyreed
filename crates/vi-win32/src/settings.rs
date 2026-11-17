@@ -19,6 +19,7 @@ use crate::ui::{
 use std::cell::RefCell;
 use std::time::Instant;
 use vi_core::brand::{PRODUCT_NAME, PRODUCT_TAGLINE, SETTINGS_WINDOW_CLASS, VERSION_STR};
+use vi_core::habits::Dialect;
 use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
 use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -40,19 +41,21 @@ pub const PAGE_START: usize = 0;
 pub const PAGE_GENERAL: usize = 1;
 pub const PAGE_DICTATION: usize = 2;
 pub const PAGE_WRITING: usize = 3;
-pub const PAGE_OUTPUT: usize = 4;
-pub const PAGE_AUDIO: usize = 5;
-pub const PAGE_MODELS: usize = 6;
-pub const PAGE_PROCESSING: usize = 7;
-pub const PAGE_PRIVACY: usize = 8;
-pub const PAGE_ABOUT: usize = 9;
+pub const PAGE_MYSTYLE: usize = 4;
+pub const PAGE_OUTPUT: usize = 5;
+pub const PAGE_AUDIO: usize = 6;
+pub const PAGE_MODELS: usize = 7;
+pub const PAGE_PROCESSING: usize = 8;
+pub const PAGE_PRIVACY: usize = 9;
+pub const PAGE_ABOUT: usize = 10;
 
 /// (label, Segoe Fluent/MDL2 glyph)
-const NAV: [(&str, char); 10] = [
+const NAV: [(&str, char); 11] = [
     ("Get started", '\u{E80F}'),
     ("General", '\u{E713}'),
     ("Dictation", '\u{E765}'),
     ("Writing", '\u{E70F}'),
+    ("My style", '\u{E790}'),
     ("Output", '\u{E77F}'),
     ("Microphone", '\u{E720}'),
     ("Speech models", '\u{E8F1}'),
@@ -142,6 +145,22 @@ const S_PRACTICE: i32 = 1008;
 const S_BACK: i32 = 1010;
 const S_NEXT: i32 = 1011;
 const S_SKIP: i32 = 1012;
+// My style page (also the setup switch, which flips the same setting).
+const Y_LEARN: i32 = 1300;
+const Y_DIALECT: i32 = 1301;
+const Y_ITEM: i32 = 1310;
+const Y_CAND: i32 = 1330;
+const Y_CAND_DISMISS: i32 = Y_CAND + 16;
+const Y_APP: i32 = 1400;
+const Y_PREV: i32 = 1420;
+const Y_NEXT: i32 = 1421;
+const Y_RESET: i32 = 1422;
+const Y_EXPORT: i32 = 1423;
+const Y_DELETE: i32 = 1424;
+/// Learned habits per page of the list.
+const STYLE_ITEMS_PER_PAGE: usize = 6;
+const STYLE_CANDIDATES_SHOWN: usize = 5;
+const STYLE_APPS_SHOWN: usize = 12;
 
 const IDT_SAVED: usize = 9001;
 /// One-shot: how long the finished model step shows "ready" before setup moves on.
@@ -733,6 +752,8 @@ thread_local! {
     static VOCAB_VIEW: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     /// The dictionary editor shows one blank row at the end for a new term.
     static VOCAB_DRAFT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// My style: the page of learned habits on show.
+    static STYLE_PAGE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Window DPI, honouring the gallery's scale override.
@@ -764,6 +785,20 @@ fn commit(f: impl FnOnce(&mut AppConfig)) {
         c
     };
     send(UiAction::SaveUpdatedConfig { new_cfg: Box::new(cfg), new_plaintext_api_key: None });
+    flash_saved();
+}
+
+/// Applies one change to the style store on top of the latest copy; the coordinator saves it.
+fn commit_style(f: impl FnOnce(&mut vi_core::style::StyleStore)) {
+    let Some(g) = globals() else { return };
+    let style = {
+        let mut m = g.model.lock();
+        let mut s = m.style.clone();
+        f(&mut s);
+        m.style = s.clone();
+        s
+    };
+    send(UiAction::SaveStyleStore(Box::new(style)));
     flash_saved();
 }
 
@@ -982,6 +1017,7 @@ fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>
         PAGE_GENERAL => page_general(&mut b, m),
         PAGE_DICTATION => page_dictation(&mut b, m),
         PAGE_WRITING => page_writing(&mut b, m),
+        PAGE_MYSTYLE => page_mystyle(&mut b, m),
         PAGE_OUTPUT => page_output(&mut b, m),
         PAGE_AUDIO => page_audio(&mut b, m),
         PAGE_MODELS => page_models(&mut b, m),
@@ -1139,6 +1175,16 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
                 b.text(r(x + 14, y + 104, w - 28, 18), *d, F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
             }
             b.y = y + 144;
+            // Plan F3: one sentence saying exactly what learning reads, and the switch, on by default.
+            b.group();
+            b.toggle_row(
+                Y_LEARN,
+                "Learn my words from my corrections",
+                "KeyReed learns your words from the corrections you make to its text. It checks only the text box it just typed into, on this PC, and keeps only the corrected words.",
+                m.config.learn_from_edits,
+                true,
+            );
+            b.end_group();
             b.section("Your shortcut");
             b.group();
             let (items, sel, note, nc) = hotkey_items(m);
@@ -1487,6 +1533,118 @@ fn page_vocab(b: &mut Builder, m: &SharedUiModel, page_idx: usize) {
         b.last_ctrl().enabled = page > 0;
         b.text(r(X0 + 112, y + 7, CW - 304 - 112 - 8, 18), format!("Page {} of {pages} · {n} terms", page + 1), F::Caption, C::Text3, DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS);
     }
+}
+
+/// One learned habit in plain language, with its evidence: "Agreed 41 of 44 times", or "You set this".
+fn style_item_lines(item: &vi_core::style::StyleItem) -> (String, String) {
+    let label = vi_core::habits::habit_sentence(&item.key, &item.value)
+        .unwrap_or_else(|| format!("{}: {}", item.key.replace('_', " "), item.value));
+    let evidence = if item.locked {
+        "You set this".to_string()
+    } else {
+        format!("Agreed {} of {} times", item.agree, item.seen)
+    };
+    (label, evidence)
+}
+
+/// "My style" (plan F3, P4.5): what is read and kept, the learning switch, the spelling choice, what has been
+/// learned, the single-sighting suggestions, the excluded apps, and export / reset / delete.
+fn page_mystyle(b: &mut Builder, m: &SharedUiModel) {
+    let c = &m.config;
+    let s = &m.style;
+    b.title("My style", "What KeyReed has learned from your own corrections, and what it may change.");
+    b.text(
+        r(X0, b.y, CW, 34),
+        "It reads only the text box it just typed into, on this PC, and keeps only the corrected words and habits \u{2014} never the text around them.",
+        F::Body,
+        C::Text2,
+        DT_WORDBREAK,
+    );
+    b.y += 44;
+    b.group();
+    b.toggle_row(Y_LEARN, "Learn from my corrections", "Off means nothing is read and nothing is kept.", c.learn_from_edits, true);
+    b.combo_row(
+        Y_DIALECT,
+        "Spelling",
+        "What KeyReed writes, and never changes away from.",
+        C::Text2,
+        vec!["Auto (follow what I write)".to_string(), "British".to_string(), "American".to_string()],
+        match c.dialect {
+            Dialect::Auto => 0,
+            Dialect::British => 1,
+            Dialect::American => 2,
+        },
+        220,
+    );
+    b.end_group();
+
+    b.section("Learned");
+    b.group();
+    if s.items.is_empty() {
+        b.row("Nothing yet", "A word or habit you correct twice appears here, with its evidence.", C::Text2, 0);
+    } else {
+        let pages = s.items.len().div_ceil(STYLE_ITEMS_PER_PAGE);
+        let page = STYLE_PAGE.with(|p| p.get()).min(pages - 1);
+        // Keep the state on a page that exists: the Remove buttons address rows by it.
+        STYLE_PAGE.with(|p| p.set(page));
+        for (i, item) in s.items[page * STYLE_ITEMS_PER_PAGE..].iter().take(STYLE_ITEMS_PER_PAGE).enumerate() {
+            let (label, evidence) = style_item_lines(item);
+            b.button_row(Y_ITEM + i as i32, &label, &evidence, "Remove", BtnStyle::Subtle);
+        }
+        if pages > 1 {
+            let y = b.y;
+            b.ctrl(Y_PREV, Kind::Button { style: BtnStyle::Secondary, label: "Previous".into() }, r(X0 + PAD, y + 6, 84, 32), Bg::Surface, "Previous learned items");
+            b.last_ctrl().enabled = page > 0;
+            b.ctrl(Y_NEXT, Kind::Button { style: BtnStyle::Secondary, label: "Next".into() }, r(X0 + PAD + 92, y + 6, 84, 32), Bg::Surface, "More learned items");
+            b.last_ctrl().enabled = page + 1 < pages;
+            b.text(r(X0 + PAD + 188, y + 13, CW - 2 * PAD - 188, 18), format!("Page {} of {pages}", page + 1), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 44;
+        }
+    }
+    b.end_group();
+
+    b.section("Suggestions");
+    b.group();
+    if s.vocabulary_candidates.is_empty() {
+        b.row("Nothing waiting", "A word you fix once waits here until you add it or dismiss it.", C::Text2, 0);
+    } else {
+        for (i, cand) in s.vocabulary_candidates.iter().take(STYLE_CANDIDATES_SHOWN).enumerate() {
+            let evidence = format!("Corrected {} time{} in {}", cand.count, if cand.count == 1 { "" } else { "s" }, cand.context);
+            let (y0, h) = b.row(&format!("{} \u{2192} {}", cand.from, cand.to), &evidence, C::Text2, 176);
+            b.ctrl(Y_CAND + i as i32, Kind::Button { style: BtnStyle::Secondary, label: "Add".into() }, r(X0 + CW - PAD - 176, y0 + (h - 32) / 2, 80, 32), Bg::Surface, &format!("Add {} to my dictionary", cand.to));
+            b.ctrl(Y_CAND_DISMISS + i as i32, Kind::Button { style: BtnStyle::Subtle, label: "Dismiss".into() }, r(X0 + CW - PAD - 88, y0 + (h - 32) / 2, 88, 32), Bg::Surface, &format!("Dismiss the suggestion {}", cand.to));
+        }
+        let more = s.vocabulary_candidates.len().saturating_sub(STYLE_CANDIDATES_SHOWN);
+        if more > 0 {
+            b.text(r(X0 + PAD, b.y + 8, CW - 2 * PAD, 18), format!("{more} more wait behind these."), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 30;
+        }
+    }
+    b.end_group();
+
+    b.section("Apps KeyReed never reads");
+    b.group();
+    if s.excluded_apps.is_empty() {
+        b.row("None excluded", "Password managers and private windows are skipped anyway.", C::Text2, 0);
+    } else {
+        for (i, app) in s.excluded_apps.iter().take(STYLE_APPS_SHOWN).enumerate() {
+            b.button_row(Y_APP + i as i32, app, "Nothing is read in this app.", "Remove", BtnStyle::Subtle);
+        }
+        let more = s.excluded_apps.len().saturating_sub(STYLE_APPS_SHOWN);
+        if more > 0 {
+            b.text(r(X0 + PAD, b.y + 8, CW - 2 * PAD, 18), format!("{more} more are excluded."), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 30;
+        }
+    }
+    b.end_group();
+
+    b.group();
+    let y = b.y + 4;
+    b.ctrl(Y_EXPORT, Kind::Button { style: BtnStyle::Secondary, label: "Export".into() }, r(X0 + PAD, y, 84, 32), Bg::Surface, "Export my style as a file");
+    b.ctrl(Y_RESET, Kind::Button { style: BtnStyle::Secondary, label: "Reset learned".into() }, r(X0 + PAD + 92, y, 136, 32), Bg::Surface, "Reset everything learned");
+    b.ctrl(Y_DELETE, Kind::Button { style: BtnStyle::Danger, label: "Delete all".into() }, r(X0 + PAD + 236, y, 112, 32), Bg::Surface, "Delete everything learned and the excluded apps");
+    b.y = y + 44;
+    b.end_group();
 }
 
 fn page_output(b: &mut Builder, m: &SharedUiModel) {
@@ -2862,6 +3020,74 @@ fn on_command(id: i32, code: u32) {
             let abs = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0) * DICT_ROWS + (i - V_DEL) as usize;
             commit(|c| remove_dict_entry(&mut c.dictionary, abs));
         }
+        (Y_LEARN, true, _) => {
+            let v = !c.learn_from_edits;
+            commit(|c| c.learn_from_edits = v)
+        }
+        (Y_DIALECT, _, CBN_SELCHANGE) => {
+            let d = [Dialect::Auto, Dialect::British, Dialect::American].get(combo_sel(Y_DIALECT)).copied().unwrap_or_default();
+            commit(|c| c.dialect = d)
+        }
+        (i, true, _) if (Y_ITEM..Y_ITEM + STYLE_ITEMS_PER_PAGE as i32).contains(&i) => {
+            let page = STYLE_PAGE.with(|p| p.get());
+            let Some(item) = m.style.items.get(page * STYLE_ITEMS_PER_PAGE + (i - Y_ITEM) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.remove(&item.key, item.scope, &item.value);
+            });
+        }
+        (i, true, _) if (Y_CAND..Y_CAND + STYLE_CANDIDATES_SHOWN as i32).contains(&i) => {
+            let Some(cand) = m.style.vocabulary_candidates.get((i - Y_CAND) as usize).cloned() else { return };
+            commit(|c| {
+                c.dictionary.add_term(cand.to.clone());
+                dict_sync_enabled(&mut c.dictionary);
+            });
+            commit_style(|s| {
+                s.remove_candidate(&cand.from, &cand.to);
+            });
+        }
+        (i, true, _) if (Y_CAND_DISMISS..Y_CAND_DISMISS + STYLE_CANDIDATES_SHOWN as i32).contains(&i) => {
+            let Some(cand) = m.style.vocabulary_candidates.get((i - Y_CAND_DISMISS) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.remove_candidate(&cand.from, &cand.to);
+            });
+        }
+        (i, true, _) if (Y_APP..Y_APP + STYLE_APPS_SHOWN as i32).contains(&i) => {
+            let Some(app) = m.style.excluded_apps.get((i - Y_APP) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.include_app(&app);
+            });
+        }
+        (Y_PREV, true, _) | (Y_NEXT, true, _) => {
+            let page = STYLE_PAGE.with(|p| p.get());
+            let last = m.style.items.len().div_ceil(STYLE_ITEMS_PER_PAGE).saturating_sub(1);
+            let next = if id == Y_PREV { page.saturating_sub(1) } else { (page + 1).min(last) };
+            STYLE_PAGE.with(|p| p.set(next));
+            refresh();
+        }
+        (Y_RESET, true, _) => commit_style(|s| s.reset_learned()),
+        (Y_EXPORT, true, _) => {
+            let path = vi_core::style::StyleStore::default_path().with_file_name("style-export.json");
+            match m.style.save_atomic(&path) {
+                Ok(()) => {
+                    open_url(&path.to_string_lossy());
+                    flash_saved();
+                }
+                Err(_) => unsafe {
+                    let title = to_wide("The export failed");
+                    let body = to_wide("KeyReed could not write style-export.json to its folder. Nothing was changed.");
+                    MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+                },
+            }
+        }
+        (Y_DELETE, true, _) => unsafe {
+            let title = to_wide("Delete everything KeyReed learned?");
+            let body = to_wide("Every learned word and habit, the suggestions and the excluded apps go. Your switches and other settings stay.\n\nDelete now?");
+            let r = MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+            if r == IDOK {
+                // A fresh store: the coordinator puts the learning switch back from the setting.
+                commit_style(|s| *s = Default::default());
+            }
+        },
         (MIC_PRIVACY, true, _) => open_url("ms-settings:privacy-microphone"),
         (O_TYPE, true, _) => commit(|c| c.output_mode = OutputMode::DirectTyping),
         (O_CLIP, true, _) => commit(|c| c.output_mode = OutputMode::Clipboard),
@@ -3501,6 +3727,7 @@ mod tests {
             hint: None,
             processing_note: None,
             quick_fix: None,
+            style: Default::default(),
         }
     }
 
@@ -3513,7 +3740,7 @@ mod tests {
     #[test]
     fn every_page_and_step_fits_the_window_without_overlap() {
         let mut m = model();
-        for variant in 0..4 {
+        for variant in 0..5 {
             match variant {
                 1 => {
                     m.installed_asr_models = vec!["parakeet-tdt-0.6b-v2-int8".into()];
@@ -3526,6 +3753,17 @@ mod tests {
                 }
                 3 => {
                     m.mic_test = MicTestStatus { verdict: Some(MicVerdict::Silent), peak_rms: 0.0, device: "Mic".into(), ..Default::default() };
+                }
+                4 => {
+                    // "My style" with content: learned rows and their paging, suggestions, an excluded app.
+                    for n in 0..7 {
+                        m.style.observe(vi_core::style::Source::Samples, &format!("habit_{n}"), vi_core::style::Scope::Everywhere, "yes", 35, 1);
+                    }
+                    m.style.set_locked("dialect", vi_core::style::Scope::Everywhere, "british", 2);
+                    for n in 0..6 {
+                        m.style.record_candidate(&format!("word{n}"), &format!("Word{n}"), "chat", 1);
+                    }
+                    m.style.exclude_app("keepass.exe");
                 }
                 _ => {}
             }
