@@ -1,36 +1,45 @@
 # Changelog
 
-## 2.1.0-beta.1 (release candidate, not published)
+## 2.1.0-beta.1 (2026-11-17)
 
-Hex-informed round. Built on Linux and compiled for Windows x64. No tests, benchmarks or manual runs were performed for this candidate; it is meant for hands-on evaluation. Research notes are in `docs/research/`.
+Hex-informed round, and the first single build that also carries the 2.0 work below. Built on Linux for Windows x64 and published without being run, tested or benchmarked, so treat it as an evaluation build. The installer and portable zip are unsigned. Research notes are in `docs/research/`.
 
 ### Speech recognition
 
-- **Personal vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords whenever your dictionary has terms (greedy search otherwise). Before this, the terms were passed to a greedy decoder that ignores them. The runtime version is checked first.
-- **Quiet microphones are no longer dropped.** The clip-average level test is replaced by a 30 ms windowed gate that also accepts speech 12 dB above the clip's own floor.
-- **Better audio in.** A windowed-sinc resampler replaces the 3-tap box and linear interpolation, and a 20 Hz DC blocker runs before level and speech detection.
-- **Release tail.** Recording continues 200 ms after release (up to 600 ms while you keep speaking) so the last word survives an early key-up.
-- **Two more models, both verified against pinned SHA-256:** Parakeet TDT 110M (English, 103 MB, low RAM) and Parakeet Ultra (25 languages). The default is unchanged.
+- **Your vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords whenever the dictionary has terms (greedy search otherwise), with a `bpe.vocab` built from the model's own `tokens.txt`. Before this, terms were handed to a greedy decoder that ignores them. The runtime is checked first (`sherpa-onnx` 1.12.24 or newer) because an older one exits on the unknown decoding method.
+- **Quiet microphones are no longer dropped.** The clip-average level test is replaced by a 30 ms windowed gate that also accepts speech 12 dB above the clip's own noise floor.
+- **Better audio in.** A stateful polyphase windowed-sinc (Blackman-Harris) resampler replaces the 3-tap box and linear interpolation, and a 20 Hz single-pole DC blocker runs before level and speech detection.
+- **Release tail.** Recording continues 200 ms after release, extended up to 600 ms while you are still speaking, so the last word survives an early key-up.
+- **Two more selectable models, both verified against pinned SHA-256:** Parakeet TDT 110M (English, 103 MB, low RAM) and Parakeet TDT 0.6B Ultra (25 languages). The catalogue now lists eight speech models; the default is unchanged (Parakeet TDT 0.6B v2).
 - **Cleanup that changes less.** Filler removal keeps your full stops, "hmm" and "ah" stay, only doubled function words collapse ("had had" stays), wording polish only runs in Professional mode, and "march" and "august" are no longer recased.
+
+### The 2.0 work, in the same build
+
+- **Quick Fix (Ctrl + Win + G), end to end.** Select text in another application, press the shortcut, and KeyReed shows every proposed change in a Review panel. Spelling uses the Windows spell checker and grammar uses the Apache-2.0 `gector-bert-en` int8 tagger (73 MB download, runs locally through the ONNX Runtime that ships with the app). Enter replaces, Esc dismisses, Undo on the pill restores the original, and Deeper asks the local writing model for a second look. Review is the default (`quick_fix_always_review`); a Settings switch turns on silent replace.
+- **The Composer (Ctrl + Win + K, or Open the Composer in the tray menu).** Fix, Improve, Shorter, Change tone, Summarise and a typed instruction; the answer streams, Esc cancels, and a result can replace the selection, be inserted, be copied or be regenerated. It answers from the local writing model (Qwen3.5 0.8B); with none installed it says so and sends nothing. Clicking the listener still starts dictation by default.
+- **Style store and edit watcher.** `vi-core` carries both with their tests: the learned-habits store in `style.json`, and the reader that only looks at the text box KeyReed just typed into, up to a minute. Neither is connected to a Settings page or to the running app yet, so nothing is learned from your edits in this build.
 
 ### Interface
 
 - Waveform with real meter ballistics (35 ms attack, 95 ms decay, auto level that adapts to your voice and microphone), taller bars for speech, smoother colour.
 - Teal for "working" (Transcribing, Fixing) so amber means only "look at this".
-- A "Open privacy settings" button when the microphone fails. Setup starts the model download when you press Next, shows progress on every page, auto-advances when the model is ready, and ends with a practice step that says what went wrong.
-- Emerald focus ring, arrow keys in the sidebar, Enter on the default button, a vocabulary editor with Term and Sounds like rows, a screen-reader name for the pill.
+- An "Open privacy settings" button when the microphone fails, opening `ms-settings:privacy-microphone`.
+- Setup starts the model download when you press Next, shows progress on every page, moves on by itself when the model is ready, and ends with a practice step that says what went wrong.
+- Emerald focus ring, and a vocabulary editor with a Term row and a Sounds like row per entry.
 
 ### Windows reliability
 
-- A 30 minute recording is processed at the cap instead of being discarded. Audio is no longer dropped on the cloud profile path.
-- A held trigger key's repeats and key-up are swallowed; modifiers resync from the OS on every key event; key chords need exact modifiers; pressing another key while Right Ctrl is held cancels the dictation.
-- Clipboard history exclusion now defaults on for new settings and always applies to the typing backup copy.
-- A log file at `%LOCALAPPDATA%\keyreed\logs\keyreed.log` and a panic hook. The installer stops only KeyReed's own `llama-server.exe`.
-- The build script embeds the manifest and icon for MSVC builds too.
+- A 30 minute recording is processed at the cap instead of being discarded. Escape, a lost key release or a session lock still cancels.
+- A held trigger key's repeats and its key-up are swallowed; modifiers resync from the OS on every key event; key chords need exact modifiers; pressing another key while Right Ctrl is held cancels the dictation.
+- Clipboard history exclusion defaults on for new settings and always applies to the typing backup copy.
+- A log file at `%LOCALAPPDATA%\keyreed\logs\keyreed.log` (rotated once past 1 MB) and a panic hook. The installer stops only KeyReed's own `llama-server.exe`, never another app's.
+- The build embeds the manifest and icon for MSVC builds too, not only the mingw toolchain.
 
 ### Known limits
 
-- Everything above is untested at runtime. Beam search speed with hotwords, the new resampler, the release tail and the UI changes need your eyes.
+- Everything above is untested at runtime. Beam search speed with hotwords, the new resampler, the release tail and the UI changes have not been seen working.
+- Quick Fix has not been checked by hand in Chromium-based apps, Outlook or Word; the automated check ran in a plain Windows edit control.
+- Voice commands, a model picker for the writing model, and the "My style" Settings page are not in this build.
 - Hook re-arm on foreground change and the session-lock modifier reset were not implemented.
 - The build is unsigned.
 
