@@ -150,7 +150,7 @@ pub fn is_unsupported_shell_target(window_class: &str, process_name: &str) -> bo
 }
 
 #[cfg(windows)]
-unsafe fn release_active_modifiers_cleanly() {
+pub(crate) unsafe fn release_active_modifiers_cleanly() {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     };

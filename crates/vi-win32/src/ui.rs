@@ -17,6 +17,15 @@ pub enum UiAction {
     ToggleAppEnabled,
     TogglePttEnabled,
     FloatingMicClicked,
+    /// Undo the last Quick Fix (pill chip).
+    QuickFixUndo,
+    /// Ask for the deeper pass on the last Quick Fix (pill chip).
+    QuickFixDeeper,
+    /// The Review panel was closed: what the user chose, the text with the accepted changes applied, and how many
+    /// changes were accepted and rejected (for the acceptance counters). Never logged.
+    ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
+    /// The first-use screen of the Review panel was dismissed.
+    QuickFixIntroSeen,
     SetActivationMode(ActivationMode),
     SetOutputMode(OutputMode),
     SetWritingMode(WritingMode),
@@ -41,6 +50,14 @@ pub enum UiAction {
     ResetToDefaults,
     SessionOrPowerReset,
     Quit,
+}
+
+/// How the Review panel was closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewChoice {
+    Replace,
+    Copy,
+    Dismiss,
 }
 
 /// Stage of a speech-model download, reported by the download worker.
@@ -221,6 +238,54 @@ impl ReadyOutcome {
     }
 }
 
+/// What the Quick Fix pill shows (plan F1 and F4). Set by the coordinator through `WinGuiHandle::quick_fix`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickFixStage {
+    /// The engine is working: one band of light sweeps across the pill.
+    Working,
+    /// Text was replaced: "Fixed · N changes" with Undo and, when a deeper pass exists, Deeper.
+    Fixed { changes: u32, can_deepen: bool },
+    /// Nothing needed changing; the document was not touched.
+    LooksGood,
+    /// A neutral one-line outcome, for example "Spelling only" or "English only for now".
+    Notice(String),
+    /// A refusal or failure with its one sentence short form; the pill shakes twice.
+    Refused(String),
+    /// The fix was undone: the tick unwinds and the count rolls back down.
+    Undone { changes: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickFixPill {
+    pub stage: QuickFixStage,
+    pub since: std::time::Instant,
+}
+
+impl QuickFixPill {
+    pub fn new(stage: QuickFixStage) -> Self {
+        Self { stage, since: std::time::Instant::now() }
+    }
+
+    /// How long the stage stays on screen; `None` while the work lasts.
+    pub fn visible_ms(&self) -> Option<u128> {
+        match self.stage {
+            QuickFixStage::Working => None,
+            QuickFixStage::Fixed { .. } => Some(6000),
+            QuickFixStage::Undone { .. } => Some(1800),
+            _ => Some(1800),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.visible_ms().is_none_or(|ms| self.since.elapsed().as_millis() < ms)
+    }
+}
+
+/// "Fixed · 4 changes".
+pub fn fixed_label(changes: u32) -> String {
+    format!("Fixed · {changes} change{}", if changes == 1 { "" } else { "s" })
+}
+
 /// One-sentence explanation of why text was copied instead of typed.
 pub fn delivery_reason_sentence(reason: &str) -> &'static str {
     match reason {
@@ -397,21 +462,9 @@ pub fn hotkey_presets() -> Vec<(HotkeySpec, &'static str)> {
     ]
 }
 
-/// Real conflicts with KeyReed's own shortcuts.
+/// Real conflicts of a push-to-talk chord: the same rules as the shortcut capture field.
 pub fn hotkey_conflict(cfg: &AppConfig, candidate: &HotkeySpec) -> Option<String> {
-    let same = |a: &HotkeySpec, b: &HotkeySpec| {
-        a.vk == b.vk && a.ctrl == b.ctrl && a.alt == b.alt && a.shift == b.shift && a.win == b.win
-    };
-    if same(candidate, &cfg.mode_cycle_hotkey) {
-        Some(format!(
-            "{} is also the mode-cycle shortcut. Pick another one to avoid switching modes.",
-            candidate.display_name
-        ))
-    } else if same(candidate, &cfg.cancel_hotkey) {
-        Some(format!("{} is the cancel shortcut.", candidate.display_name))
-    } else {
-        None
-    }
+    cfg.shortcut_problem(vi_core::shortcut::ShortcutRole::Dictation, candidate).map(|p| p.message)
 }
 
 #[derive(Clone)]
@@ -431,6 +484,8 @@ pub struct SharedUiModel {
     pub hint: Option<(String, String, std::time::Instant)>,
     /// Overrides the processing label (e.g. "Loading model" on a cold start).
     pub processing_note: Option<String>,
+    /// Quick Fix state on the listener; shown while the engine is idle.
+    pub quick_fix: Option<QuickFixPill>,
 }
 
 /// How long a listener hint stays visible.
@@ -534,6 +589,18 @@ mod tests {
     }
 
     #[test]
+    fn quick_fix_stages_expire_except_while_working() {
+        let working = QuickFixPill::new(QuickFixStage::Working);
+        assert!(working.is_active() && working.visible_ms().is_none());
+        let mut fixed = QuickFixPill::new(QuickFixStage::Fixed { changes: 4, can_deepen: true });
+        assert!(fixed.is_active());
+        fixed.since -= std::time::Duration::from_millis(6001);
+        assert!(!fixed.is_active());
+        assert_eq!(fixed_label(1), "Fixed · 1 change");
+        assert_eq!(fixed_label(4), "Fixed · 4 changes");
+    }
+
+    #[test]
     fn detects_conflict_with_mode_cycle_shortcut() {
         let cfg = AppConfig::default();
         assert!(hotkey_conflict(&cfg, &HotkeySpec::ctrl_shift_space()).is_some());
@@ -545,7 +612,8 @@ mod tests {
 pub mod win_gui {
     use super::*;
     use crate::overlay::{
-        pill_window_width, render_pill, rms_to_level, scaled_icon, PillFrame, PillKind, PillMetrics, TextMask,
+        fixed_chips, motion, pill_window_width, render_pill, rms_to_level, scaled_icon, PillFrame, PillKind, PillMetrics,
+        TextMask,
     };
     use once_cell::sync::OnceCell;
     use std::cell::RefCell;
@@ -575,6 +643,7 @@ pub mod win_gui {
     pub const WM_TRAY_CALLBACK: u32 = WM_USER + 40;
     pub const WM_SYNC_UI: u32 = WM_USER + 41;
     pub const WM_SHOW_TOAST: u32 = WM_USER + 42;
+    pub const WM_SHOW_REVIEW: u32 = WM_USER + 44;
     pub const WM_ALREADY_RUNNING: u32 = vi_core::brand::ALREADY_RUNNING_MSG;
     const WM_MOUSEHOVER_U: u32 = 0x02A1;
     const WM_MOUSELEAVE_U: u32 = 0x02A3;
@@ -594,6 +663,7 @@ pub mod win_gui {
 
     const IDT_PILL_ANIM: usize = 7002;
     const IDT_HOVER_COLLAPSE: usize = 7003;
+    const IDT_QF_EXPIRE: usize = 7004;
     /// Hover must rest this long before the listener expands (avoids accidental expansion).
     const HOVER_INTENT_MS: u32 = 380;
 
@@ -603,6 +673,7 @@ pub mod win_gui {
         pub(crate) tray_hwnd: Mutex<isize>,
         pub(crate) pill_hwnd: Mutex<isize>,
         pub(crate) toast_buf: Mutex<Option<(String, String, bool)>>,
+        pub(crate) review_buf: Mutex<Option<(crate::composer::ReviewRequest, bool)>>,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -859,6 +930,10 @@ pub mod win_gui {
         hover_tracking: bool,
         drag: Option<(i32, i32, bool)>,
         timer_on: bool,
+        /// Interval of the running animation timer (16 ms while Quick Fix moves, 33 ms otherwise).
+        timer_ms: u32,
+        /// Action chips of the Fixed pill: window-relative x range and whether it is Deeper (else Undo).
+        chips: Vec<(f32, f32, bool)>,
         visible: bool,
         frames_painted: u64,
     }
@@ -921,6 +996,7 @@ pub mod win_gui {
     }
 
     /// What the listener should show for the current model.
+    #[derive(Clone)]
     struct PillView {
         kind: PillKind,
         label: String,
@@ -977,12 +1053,78 @@ pub mod win_gui {
         }
     }
 
+    /// The Quick Fix pill and its motion for this instant, or `None` when the listener shows its usual state.
+    struct QuickFixView {
+        view: PillView,
+        tertiary: String,
+        /// The label at its final count, so the window keeps one width while the number rolls.
+        sizing_label: String,
+        pop: f32,
+        tick: f32,
+        /// Logical-pixel offsets of the whole window (shake, nod).
+        dx: f32,
+        dy: f32,
+        moving: bool,
+    }
+
+    fn quick_fix_view(snap: &SharedUiModel, reduced: bool) -> Option<QuickFixView> {
+        let qf = snap.quick_fix.as_ref().filter(|q| q.is_active())?;
+        if !matches!(snap.state, EngineState::Idle) {
+            return None;
+        }
+        // Reduced motion: every curve at its resting value (the content cross-fade still applies).
+        let ms = if reduced { f32::INFINITY } else { qf.since.elapsed().as_secs_f32() * 1000.0 };
+        let moving = ms < motion::SETTLE_MS;
+        let plain = |kind, label: &str| QuickFixView {
+            view: PillView { kind, label: label.to_string(), secondary: String::new() },
+            tertiary: String::new(),
+            sizing_label: String::new(),
+            pop: 0.0,
+            tick: 1.0,
+            dx: 0.0,
+            dy: 0.0,
+            moving: false,
+        };
+        let fixed = |shown: u32, total: u32, tick: f32, chips: bool, deeper: bool| QuickFixView {
+            view: PillView {
+                kind: PillKind::Fixed,
+                label: fixed_label(shown),
+                secondary: if chips { "Undo".into() } else { String::new() },
+            },
+            tertiary: if chips && deeper { "Deeper".into() } else { String::new() },
+            sizing_label: fixed_label(total),
+            pop: motion::pop(ms),
+            tick,
+            dx: 0.0,
+            dy: 0.0,
+            moving,
+        };
+        Some(match &qf.stage {
+            QuickFixStage::Working => plain(PillKind::Fixing, "Fixing"),
+            QuickFixStage::Fixed { changes, can_deepen } => {
+                fixed(motion::count_up(ms, *changes), *changes, motion::tick(ms), true, *can_deepen)
+            }
+            QuickFixStage::Undone { changes } if ms < motion::TICK_MS => {
+                fixed(motion::count_down(ms, *changes), *changes, motion::tick_unwind(ms), false, false)
+            }
+            QuickFixStage::Undone { .. } => plain(PillKind::Notice, "Undone"),
+            QuickFixStage::LooksGood => QuickFixView {
+                tick: motion::tick(ms),
+                dy: motion::nod(ms),
+                moving,
+                ..plain(PillKind::Done, "Looks good")
+            },
+            QuickFixStage::Notice(text) => plain(PillKind::Notice, text),
+            QuickFixStage::Refused(text) => QuickFixView { dx: motion::shake(ms), moving, ..plain(PillKind::Error, text) },
+        })
+    }
+
     fn label_px(scale: f32) -> i32 {
         (12.5 * scale).round() as i32
     }
 
     fn needs_frames(kind: PillKind) -> bool {
-        matches!(kind, PillKind::Listening | PillKind::Processing)
+        matches!(kind, PillKind::Listening | PillKind::Processing | PillKind::Fixing)
     }
 
     /// Recomputes the target, (re)starts or stops the animation timer and paints one frame.
@@ -1037,10 +1179,20 @@ pub mod win_gui {
                 pill.last_scale = scale;
             }
             let reduced = reduced_motion();
-            let view = pill_view(&snap, pill.hovered && pill.drag.is_none());
+            let qf = quick_fix_view(&snap, reduced);
+            let view = match &qf {
+                Some(q) => q.view.clone(),
+                None => pill_view(&snap, pill.hovered && pill.drag.is_none()),
+            };
+            let (tertiary_text, sizing_text, pop, tick, dx, dy, qf_moving) = match &qf {
+                Some(q) => (q.tertiary.clone(), q.sizing_label.clone(), q.pop, q.tick, q.dx, q.dy, q.moving),
+                None => (String::new(), String::new(), 0.0, 1.0, 0.0, 0.0, false),
+            };
+            // A rolling count keeps one change key, so the content does not re-fade on every frame.
+            let change_key = if sizing_text.is_empty() { view.label.clone() } else { sizing_text.clone() };
             let now = Instant::now();
 
-            if view.kind != pill.last_kind || view.label != pill.last_label {
+            if view.kind != pill.last_kind || change_key != pill.last_label {
                 if view.kind != pill.last_kind {
                     pill.state_since = now;
                     if view.kind == PillKind::Listening {
@@ -1049,7 +1201,7 @@ pub mod win_gui {
                 }
                 pill.content_since = now;
                 pill.last_kind = view.kind;
-                pill.last_label = view.label.clone();
+                pill.last_label = change_key;
             }
             if view.kind == PillKind::Listening && from_timer {
                 pill.tick = pill.tick.wrapping_add(1);
@@ -1069,12 +1221,29 @@ pub mod win_gui {
             } else {
                 with_mask(&view.label, px, weight, |m| (m.w, m.h, m.cov.clone()))
             };
+            let sec_weight = if view.kind == PillKind::Fixed { 600 } else { 400 };
             let (sw, sh, scov) = if view.secondary.is_empty() {
                 (0, 0, Vec::new())
             } else {
-                with_mask(&view.secondary, px, 400, |m| (m.w, m.h, m.cov.clone()))
+                with_mask(&view.secondary, px, sec_weight, |m| (m.w, m.h, m.cov.clone()))
             };
-            let target_w = pill_window_width(scale, view.kind, lw, sw) as f32;
+            let (tw, th, tcov) = if tertiary_text.is_empty() {
+                (0, 0, Vec::new())
+            } else {
+                with_mask(&tertiary_text, px, sec_weight, |m| (m.w, m.h, m.cov.clone()))
+            };
+            // The rolling label is padded to the width of the final one, so the chips never drift.
+            let (lw, lcov) = if sizing_text.is_empty() {
+                (lw, lcov)
+            } else {
+                let final_w = with_mask(&sizing_text, px, weight, |m| m.w).max(lw);
+                let mut padded = vec![0u8; final_w * lh];
+                for row in 0..lh {
+                    padded[row * final_w..row * final_w + lw].copy_from_slice(&lcov[row * lw..(row + 1) * lw]);
+                }
+                (final_w, padded)
+            };
+            let target_w = pill_window_width(scale, view.kind, lw, sw, tw) as f32;
             if (target_w - pill.to_w).abs() > 0.5 {
                 pill.from_w = pill.cur_w;
                 pill.to_w = target_w;
@@ -1089,12 +1258,23 @@ pub mod win_gui {
             };
             let fade_t =
                 if reduced { 1.0 } else { now.duration_since(pill.content_since).as_secs_f32() * 1000.0 / FADE_MS };
-            let tweening = tween_t < 1.0 || fade_t < 1.0;
+            let tweening = tween_t < 1.0 || fade_t < 1.0 || qf_moving;
 
             let w = pill.cur_w.round().max(8.0) as usize;
             let h = PillMetrics::for_scale(scale).window_height();
             let lbl = (lw > 0).then_some(TextMask { width: lw, height: lh, coverage: &lcov });
             let sec = (sw > 0).then_some(TextMask { width: sw, height: sh, coverage: &scov });
+            let ter = (tw > 0).then_some(TextMask { width: tw, height: th, coverage: &tcov });
+            pill.chips = if view.kind == PillKind::Fixed {
+                let acts = [(sw > 0).then_some(false), (tw > 0).then_some(true)];
+                fixed_chips(scale, lw, [sw, tw])
+                    .into_iter()
+                    .zip(acts.into_iter().flatten())
+                    .map(|((x0, x1), deeper)| (x0, x1, deeper))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let levels: Vec<f32> = pill.levels.iter().copied().collect();
             let phase = if reduced { 0.35 } else { now.duration_since(pill.state_since).as_secs_f32() };
             let frame = PillFrame {
@@ -1104,6 +1284,9 @@ pub mod win_gui {
                 phase,
                 label: lbl,
                 secondary: sec,
+                tertiary: ter,
+                pop,
+                tick,
                 opacity: 1.0,
                 content_opacity: ease_out_cubic(fade_t),
             };
@@ -1113,7 +1296,8 @@ pub mod win_gui {
             let wa = work_area_at(pill.cx, pill.top + h as i32 / 2);
             let x = (pill.cx - w as i32 / 2).clamp(wa.left, (wa.right - w as i32).max(wa.left));
             let y = pill.top.clamp(wa.top, (wa.bottom - h as i32).max(wa.top));
-            present_layered(hwnd, &bgra, w as i32, h as i32, x, y);
+            let (ox, oy) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
+            present_layered(hwnd, &bgra, w as i32, h as i32, x + ox, y + oy);
             pill.frames_painted += 1;
             if !pill.visible {
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -1127,10 +1311,21 @@ pub mod win_gui {
                     SetTimer(hwnd, IDT_HOVER_COLLAPSE, (left as u32).max(30) + 20, None);
                 }
             }
-            let animate = tweening || (needs_frames(view.kind) && !(reduced && view.kind == PillKind::Processing));
-            if animate && !pill.timer_on {
-                SetTimer(hwnd, IDT_PILL_ANIM, 33, None);
+            if let Some(left) = snap
+                .quick_fix
+                .as_ref()
+                .and_then(|q| q.visible_ms().map(|ms| ms.saturating_sub(q.since.elapsed().as_millis())))
+            {
+                SetTimer(hwnd, IDT_QF_EXPIRE, (left as u32).max(30) + 20, None);
+            }
+            let animate = tweening
+                || (needs_frames(view.kind) && !(reduced && matches!(view.kind, PillKind::Processing | PillKind::Fixing)));
+            // 60 frames a second only while Quick Fix moves; the waveform and the width tween stay at 30.
+            let interval = if qf_moving || view.kind == PillKind::Fixing { 16 } else { 33 };
+            if animate && (!pill.timer_on || pill.timer_ms != interval) {
+                SetTimer(hwnd, IDT_PILL_ANIM, interval, None);
                 pill.timer_on = true;
+                pill.timer_ms = interval;
             } else if !animate && pill.timer_on {
                 KillTimer(hwnd, IDT_PILL_ANIM);
                 pill.timer_on = false;
@@ -1173,7 +1368,7 @@ pub mod win_gui {
     /// Persisted position = top-left of the idle circle (stable across DPI and state changes).
     unsafe fn save_pill_anchor(hwnd: HWND) {
         let scale = dpi_scale(hwnd);
-        let idle_w = pill_window_width(scale, PillKind::Idle, 0, 0) as i32;
+        let idle_w = pill_window_width(scale, PillKind::Idle, 0, 0, 0) as i32;
         let pos = PILL.with(|p| p.borrow().as_ref().map(|pill| (pill.cx - idle_w / 2, pill.top)));
         if let Some((x, y)) = pos {
             send(UiAction::SavePillPosition(x, y));
@@ -1184,7 +1379,7 @@ pub mod win_gui {
     unsafe fn snap_to_edges(hwnd: HWND) {
         let scale = dpi_scale(hwnd);
         let h = PillMetrics::for_scale(scale).window_height() as i32;
-        let idle_w = pill_window_width(scale, PillKind::Idle, 0, 0) as i32;
+        let idle_w = pill_window_width(scale, PillKind::Idle, 0, 0, 0) as i32;
         let snap = (18.0 * scale) as i32;
         let margin = (8.0 * scale) as i32;
         PILL.with(|p| {
@@ -1365,10 +1560,23 @@ pub mod win_gui {
                         false
                     }
                 });
+                let click_x = (lparam & 0xFFFF) as u16 as i16 as f32;
+                let (chip, on_fixed) = PILL.with(|p| {
+                    let b = p.try_borrow().ok();
+                    let pill = b.as_ref().and_then(|b| b.as_ref());
+                    (
+                        pill.and_then(|pl| pl.chips.iter().find(|c| click_x >= c.0 && click_x < c.1).map(|c| c.2)),
+                        pill.is_some_and(|pl| pl.last_kind == PillKind::Fixed),
+                    )
+                });
                 if was_drag {
                     snap_to_edges(hwnd);
                     save_pill_anchor(hwnd);
                     pill_refresh(hwnd, false);
+                } else if let Some(deeper) = chip {
+                    send(if deeper { UiAction::QuickFixDeeper } else { UiAction::QuickFixUndo });
+                } else if on_fixed {
+                    // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {
                     let (clickable, ready, is_error, disabled) = {
                         let m = g.model.lock();
@@ -1420,6 +1628,9 @@ pub mod win_gui {
                     }
                 } else if wparam == IDT_PILL_ANIM {
                     pill_refresh(hwnd, true);
+                } else if wparam == IDT_QF_EXPIRE {
+                    KillTimer(hwnd, IDT_QF_EXPIRE);
+                    pill_refresh(hwnd, false);
                 }
                 0
             }
@@ -1553,6 +1764,14 @@ pub mod win_gui {
                 }
                 0
             }
+            WM_SHOW_REVIEW => {
+                if let Some(g) = GUI_GLOBALS.get() {
+                    if let Some((req, first_use)) = g.review_buf.lock().take() {
+                        crate::composer::open_review(req, first_use);
+                    }
+                }
+                0
+            }
             WM_ALREADY_RUNNING => {
                 crate::settings::open(None);
                 0
@@ -1643,6 +1862,12 @@ pub mod win_gui {
             self.post_sync();
         }
 
+        /// Shows the Quick Fix stage on the listener (it only appears while the engine is idle).
+        pub fn quick_fix(&self, stage: QuickFixStage) {
+            self.model.lock().quick_fix = Some(QuickFixPill::new(stage));
+            self.post_sync();
+        }
+
         /// Records what happened to the dictation; call before `sync(ReadyToPaste)`.
         pub fn set_outcome(&self, outcome: ReadyOutcome) {
             self.model.lock().last_outcome = Some(outcome);
@@ -1700,6 +1925,16 @@ pub mod win_gui {
             }
         }
 
+        /// Opens the Review panel with `request`; `first_use` shows the one-time explanation first.
+        pub fn show_review(&self, request: crate::composer::ReviewRequest, first_use: bool) {
+            if let Some(g) = GUI_GLOBALS.get() {
+                *g.review_buf.lock() = Some((request, first_use));
+            }
+            unsafe {
+                let _ = PostMessageW(self.tray_hwnd as HWND, WM_SHOW_REVIEW, 0, 0);
+            }
+        }
+
         pub fn open_settings(&self) {
             unsafe {
                 let _ = PostMessageW(self.tray_hwnd as HWND, WM_COMMAND, IDM_OPEN_SETTINGS, 0);
@@ -1737,6 +1972,7 @@ pub mod win_gui {
             last_outcome: None,
             hint: None,
             processing_note: None,
+            quick_fix: None,
         }));
 
         let _ = GUI_GLOBALS.set(WinGuiGlobals {
@@ -1745,6 +1981,7 @@ pub mod win_gui {
             tray_hwnd: Mutex::new(0),
             pill_hwnd: Mutex::new(0),
             toast_buf: Mutex::new(None),
+            review_buf: Mutex::new(None),
         });
 
         unsafe {
@@ -1770,6 +2007,7 @@ pub mod win_gui {
             reg_class(TRAY_WINDOW_CLASS, Some(tray_wnd_proc));
             reg_class(OVERLAY_WINDOW_CLASS, Some(pill_wnd_proc));
             crate::settings::register_class();
+            crate::composer::register_class();
 
             let tray_cls = to_wide(TRAY_WINDOW_CLASS);
             let tray_hwnd = CreateWindowExW(
@@ -1822,7 +2060,7 @@ pub mod win_gui {
                     }
                     _ => dpi_scale(pill_hwnd),
                 };
-                let idle_w0 = pill_window_width(scale0, PillKind::Idle, 0, 0) as i32;
+                let idle_w0 = pill_window_width(scale0, PillKind::Idle, 0, 0, 0) as i32;
                 let (cx, top) = match initial_cfg.floating_pill_pos {
                     Some((sx, sy))
                         if !MonitorFromPoint(POINT { x: sx + idle_w0 / 2, y: sy + 4 }, MONITOR_DEFAULTTONULL)
@@ -1852,6 +2090,8 @@ pub mod win_gui {
                         hover_tracking: false,
                         drag: None,
                         timer_on: false,
+                        timer_ms: 33,
+                        chips: Vec::new(),
                         visible: false,
                         frames_painted: 0,
                     })

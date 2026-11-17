@@ -378,7 +378,7 @@ impl HotkeySpec {
             return Some("Alt + Tab and Alt + F4 are reserved Windows window-management shortcuts.".to_string());
         }
         if self.ctrl && !self.alt && !self.shift && !self.win && matches!(self.vk, 0x43 | 0x56 | 0x58 | 0x5A) {
-            return Some("Standard editing shortcuts (Ctrl+C/V/X/Z) cannot be used as a global dictation trigger.".to_string());
+            return Some("Ctrl + C, V, X and Z are the editing shortcuts every app needs. Pick another chord.".to_string());
         }
         None
     }

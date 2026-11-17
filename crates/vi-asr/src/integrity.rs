@@ -83,6 +83,20 @@ const WHISPER_SMALL_EN: &[FilePin] = &[
     FilePin { relative: "small.en-tokens.txt", size: 835_554, sha256: "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930" },
 ];
 
+const GECTOR_BERT_EN_INT8: &[FilePin] = &[
+    FilePin { relative: "LICENSE", size: 11_358, sha256: "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+    FilePin { relative: "NOTICE", size: 381, sha256: "5aa2310e15ea2f48e7f36ac1c581a6f8109dfc3ebff6c9745f60bfef7124a269" },
+    FilePin { relative: "config.json", size: 157_469, sha256: "d008874db157abe63587a49efe92422cffbbbca88df80da46b21a8fae39eefeb" },
+    FilePin { relative: "gector-guards.json", size: 6_703, sha256: "6e565ee87f0ecc99859342321175737ced5d9d0cc9475644d995da19d8adcdf8" },
+    FilePin { relative: "gector-meta.json", size: 986, sha256: "1be9bc98d5a9e8b0c24b24490b488878b2f709b696f1cb18d50ee48560f1b30d" },
+    FilePin { relative: "language-rules.json", size: 1_074, sha256: "11e0c0a7501db23e1a67193236cc377b57a883693fabe5e6d3fa85a996b95228" },
+    FilePin { relative: "model.onnx", size: 112_377_233, sha256: "f57c654b8f4d65925501de51520618a9f28da65fe685472e2ac7a4029586659d" },
+    FilePin { relative: "tokenizer.json", size: 668_923, sha256: "343989712a36cd8b253efeaf8baf6a08b9d2583f78e395e83832e8ee9f8d8ee1" },
+    FilePin { relative: "tokenizer_config.json", size: 352, sha256: "9cd988573a9588a6085cd353eeefa09b803dba75b03f58d0c1d302aad3078193" },
+    FilePin { relative: "verb-form-vocab.txt", size: 4_390_076, sha256: "5906804ec8a1acd8cbfc2918522bf429ce5edded8bbc46ffc2be861d280d3abf" },
+    FilePin { relative: "vocab.txt", size: 213_450, sha256: "eeaa9875b23b04b4c54ef759d03db9d1ba1554838f8fb26c5d96fa551df93d02" },
+];
+
 pub const SILERO_VAD_SIZE: u64 = 643_854;
 pub const SILERO_VAD_SHA256: &str = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6";
 
@@ -98,6 +112,7 @@ pub fn pins_for(model_id: &str) -> Option<&'static [FilePin]> {
         "moonshine-base-en-int8" | "sherpa-onnx-moonshine-base-en-int8" => MOONSHINE_BASE,
         "sense-voice-small-int8" | "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17" => SENSE_VOICE,
         "whisper-small.en-int8" | "sherpa-onnx-whisper-small.en" => WHISPER_SMALL_EN,
+        "gector-bert-en-int8" => GECTOR_BERT_EN_INT8,
         _ => return None,
     };
     if pins.is_empty() {
@@ -430,6 +445,37 @@ pub fn install_verified_archive(archive: &Path, models_root: &Path, model_id: &s
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn grammar_model_is_pinned_with_its_licence_and_kept_out_of_speech_models() {
+        let pins = pins_for("gector-bert-en-int8").unwrap();
+        for f in ["LICENSE", "NOTICE", "model.onnx", "vocab.txt", "config.json", "verb-form-vocab.txt"] {
+            assert!(pins.iter().any(|p| p.relative == f), "{f}");
+        }
+        assert!(find_model_spec("gector-bert-en-int8").is_some());
+        assert!(!crate::catalog::ASR_CATALOG.iter().any(|m| m.id == "gector-bert-en-int8"));
+    }
+
+    /// Installs the real release archive (KR_GECTOR_ARCHIVE=path) into a temp models root, then
+    /// tampers with the installed model and checks it is refused and quarantined.
+    #[test]
+    #[ignore]
+    fn grammar_archive_installs_and_tampering_is_refused() {
+        let archive = std::env::var("KR_GECTOR_ARCHIVE").expect("set KR_GECTOR_ARCHIVE");
+        let root = std::env::temp_dir().join(format!("kr-gector-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let copy = root.join("a.tar.bz2");
+        fs::copy(&archive, &copy).unwrap();
+        let dir = install_verified_archive(&copy, &root, "gector-bert-en-int8").unwrap();
+        assert!(prepare_installed_model(&root, "gector-bert-en-int8").is_ok());
+        let mut f = fs::OpenOptions::new().append(true).open(dir.join("vocab.txt")).unwrap();
+        f.write_all(b"x").unwrap();
+        drop(f);
+        assert!(prepare_installed_model(&root, "gector-bert-en-int8").is_err());
+        assert!(!dir.exists(), "tampered model must be quarantined");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     fn pin_slice() -> [(&'static str, u64, &'static str); 1] {
         [("model.bin", 4, "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589")]

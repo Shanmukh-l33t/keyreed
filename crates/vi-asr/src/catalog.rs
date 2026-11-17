@@ -16,6 +16,8 @@ pub enum AsrArchitecture {
     MoonshineV2,
     SenseVoice,
     Whisper,
+    /// Not a speech model: the Quick Fix grammar tagger (GECToR), installed by the same verified path.
+    GectorTagger,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,8 +117,25 @@ pub const ASR_CATALOG: &[AsrModelSpec] = &[
     },
 ];
 
+/// Quick Fix grammar models: downloaded, verified and installed exactly like the speech models.
+/// The archive is KeyReed's own mirror of the int8 quantisation of `proofbird/gector-bert-en`
+/// (Apache-2.0; LICENSE and NOTICE are inside the archive).
+pub const GRAMMAR_CATALOG: &[AsrModelSpec] = &[AsrModelSpec {
+    id: "gector-bert-en-int8",
+    display_name: "Grammar tagger (GECToR BERT, INT8, English)",
+    architecture: AsrArchitecture::GectorTagger,
+    folder_name: "gector-bert-en-int8",
+    download_url: "https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.0.0-beta.1/gector-bert-en-int8.tar.bz2",
+    expected_sha256: "5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0",
+    approx_download_mb: 70,
+    approx_ram_mb: 250,
+    languages: "en",
+    license: "Apache-2.0",
+    supports_hotwords: false,
+}];
+
 pub fn find_model_spec(id: &str) -> Option<&'static AsrModelSpec> {
-    ASR_CATALOG.iter().find(|m| m.id == id || m.folder_name == id)
+    ASR_CATALOG.iter().chain(GRAMMAR_CATALOG).find(|m| m.id == id || m.folder_name == id)
 }
 
 /// Validates a relative archive path against zip-slip, parent traversal, and symlink attacks
@@ -361,7 +380,7 @@ mod tests {
     #[test]
     fn every_catalog_entry_is_https_and_sha256_pinned() {
         assert!(!ASR_CATALOG.is_empty());
-        for m in ASR_CATALOG {
+        for m in ASR_CATALOG.iter().chain(GRAMMAR_CATALOG) {
             assert!(
                 m.download_url.starts_with("https://"),
                 "{} URL is not HTTPS: {}",

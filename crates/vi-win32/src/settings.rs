@@ -19,7 +19,8 @@ use crate::ui::{
 use std::cell::RefCell;
 use std::time::Instant;
 use vi_core::brand::{PRODUCT_NAME, PRODUCT_TAGLINE, SETTINGS_WINDOW_CLASS, VERSION_STR};
-use vi_core::{ActivationMode, AppConfig, EngineState, OutputMode, ProcessingProfile, WritingMode};
+use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
+use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
@@ -85,6 +86,7 @@ const D_HOTKEY: i32 = 301;
 const D_HOLD: i32 = 302;
 const D_TOGGLE: i32 = 303;
 const D_PTT: i32 = 304;
+const D_QF_KEY: i32 = 305;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
 const W_VOCAB: i32 = 411;
@@ -130,34 +132,34 @@ const WM_MOUSELEAVE_U: u32 = 0x02A3;
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct Theme {
-    bg: u32,
-    sidebar: u32,
-    surface: u32,
-    border: u32,
+pub(crate) struct Theme {
+    pub(crate) bg: u32,
+    pub(crate) sidebar: u32,
+    pub(crate) surface: u32,
+    pub(crate) border: u32,
     /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
-    control_border: u32,
-    divider: u32,
-    text: u32,
-    text2: u32,
-    text3: u32,
-    accent: u32,
-    accent_fill: u32,
-    accent_press: u32,
-    accent_soft: u32,
-    hover: u32,
-    hover_card: u32,
-    on_accent: u32,
-    warn_fg: u32,
-    warn_bg: u32,
-    err_fg: u32,
-    err_bg: u32,
-    ok_fg: u32,
-    ok_bg: u32,
-    track: u32,
-    disabled_bg: u32,
-    focus: u32,
-    hc: bool,
+    pub(crate) control_border: u32,
+    pub(crate) divider: u32,
+    pub(crate) text: u32,
+    pub(crate) text2: u32,
+    pub(crate) text3: u32,
+    pub(crate) accent: u32,
+    pub(crate) accent_fill: u32,
+    pub(crate) accent_press: u32,
+    pub(crate) accent_soft: u32,
+    pub(crate) hover: u32,
+    pub(crate) hover_card: u32,
+    pub(crate) on_accent: u32,
+    pub(crate) warn_fg: u32,
+    pub(crate) warn_bg: u32,
+    pub(crate) err_fg: u32,
+    pub(crate) err_bg: u32,
+    pub(crate) ok_fg: u32,
+    pub(crate) ok_bg: u32,
+    pub(crate) track: u32,
+    pub(crate) disabled_bg: u32,
+    pub(crate) focus: u32,
+    pub(crate) hc: bool,
 }
 
 #[repr(C)]
@@ -167,7 +169,7 @@ struct HighContrastW {
     scheme: *mut u16,
 }
 
-fn high_contrast_on() -> bool {
+pub(crate) fn high_contrast_on() -> bool {
     unsafe {
         let mut hc = HighContrastW { cb_size: std::mem::size_of::<HighContrastW>() as u32, dw_flags: 0, scheme: std::ptr::null_mut() };
         let ok = SystemParametersInfoW(0x0042, hc.cb_size, &mut hc as *mut _ as *mut _, 0);
@@ -180,7 +182,7 @@ static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
 /// Re-reads which colour scheme Settings should use: Windows "Choose your default app mode"
 /// (HKCU\...\Themes\Personalize\AppsUseLightTheme). If the value is missing or unreadable the
 /// light theme is used. `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
-fn refresh_dark_mode() {
+pub(crate) fn refresh_dark_mode() {
     let forced = std::env::var("KEYREED_UI_THEME").ok();
     let dark = match forced.as_deref() {
         Some("dark") => true,
@@ -200,7 +202,7 @@ fn system_apps_use_dark() -> bool {
     rc == 0 && data == 0
 }
 
-fn theme() -> Theme {
+pub(crate) fn theme() -> Theme {
     if high_contrast_on() {
         use windows_sys::Win32::Graphics::Gdi::GetSysColor;
         unsafe {
@@ -308,7 +310,7 @@ fn theme() -> Theme {
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum F {
+pub(crate) enum F {
     Display,
     Title,
     Body,
@@ -322,12 +324,12 @@ enum F {
     Brand,
 }
 
-struct Fonts {
+pub(crate) struct Fonts {
     list: Vec<(F, HFONT)>,
 }
 
 impl Fonts {
-    unsafe fn new(dpi: u32) -> Fonts {
+    pub(crate) unsafe fn new(dpi: u32) -> Fonts {
         let s = dpi as f32 / 96.0;
         let face = ui_font_face();
         let display_face = if face.starts_with("Segoe UI Variable") { "Segoe UI Variable Display" } else { "Segoe UI" };
@@ -353,7 +355,7 @@ impl Fonts {
         }
     }
 
-    fn get(&self, f: F) -> HFONT {
+    pub(crate) fn get(&self, f: F) -> HFONT {
         self.list.iter().find(|(k, _)| *k == f).map(|(_, h)| *h).unwrap_or(std::ptr::null_mut())
     }
 }
@@ -469,6 +471,8 @@ enum Kind {
     Button { style: BtnStyle, label: String },
     Combo { items: Vec<String>, sel: usize },
     Edit { text: String, password: bool, multiline: bool, cue: String },
+    /// "Press your shortcut" field: shows `spec` as keycaps; Space or a click starts a capture.
+    Shortcut { spec: HotkeySpec, role: ShortcutRole },
 }
 
 impl Kind {
@@ -480,6 +484,7 @@ impl Kind {
             Kind::Button { .. } => 3,
             Kind::Combo { .. } => 4,
             Kind::Edit { .. } => 5,
+            Kind::Shortcut { .. } => 6,
         }
     }
 }
@@ -599,6 +604,23 @@ impl Builder {
         self.ctrl(id, Kind::Combo { items, sel }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &name);
     }
 
+    /// A shortcut row: the capture field on the right, and below the label the refusal from the last capture, the
+    /// configured chord's warning, or `desc`.
+    fn shortcut_row(&mut self, id: i32, label: &str, desc: &str, cfg: &AppConfig, role: ShortcutRole) {
+        let w = 220;
+        let spec = cfg.shortcut(role).clone();
+        let refusal = SHORTCUT_REFUSAL.with(|n| n.borrow().as_ref().filter(|(i, _)| *i == id).map(|(_, m)| m.clone()));
+        let (desc, color) = match (refusal, cfg.shortcut_problem(role, &spec)) {
+            (Some(m), _) => (m, C::Err),
+            (None, Some(p)) => (p.message, C::Warn),
+            (None, None) => (desc.to_string(), C::Text2),
+        };
+        let wrap = desc.chars().count() as i32 * 6 > CW - 2 * PAD - w - 20;
+        let (y0, h) = self.row_ex(label, &desc, color, w, wrap);
+        let name = format!("{label}: {}. Press Space to change it.", spec.display_name);
+        self.ctrl(id, Kind::Shortcut { spec, role }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &name);
+    }
+
     fn choice(&mut self, id: i32, rr: R, title: &str, desc: &str, selected: bool) {
         self.ctrl(
             id,
@@ -658,6 +680,10 @@ fn toggle_progress(st: &St, id: i32) -> f32 {
 thread_local! {
     static ST: RefCell<Option<St>> = const { RefCell::new(None) };
     static LAST_PAGE: std::cell::Cell<usize> = const { std::cell::Cell::new(PAGE_GENERAL) };
+    /// The shortcut capture in progress: the field's control id and its state.
+    static CAPTURE: RefCell<Option<(i32, ShortcutCapture)>> = const { RefCell::new(None) };
+    /// Why the last captured chord was refused; shown under that row until the next capture.
+    static SHORTCUT_REFUSAL: RefCell<Option<(i32, String)>> = const { RefCell::new(None) };
 }
 
 /// Window DPI, honouring the gallery's scale override.
@@ -834,6 +860,33 @@ pub fn show_page_for_test(page: usize, step: usize) {
         }
     });
     navigate(page);
+}
+
+/// Gallery hook for the Quick Fix shortcut field on the Dictation page: 0 = recording, nothing held yet;
+/// 1 = recording with Ctrl and Win held; 2 = Ctrl + C was pressed and refused; anything else = back to normal.
+pub fn shortcut_capture_for_test(step: u8) {
+    match step {
+        0 => start_capture(D_QF_KEY),
+        1 => {
+            start_capture(D_QF_KEY);
+            CAPTURE.with(|c| {
+                if let Some((_, cap)) = c.borrow_mut().as_mut() {
+                    cap.key(0xA2, true, false);
+                    cap.key(0x5B, true, false);
+                }
+            });
+            unsafe { InvalidateRect(GetDlgItem(hwnd(), D_QF_KEY), std::ptr::null(), 0) };
+        }
+        2 => {
+            start_capture(D_QF_KEY);
+            end_capture(D_QF_KEY, Some(vi_core::shortcut::chord(true, false, false, false, 0x43)));
+        }
+        _ => {
+            end_capture(D_QF_KEY, None);
+            SHORTCUT_REFUSAL.with(|n| *n.borrow_mut() = None);
+            refresh();
+        }
+    }
 }
 
 fn navigate(page: usize) {
@@ -1114,9 +1167,14 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
     b.title("Dictation", "Choose how you start and stop talking.");
     b.section("Shortcut");
     b.group();
-    let (items, sel, note, nc) = hotkey_items(m);
-    b.combo_row(D_HOTKEY, "Push-to-talk shortcut", &note, nc, items, sel, 220);
-    b.toggle_row(D_PTT, "Listen for the shortcut", "Turn off to dictate only with the floating listener.", c.ptt_enabled, true);
+    let note = hotkey_presets()
+        .into_iter()
+        .find(|(p, _)| vi_core::shortcut::same_chord(p, &c.ptt_hotkey))
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| "Your own shortcut. Click the field and press new keys to change it.".into());
+    b.shortcut_row(D_HOTKEY, "Push-to-talk shortcut", &note, c, ShortcutRole::Dictation);
+    b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
+    b.toggle_row(D_PTT, "Listen for the shortcuts", "Turn off to dictate only with the floating listener.", c.ptt_enabled, true);
     b.end_group();
     b.section("How the shortcut works");
     activation_choices(b, m, D_HOLD, D_TOGGLE);
@@ -1440,7 +1498,7 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     let cr = child_rect(c);
     let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - dy, d), sc(cr.w, d), sc(cr.h, d));
     let (cls, style, ex, text): (&str, u32, u32, String) = match &c.kind {
-        Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } | Kind::Combo { .. } => {
+        Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } | Kind::Combo { .. } | Kind::Shortcut { .. } => {
             ("BUTTON", 0x0B /* BS_OWNERDRAW */ | WS_TABSTOP, 0, c.name.clone())
         }
         Kind::Edit { text, password, multiline, .. } => {
@@ -1474,7 +1532,13 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
             }
         }
         _ => {
-            SetWindowSubclass(hwnd, Some(btn_subclass), 1, matches!(c.kind, Kind::Combo { .. }) as usize);
+            // Reference data: 1 = drop-down field, 2 = shortcut capture field.
+            let kind = match c.kind {
+                Kind::Combo { .. } => 1,
+                Kind::Shortcut { .. } => 2,
+                _ => 0,
+            };
+            SetWindowSubclass(hwnd, Some(btn_subclass), 1, kind);
         }
     }
     if !c.enabled {
@@ -2050,6 +2114,53 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             let nudge = if pressed { s(1) } else { 0 };
             cv.text("\u{E70D}", w - s(32), nudge, s(20), h, st.fonts.get(F::IconSmall), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
+        Kind::Shortcut { spec, .. } => {
+            // `capture`: None when idle; Some(held modifiers, may be empty) while this field is recording.
+            let capture = CAPTURE.with(|k| k.borrow().as_ref().filter(|(i, _)| *i == c.id).map(|(_, s)| s.held_label()));
+            let fill = if disabled { t.disabled_bg } else if capture.is_some() { t.surface } else if pressed { t.hover } else if hot { t.hover_card } else { t.bg };
+            cv.round_rect(0.0, 0.0, wf, hf, rad, fill, 1.0);
+            match capture {
+                Some(_) => cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.5 * d as f32 / 96.0, t.accent_fill, 1.0),
+                None => cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, if disabled { t.border } else { t.control_border }, 1.0),
+            }
+            let right_w = s(capture.as_ref().map_or(28, |_| 84));
+            let (text, more) = match &capture {
+                None => (spec.display_name.clone(), false),
+                Some(held) if held.is_empty() => (String::new(), false),
+                Some(held) => (held.trim_end_matches(" + ...").to_string(), true),
+            };
+            let f = st.fonts.get(F::CaptionSemi);
+            let parts: Vec<&str> = if text.is_empty() { Vec::new() } else { text.split(" + ").collect() };
+            let (pad, gap, kh) = (s(8), s(4), s(22));
+            let widths: Vec<i32> = parts.iter().map(|p| text_width(p, f) + 2 * pad).collect();
+            let total: i32 = widths.iter().sum::<i32>() + gap * parts.len().saturating_sub(1) as i32;
+            let mut x = s(8);
+            if parts.is_empty() {
+                cv.text("Press your shortcut", x, 0, w - right_w - x, h, st.fonts.get(F::Body), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            } else if total > w - right_w - x {
+                cv.text(&text, x, 0, w - right_w - x, h, st.fonts.get(F::Body), t.text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            } else {
+                // Each key as a small keycap, the same look as the keycaps elsewhere on the page.
+                let ky = (h - kh) / 2;
+                for (p, kw) in parts.iter().zip(&widths) {
+                    let (fx, fy, fw, fh, r6) = (x as f32, ky as f32, *kw as f32, kh as f32, s(5) as f32);
+                    cv.round_rect(fx, fy, fw, fh, r6, t.border, 1.0);
+                    cv.round_rect(fx, fy, fw, fh - s(2) as f32, r6, t.surface, 1.0);
+                    cv.round_rect_stroke(fx, fy, fw, fh, r6, 1.0, t.border, 1.0);
+                    cv.text(p, x, ky, *kw, kh - s(2), f, if disabled { t.text3 } else { t.text }, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                    x += kw + gap;
+                }
+                if more {
+                    cv.text("+ …", x, 0, s(44), h, st.fonts.get(F::Body), t.text2, DT_SINGLELINE | DT_VCENTER);
+                }
+            }
+            if capture.is_some() {
+                cv.text("Esc cancels", w - right_w, 0, right_w - s(10), h, st.fonts.get(F::Caption), t.text3, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+            } else {
+                // Pencil (Segoe Fluent Icons / MDL2 Edit).
+                cv.text("\u{E70F}", w - right_w, 0, right_w - s(6), h, st.fonts.get(F::IconSmall), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            }
+        }
         _ => {}
     }
     if focus {
@@ -2260,6 +2371,7 @@ fn on_command(id: i32, code: u32) {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
         }
+        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) => start_capture(id),
         (D_HOTKEY, _, CBN_SELCHANGE) | (S_HOTKEY, _, CBN_SELCHANGE) => {
             if let Some((spec, _)) = hotkey_presets().get(combo_sel(id)) {
                 let spec = spec.clone();
@@ -2413,11 +2525,106 @@ fn finish_setup(finished: bool) {
 // Window procedures
 // ------------------------------------------------------------------------------------------------
 
+/// Left/right-specific virtual key of a key message: the capture keeps "Right Ctrl" apart from Ctrl.
+fn specific_vk(wparam: WPARAM, lparam: LPARAM) -> u16 {
+    let extended = (lparam >> 24) & 1 != 0;
+    match wparam as u16 {
+        0x11 => if extended { 0xA3 } else { 0xA2 },
+        0x12 => if extended { 0xA5 } else { 0xA4 },
+        0x10 => if (lparam >> 16) & 0xFF == 0x36 { 0xA1 } else { 0xA0 },
+        vk => vk,
+    }
+}
+
+fn capturing(id: i32) -> bool {
+    CAPTURE.with(|c| c.borrow().as_ref().is_some_and(|(i, _)| *i == id))
+}
+
+fn shortcut_role_of(id: i32) -> Option<ShortcutRole> {
+    ST.with(|s| {
+        s.try_borrow().ok()?.as_ref()?.ctrls.iter().find_map(|(c, _)| match &c.kind {
+            Kind::Shortcut { role, .. } if c.id == id => Some(*role),
+            _ => None,
+        })
+    })
+}
+
+/// Starts recording a chord into the field `id`. KeyReed's own shortcuts are paused meanwhile, so pressing the
+/// current dictation chord does not start a recording.
+fn start_capture(id: i32) {
+    SHORTCUT_REFUSAL.with(|n| *n.borrow_mut() = None);
+    CAPTURE.with(|c| *c.borrow_mut() = Some((id, ShortcutCapture::default())));
+    crate::hotkey::set_capture_active(true);
+    unsafe {
+        let h = GetDlgItem(hwnd(), id);
+        SetFocus(h);
+        InvalidateRect(h, std::ptr::null(), 0);
+    }
+    refresh();
+}
+
+/// Ends the capture in `id`: saves `chord` unless a rule refuses it (the reason then shows under the row).
+fn end_capture(id: i32, chord: Option<HotkeySpec>) {
+    if !capturing(id) {
+        return;
+    }
+    CAPTURE.with(|c| *c.borrow_mut() = None);
+    crate::hotkey::set_capture_active(false);
+    if let (Some(spec), Some(role), Some(m)) = (chord, shortcut_role_of(id), snapshot()) {
+        match m.config.shortcut_problem(role, &spec) {
+            Some(p) if p.blocks => SHORTCUT_REFUSAL.with(|n| *n.borrow_mut() = Some((id, p.message))),
+            _ => commit(move |c| match role {
+                ShortcutRole::Dictation => c.ptt_hotkey = spec,
+                ShortcutRole::QuickFix => c.quick_fix_hotkey = spec,
+                ShortcutRole::Composer => c.composer_hotkey = spec,
+            }),
+        }
+    }
+    unsafe { InvalidateRect(GetDlgItem(hwnd(), id), std::ptr::null(), 0) };
+    refresh();
+}
+
+/// Key handling of a shortcut field while it records. Only messages sent to this field are read, so the capture
+/// never sees keys typed anywhere else. `None` = default handling.
+unsafe fn shortcut_field_msg(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    let id = GetDlgCtrlID(h);
+    if !capturing(id) {
+        return None;
+    }
+    match msg {
+        WM_GETDLGCODE => Some(DLGC_WANTALLKEYS as LRESULT),
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
+            let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
+            let dictation = shortcut_role_of(id) == Some(ShortcutRole::Dictation);
+            let step = CAPTURE.with(|c| c.borrow_mut().as_mut().map(|(_, cap)| cap.key(specific_vk(wparam, lparam), down, dictation)));
+            match step {
+                Some(CaptureStep::Done(spec)) => end_capture(id, Some(spec)),
+                Some(CaptureStep::Cancelled) => end_capture(id, None),
+                _ => {
+                    InvalidateRect(h, std::ptr::null(), 0);
+                }
+            }
+            Some(0)
+        }
+        WM_CHAR | WM_SYSCHAR | WM_DEADCHAR | WM_SYSDEADCHAR => Some(0),
+        WM_KILLFOCUS => {
+            end_capture(id, None);
+            None
+        }
+        _ => None,
+    }
+}
+
 unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, is_select: usize) -> LRESULT {
     const VK_UP: usize = 0x26;
     const VK_DOWN: usize = 0x28;
     const VK_F4: usize = 0x73;
-    if is_select != 0 {
+    if is_select == 2 {
+        if let Some(r) = shortcut_field_msg(hwnd, msg, wparam, lparam) {
+            return r;
+        }
+    }
+    if is_select == 1 {
         let id = GetDlgCtrlID(hwnd);
         match msg {
             WM_GETDLGCODE => return DefSubclassProc(hwnd, msg, wparam, lparam) | DLGC_WANTARROWS as LRESULT,
@@ -2711,6 +2918,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_DESTROY => {
+            // A capture never outlives the window: KeyReed's shortcuts must work again.
+            CAPTURE.with(|c| *c.borrow_mut() = None);
+            crate::hotkey::set_capture_active(false);
             ST.with(|s| {
                 if let Some(mut st) = s.borrow_mut().take() {
                     // Never keep a typed-but-unsaved API key around.
@@ -2741,6 +2951,17 @@ mod tests {
     use super::*;
     use crate::ui::{DownloadProgress, MicTestStatus};
 
+    #[test]
+    fn capture_keeps_left_and_right_modifiers_apart() {
+        const EXT: LPARAM = 1 << 24;
+        assert_eq!(specific_vk(0x11, 0), 0xA2);
+        assert_eq!(specific_vk(0x11, EXT), 0xA3);
+        assert_eq!(specific_vk(0x12, EXT), 0xA5);
+        assert_eq!(specific_vk(0x10, 0x36 << 16), 0xA1);
+        assert_eq!(specific_vk(0x10, 0x2A << 16), 0xA0);
+        assert_eq!(specific_vk(0x47, EXT), 0x47);
+    }
+
     fn model() -> SharedUiModel {
         SharedUiModel {
             config: AppConfig::default(),
@@ -2755,6 +2976,7 @@ mod tests {
             last_outcome: None,
             hint: None,
             processing_note: None,
+            quick_fix: None,
         }
     }
 
