@@ -4,6 +4,8 @@
 //! - Runs on its own high-priority message-pump thread (`THREAD_PRIORITY_ABOVE_NORMAL`) so UI rendering or
 //!   model loading NEVER delays `LowLevelKeyboardProc` past Windows' `LowLevelHooksTimeout` (~300 ms).
 //! - Inspects ONLY modifier VK codes, `VK_ESCAPE`, and the configured shortcut VKs: ZERO keystroke logging or buffering.
+//!   One exception: while a modifier-only dictation chord is held, any key-down is seen once as "another key joined"
+//!   (so Right Ctrl + C cancels the recording). Its identity is never stored or logged.
 //! - Injects unassigned `VK_MENU_MASK` (`0xE8`) when `Win` or `Alt` chord triggers so releasing `Win`/`Alt`
 //!   never pops open the Windows Start Menu or app menu bar!
 //! - Dynamically installs and removes (`UnhookWindowsHookEx`) the hook when Push-to-Talk is independently toggled!
@@ -74,6 +76,11 @@ impl HookSharedConfig {
             || (self.mode_cycle_spec.vk != 0 && vk == self.mode_cycle_spec.vk)
             || self.chords.iter().any(|(c, _)| c.vk != 0 && c.vk == vk)
     }
+
+    /// Dictation is a modifier chord (Right Ctrl, Ctrl+Win): a trigger key joining it means a shortcut for another app.
+    fn ptt_modifier_only(&self) -> bool {
+        self.ptt_spec.vk == 0 || is_modifier_vk(self.ptt_spec.vk)
+    }
 }
 
 /// What the hook does with one relevant key event.
@@ -100,10 +107,21 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         mods.ptt_blocked_by_chord = false;
     }
 
+    // A trigger key swallowed on press: swallow its auto-repeats and its release too, so the app never
+    // sees a lone key-up or repeats. Repeats fire nothing new; the release still runs the logic below.
+    if mods.swallowed.contains(&vk) {
+        d.swallow = true;
+        if is_down {
+            return d;
+        }
+        mods.swallowed.retain(|&k| k != vk);
+    }
+
     // Mode cycle chord
     if is_down && !mods.ptt_combo_latched && mods.matches_spec(&cfg.mode_cycle_spec, vk, true) {
         d.events.push(HotkeyEvent::CycleMode);
         d.swallow = true;
+        mods.latch_swallow(vk);
         return d;
     }
 
@@ -127,6 +145,7 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
             });
             d.menu_mask = spec.win || spec.alt;
             d.swallow = !is_modifier_vk(spec.vk);
+            mods.latch_swallow(vk);
             return d;
         }
         if mods.chord_latch & bit != 0 && !mods.still_holding_spec(spec) {
@@ -137,6 +156,20 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         }
     }
 
+    // Another key joined a held modifier-only dictation chord (Right Ctrl + C): it is a shortcut for
+    // another app, so drop the recording and let the key through. No restart until all modifiers are up.
+    if is_down
+        && mods.ptt_combo_latched
+        && cfg.ptt_modifier_only()
+        && !is_modifier_vk(vk)
+        && vk != cfg.cancel_vk
+    {
+        mods.ptt_combo_latched = false;
+        mods.ptt_blocked_by_chord = true;
+        d.events.push(HotkeyEvent::PttSuperseded);
+        return d;
+    }
+
     // Push-to-Talk trigger
     if is_down && !mods.ptt_combo_latched && !mods.ptt_blocked_by_chord && mods.matches_spec(&cfg.ptt_spec, vk, true) {
         mods.ptt_combo_latched = true;
@@ -145,6 +178,9 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         // Suppress non-modifier trigger key so Space/F8 doesn't leak into active document;
         // pass pure modifiers through so standard Ctrl+C / Win+D keep working if pressed differently.
         d.swallow = cfg.ptt_spec.vk != 0 && !matches!(cfg.ptt_spec.vk, 0xA0..=0xA5 | 0x5B | 0x5C);
+        if d.swallow {
+            mods.latch_swallow(vk);
+        }
     } else if mods.ptt_combo_latched && !mods.still_holding_spec(&cfg.ptt_spec) {
         mods.ptt_combo_latched = false;
         d.events.push(HotkeyEvent::PttUp);
@@ -170,11 +206,37 @@ pub struct ModifierState {
     /// An extra chord fired: dictation cannot start until every modifier is released, so a held
     /// Ctrl+Win left over from Ctrl+Win+G never starts a recording on key repeat.
     pub ptt_blocked_by_chord: bool,
+    /// Non-modifier trigger keys whose key-down was swallowed and whose release is still pending.
+    pub swallowed: Vec<u16>,
 }
 
 impl ModifierState {
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Re-reads the eight modifier keys (and held trigger keys) from the OS before each event, because the
+    /// hook never sees the release after Win+L, Ctrl+Alt+Del or a UAC prompt. `current_vk` is the key of the
+    /// event about to be applied, whose own state is left to the event.
+    pub fn resync(&mut self, down: impl Fn(u16) -> bool, current_vk: u16) {
+        self.lctrl = down(0xA2);
+        self.rctrl = down(0xA3);
+        self.lalt = down(0xA4);
+        self.ralt = down(0xA5);
+        self.lshift = down(0xA0);
+        self.rshift = down(0xA1);
+        self.lwin = down(0x5B);
+        self.rwin = down(0x5C);
+        if self.main_vk_down != 0 && self.main_vk_down != current_vk && !down(self.main_vk_down) {
+            self.main_vk_down = 0;
+        }
+        self.swallowed.retain(|&k| k == current_vk || down(k));
+    }
+
+    fn latch_swallow(&mut self, vk: u16) {
+        if !is_modifier_vk(vk) && !self.swallowed.contains(&vk) {
+            self.swallowed.push(vk);
+        }
     }
 
     pub fn any_ctrl(&self) -> bool {
@@ -225,7 +287,13 @@ impl ModifierState {
             // Single specific modifier key (e.g. Right Ctrl = 0xA3)
             is_down && current_vk == spec.vk
         } else {
-            is_down && current_vk == spec.vk
+            // Key chord: exact modifiers, so Ctrl+Shift+Win+G does not fire Ctrl+Win+G.
+            is_down
+                && current_vk == spec.vk
+                && (spec.ctrl || !self.any_ctrl())
+                && (spec.alt || !self.any_alt())
+                && (spec.shift || !self.any_shift())
+                && (spec.win || !self.any_win())
         }
     }
 
@@ -293,6 +361,11 @@ mod win_impl {
     }
 
     static HOOK_CTX: OnceCell<GlobalHookCtx> = OnceCell::new();
+
+    fn key_physically_down(vk: u16) -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
+    }
 
     unsafe fn send_menu_mask() {
         let mut inputs = [
@@ -364,9 +437,12 @@ mod win_impl {
                 let vk = kb.vkCode as u16;
 
                 let cfg = ctx.shared.lock();
+                let mut mods = ctx.mods.lock();
 
-                if cfg.is_relevant(vk) && (is_down || is_up) {
-                    let mut mods = ctx.mods.lock();
+                // While a modifier-only dictation chord is held every key is relevant (see header).
+                let relevant = cfg.is_relevant(vk) || (mods.ptt_combo_latched && cfg.ptt_modifier_only());
+                if relevant && (is_down || is_up) {
+                    mods.resync(key_physically_down, vk);
 
                     // Emergency Escape cancel while active — except when KeyReed's own dialog
                     // (e.g. "Ask before inserting") is in front: Escape must reach it as Cancel.
@@ -396,8 +472,8 @@ mod win_impl {
                     }
                     for ev in d.events {
                         match ev {
-                            HotkeyEvent::PttDown => crate::security::timing_mark("hook_ptt_down"),
-                            HotkeyEvent::PttUp => crate::security::timing_mark("hook_ptt_up"),
+                            HotkeyEvent::PttDown => crate::security::timing_mark_async("hook_ptt_down"),
+                            HotkeyEvent::PttUp => crate::security::timing_mark_async("hook_ptt_up"),
                             _ => {}
                         }
                         let _ = ctx.tx.try_send(ev);
@@ -435,10 +511,10 @@ mod win_impl {
 
                 let mut hhook: HHOOK = if initially_enabled {
                     let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(ll_keyboard_proc), std::ptr::null_mut(), 0);
-                    crate::security::timing_mark(if h.is_null() { "hook_install_failed" } else { "hook_installed" });
+                    crate::security::timing_mark_async(if h.is_null() { "hook_install_failed" } else { "hook_installed" });
                     h
                 } else {
-                    crate::security::timing_mark("hook_initially_disabled");
+                    crate::security::timing_mark_async("hook_initially_disabled");
                     std::ptr::null_mut()
                 };
 
@@ -696,5 +772,101 @@ mod tests {
         let mut m = ModifierState::default();
         assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]), [HotkeyEvent::PttDown]);
         assert_eq!(press(&cfg, &mut m, &[(0x5B, false)]), [HotkeyEvent::PttUp]);
+    }
+
+    fn key_cfg(ptt: HotkeySpec) -> HookSharedConfig {
+        let mut cfg = cfg_with_chords();
+        cfg.chords.clear();
+        cfg.ptt_spec = ptt;
+        cfg
+    }
+
+    const F8: u16 = 0x77;
+
+    #[test]
+    fn key_based_trigger_swallows_repeats_and_release() {
+        let f8 = HotkeySpec { ctrl: false, alt: false, shift: false, win: false, vk: F8, display_name: String::new() };
+        let cfg = key_cfg(f8);
+        let mut m = ModifierState::default();
+        let d = decide(&cfg, &mut m, F8, true);
+        assert_eq!(d.events, [HotkeyEvent::PttDown]);
+        assert!(d.swallow);
+        let rep = decide(&cfg, &mut m, F8, true);
+        assert!(rep.swallow && rep.events.is_empty());
+        let up = decide(&cfg, &mut m, F8, false);
+        assert!(up.swallow);
+        assert_eq!(up.events, [HotkeyEvent::PttUp]);
+        // Latch is gone: an unrelated later release of F8 is not swallowed.
+        assert!(!decide(&cfg, &mut m, F8, false).swallow);
+    }
+
+    #[test]
+    fn chord_key_up_and_repeats_are_swallowed_but_modifiers_are_not() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]);
+        assert!(decide(&cfg, &mut m, K, true).swallow);
+        assert!(decide(&cfg, &mut m, K, true).swallow);
+        assert!(decide(&cfg, &mut m, K, false).swallow);
+        assert!(!decide(&cfg, &mut m, 0xA2, false).swallow);
+    }
+
+    #[test]
+    fn key_chords_need_exactly_their_modifiers() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        // Ctrl+Shift+Win+G must not fire Ctrl+Win+G.
+        let ev = press(&cfg, &mut m, &[(0xA2, true), (0xA0, true), (0x5B, true), (G, true)]);
+        assert!(!ev.contains(&HotkeyEvent::CorrectSelection));
+        m.reset();
+        // Ctrl+Alt+M (mode cycle) is exact too: with Shift added it does nothing.
+        assert!(press(&cfg, &mut m, &[(0xA2, true), (0xA4, true), (0xA0, true), (0x4D, true)]).is_empty());
+    }
+
+    #[test]
+    fn mode_cycle_does_not_repeat_while_held() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0xA4, true), (0x4D, true)]), [HotkeyEvent::CycleMode]);
+        assert!(press(&cfg, &mut m, &[(0x4D, true), (0x4D, true)]).is_empty());
+    }
+
+    #[test]
+    fn another_key_with_modifier_only_dictation_drops_the_recording() {
+        let mut cfg = key_cfg(HotkeySpec::right_ctrl());
+        assert!(cfg.ptt_modifier_only());
+        let mut m = ModifierState::default();
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        // Right Ctrl + C: dictation is dropped and C is not swallowed.
+        let d = decide(&cfg, &mut m, 0x43, true);
+        assert_eq!(d.events, [HotkeyEvent::PttSuperseded]);
+        assert!(!d.swallow);
+        // Right Ctrl auto-repeat must not restart it until everything is released.
+        assert!(press(&cfg, &mut m, &[(0x43, false), (0xA3, true)]).is_empty());
+        assert!(press(&cfg, &mut m, &[(0xA3, false)]).is_empty());
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        // Escape is the cancel key, not a chord partner.
+        assert!(decide(&cfg, &mut m, 0x1B, true).events.is_empty());
+        // A key-based dictation shortcut has no such interrupt.
+        cfg.ptt_spec = HotkeySpec { ctrl: false, alt: false, shift: false, win: false, vk: F8, display_name: String::new() };
+        assert!(!cfg.ptt_modifier_only());
+    }
+
+    #[test]
+    fn resync_clears_stale_modifiers_and_trigger_latches() {
+        let mut m = ModifierState::default();
+        m.update_modifier(0x5B, true);
+        m.update_modifier(0xA2, true);
+        m.main_vk_down = F8;
+        m.swallowed = vec![F8, G];
+        // Win+L swallowed the releases: only Ctrl is physically down now.
+        m.resync(|vk| vk == 0xA2, 0x41);
+        assert!(m.lctrl && !m.lwin && !m.any_win());
+        assert_eq!(m.main_vk_down, 0);
+        assert!(m.swallowed.is_empty());
+        // The current event's own key is left to the event.
+        m.swallowed = vec![G];
+        m.resync(|_| false, G);
+        assert_eq!(m.swallowed, [G]);
     }
 }

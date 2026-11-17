@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivacySettings {
     /// Exclude dictated clipboard writes from Windows Clipboard History (Win+V) and Cloud Sync.
+    /// On by default; only a config that does not mention the key gets the default, saved choices stay.
+    #[serde(default = "default_true")]
     pub exclude_from_clipboard_history: bool,
     /// Block direct typing into password fields (always recommended true).
     pub block_password_fields: bool,
@@ -21,7 +23,7 @@ pub struct PrivacySettings {
 impl Default for PrivacySettings {
     fn default() -> Self {
         Self {
-            exclude_from_clipboard_history: false,
+            exclude_from_clipboard_history: true,
             block_password_fields: true,
             redact_sensitive_window_titles: true,
             ram_only_audio: true,
@@ -312,6 +314,20 @@ mod tests {
         assert_eq!(cfg.output_mode, OutputMode::DirectTyping);
         assert_eq!(cfg.processing_profile, ProcessingProfile::MaxPrivacyOffline);
         assert_eq!(cfg.local_asr_model, "parakeet-tdt-0.6b-v2-int8");
+    }
+
+    #[test]
+    fn clipboard_history_exclusion_defaults_on_but_keeps_a_saved_choice() {
+        assert!(AppConfig::default().privacy.exclude_from_clipboard_history);
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert!(c.privacy.exclude_from_clipboard_history);
+        // An older file whose privacy block predates the key.
+        let old = r#"{"privacy": {"block_password_fields": true, "redact_sensitive_window_titles": true, "ram_only_audio": true}}"#;
+        let (c, dropped) = AppConfig::parse_lenient(old);
+        assert!(dropped.is_empty() && c.privacy.exclude_from_clipboard_history);
+        let saved = r#"{"privacy": {"exclude_from_clipboard_history": false, "block_password_fields": true, "redact_sensitive_window_titles": true, "ram_only_audio": true}}"#;
+        let (c, _) = AppConfig::parse_lenient(saved);
+        assert!(!c.privacy.exclude_from_clipboard_history);
     }
 
     #[test]

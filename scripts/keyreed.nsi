@@ -165,7 +165,8 @@ Section "KeyReed" SecApp
   !insertmacro STAGE "Preparing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::Exec 'taskkill /F /IM keyreed.exe'
-  nsExec::Exec 'taskkill /F /IM llama-server.exe'
+  ; Only KeyReed's own llama-server (under the install folder), never another app's.
+  nsExec::Exec `powershell -NoProfile -NonInteractive -Command "Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | Stop-Process -Force"`
 !endif
   !insertmacro STAGE "Installing application files"
   ClearErrors
@@ -205,7 +206,7 @@ Section "Uninstall"
   !insertmacro STAGE "Closing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
-  nsExec::ExecToLog 'taskkill /F /IM llama-server.exe'
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -Command "Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | Stop-Process -Force"`
 !endif
   !insertmacro STAGE "Removing shortcuts"
   Delete "${DESKTOP_LNK}"
