@@ -192,7 +192,9 @@ impl QuickFixFlow {
             }
             TextJobEvent::Failed { id, reason } if self.is_pending(id) => {
                 self.pending = None;
-                refuse(gui, failure_sentence(id, reason));
+                // The missing grammar model is the one failure the user can fix, and exactly where this sentence says.
+                let settings = id < VOICE_ID_BASE && reason == JobFailure::NoGrammarModel;
+                gui.quick_fix(QuickFixStage::Refused { text: failure_sentence(id, reason).to_string(), settings });
             }
             _ => {}
         }
@@ -238,7 +240,7 @@ impl QuickFixFlow {
 }
 
 fn refuse(gui: &WinGuiHandle, sentence: &str) {
-    gui.quick_fix(QuickFixStage::Refused(sentence.to_string()));
+    gui.quick_fix(QuickFixStage::Refused { text: sentence.to_string(), settings: false });
 }
 
 /// Why a job stopped, in one sentence. Voice commands take their ids from `VOICE_ID_BASE`, so the reason is
@@ -251,8 +253,8 @@ fn failure_sentence(id: u64, reason: JobFailure) -> &'static str {
         };
     }
     match reason {
-        // Quick Fix needs one of the two models: name both, so the way out of the refusal is clear.
-        JobFailure::NoGrammarModel => "Quick Fix needs the grammar model or a writing model, and neither is available.",
+        // Neither model is available: name the install route, and for a long selection the way out.
+        JobFailure::NoGrammarModel => "The grammar model isn't installed; install it in Settings › Speech models.",
         JobFailure::SelectionTooLong => "That selection is too long for the writing model. Select less text, or install the grammar model.",
         _ => "Quick Fix couldn't finish. Nothing was changed.",
     }
@@ -345,9 +347,8 @@ mod tests {
         );
         assert!(failure_sentence(VOICE_ID_BASE + 1, JobFailure::ModelFailed).contains("voice command"));
         assert!(failure_sentence(1, JobFailure::ModelFailed).contains("Quick Fix"));
-        // No model at all: the one sentence names both models, so the way out is clear.
-        let none = failure_sentence(1, JobFailure::NoGrammarModel);
-        assert!(none.contains("grammar model") && none.contains("writing model"), "{none}");
+        // The refusal names the install route, and a too-long selection names its way out.
+        assert!(failure_sentence(1, JobFailure::NoGrammarModel).contains("Settings › Speech models"));
         assert!(failure_sentence(1, JobFailure::SelectionTooLong).contains("Select less text"));
     }
 

@@ -25,9 +25,9 @@ use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW, InvalidateRect,
-    MonitorFromPoint, SetBkColor, SetTextColor, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    PAINTSTRUCT,
+    BeginPaint, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW,
+    InvalidateRect, MonitorFromPoint, SetBkColor, SetTextColor, SetWindowRgn, HDC, HFONT, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
@@ -121,6 +121,9 @@ const A_TEST: i32 = 602;
 /// "Open privacy settings" under a failed or silent microphone test (shared by the Microphone page and setup).
 const MIC_PRIVACY: i32 = 604;
 const M_ACT: i32 = 700;
+/// The Quick Fix grammar model's row: outside the speech-model action range, and its own install path.
+const M_GRAMMAR: i32 = M_ACT + 8;
+const GRAMMAR_MODEL_ID: &str = "gector-bert-en-int8";
 const P_PROF: i32 = 800;
 const P_KEY: i32 = 810;
 const P_KEY_SAVE: i32 = 811;
@@ -950,6 +953,12 @@ pub fn show_page_for_test(page: usize, step: usize) {
     navigate(page);
 }
 
+/// Gallery hook: scroll the content column of the page on show (logical offset, clamped like the wheel).
+pub fn scroll_to_for_test(offset: i32) {
+    let cur = ST.with(|s| s.borrow().as_ref().map(|st| st.scroll).unwrap_or(0));
+    scroll_by(offset - cur);
+}
+
 /// Gallery hook for the Quick Fix shortcut field on the Dictation page: 0 = recording, nothing held yet;
 /// 1 = recording with Ctrl and Win held; 2 = Ctrl + C was pressed and refused; anything else = back to normal.
 pub fn shortcut_capture_for_test(step: u8) {
@@ -1759,6 +1768,46 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
     b.y += 72;
 }
 
+/// The Quick Fix grammar model: the same row anatomy as a speech model, but it powers Quick Fix, so its
+/// action column installs only (Quick Fix finds it by folder name; there is nothing to switch).
+fn grammar_row(b: &mut Builder, m: &SharedUiModel, action_id: i32) {
+    let y = b.y;
+    let installed = m.is_installed(GRAMMAR_MODEL_ID);
+    let dl = m.download.as_ref().filter(|d| d.model_id.eq_ignore_ascii_case(GRAMMAR_MODEL_ID));
+    b.text(r(X0 + PAD, y + 10, 260, 20), "Grammar tagger", F::BodySemi, C::Text, DT_SINGLELINE);
+    if installed {
+        b.items.push(Item::Badge { x: X0 + PAD, y: y + 10, s: "In use by Quick Fix".into(), tone: Tone::Info, after: Some("Grammar tagger".into()) });
+    }
+    b.text(r(X0 + PAD, y + 32, CW - 200, 18), "Checks grammar when you run Quick Fix.", F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    let (label, style, enabled) = match dl.map(|d| &d.stage) {
+        Some(DownloadStage::Starting) | Some(DownloadStage::Downloading) => ("Cancel", BtnStyle::Secondary, true),
+        Some(DownloadStage::Verifying) => ("Verifying…", BtnStyle::Secondary, false),
+        Some(DownloadStage::Failed(_)) if !installed => ("Try again", BtnStyle::Primary, true),
+        _ if installed => ("Installed", BtnStyle::Status, false),
+        _ => ("Download", BtnStyle::Primary, true),
+    };
+    match dl {
+        Some(d) if d.is_active() => {
+            b.items.push(Item::Progress { r: r(X0 + PAD, y + 55, 220, 6), frac: d.fraction() });
+            b.text(r(X0 + PAD + 232, y + 49, CW - 400, 18), d.detail_text(), F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        Some(d) if matches!(d.stage, DownloadStage::Failed(_)) && !installed => {
+            b.text(r(X0 + PAD, y + 49, CW - 200, 18), d.detail_text(), F::Caption, C::Err, DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        _ => b.text(
+            r(X0 + PAD, y + 49, CW - 200, 18),
+            "English · about 70 MB · runs on this PC",
+            F::Caption,
+            C::Text3,
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        ),
+    }
+    let bw = 120;
+    b.ctrl(action_id, Kind::Button { style, label: label.into() }, r(X0 + CW - PAD - bw, y + 18, bw, 32), Bg::Surface, &format!("{label} Grammar tagger"));
+    b.last_ctrl().enabled = enabled;
+    b.y += 72;
+}
+
 fn page_models(b: &mut Builder, m: &SharedUiModel) {
     b.title("Speech models", "Models run on this PC. Download the ones you want and choose which to use.");
     if !m.active_model_ready() && m.download.as_ref().map(|d| !d.is_active()).unwrap_or(true) {
@@ -1781,6 +1830,12 @@ fn page_models(b: &mut Builder, m: &SharedUiModel) {
         "Every model is verified with SHA-256 before use."
     };
     b.text(r(X0, b.y, CW, 34), note, F::Caption, C::Text3, DT_WORDBREAK);
+    // Two wrapped lines of caption, then room to separate the next section's heading.
+    b.y += 42;
+    b.section("Quick Fix grammar");
+    b.group();
+    grammar_row(b, m, M_GRAMMAR);
+    b.end_group();
 }
 
 fn page_processing(b: &mut Builder, m: &SharedUiModel) {
@@ -2243,6 +2298,7 @@ fn rebuild(focus_first: bool) {
         ST.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
                 st.ctrls = created;
+                clip_children(st);
             }
         });
         if let Some(h) = target {
@@ -2423,6 +2479,9 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let off = st.scroll;
     let s = |v: i32| sc(v, d);
     let sy = |v: i32| sc(v - off, d);
+    // Only the column right of the sidebar scrolls: clip the canvas to it so no scrolled row can paint over the
+    // sidebar or past the window edges.
+    cv.set_clip(s(SIDEBAR_W + 1), 0, rc.right - s(SIDEBAR_W + 1), rc.bottom);
     // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
     let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
@@ -2532,14 +2591,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
             }
         }
     }
-    if off > 0 {
-        // Content scrolled under the top edge: keep the sidebar crisp and on top.
-        cv.rect(0, 0, s(SIDEBAR_W), rc.bottom, t.sidebar);
-        cv.rect(s(SIDEBAR_W), 0, 1.max(s(1)), rc.bottom, t.border);
-        blit_icon(&mut cv, s(22), s(26), icon_n);
-        cv.text(PRODUCT_NAME, s(62), s(24), s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE);
-        cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
-    }
+    cv.clear_clip();
     cv.blit_to(hdc, 0, 0);
 }
 
@@ -2758,6 +2810,32 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
 // Commands
 // ------------------------------------------------------------------------------------------------
 
+/// Keeps a content control inside the visible part of the scrolling column (the client area right of the
+/// sidebar). A control scrolled past the top or bottom is clipped to nothing instead of hanging over the page.
+unsafe fn clip_children(st: &St) {
+    let mut rc: RECT = std::mem::zeroed();
+    GetClientRect(st.hwnd, &mut rc);
+    let left = sc(SIDEBAR_W + 1, st.dpi);
+    for (c, h) in &st.ctrls {
+        // Navigation never scrolls; clipping it to the content column would hide it.
+        if matches!(c.kind, Kind::Nav { .. }) {
+            continue;
+        }
+        let cr = child_rect(c);
+        let x = sc(cr.x, st.dpi);
+        let y = sc(cr.y - st.scroll, st.dpi);
+        let x0 = x.max(left);
+        let y0 = y.max(0);
+        let x1 = (x + sc(cr.w, st.dpi)).min(rc.right).max(x0);
+        let y1 = (y + sc(cr.h, st.dpi)).min(rc.bottom).max(y0);
+        // The system owns the region after a successful SetWindowRgn and frees it when it is replaced.
+        let rgn = CreateRectRgn(x0, y0, x1, y1);
+        if SetWindowRgn(*h, rgn, 1) == 0 {
+            DeleteObject(rgn as _);
+        }
+    }
+}
+
 /// Scrolls the content column (only possible when the window is shorter than the layout).
 fn scroll_by(delta: i32) {
     let moved = ST.with(|s| {
@@ -2785,6 +2863,13 @@ fn scroll_by(delta: i32) {
             for (h, x, y) in moves {
                 SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            ST.with(|s| {
+                if let Ok(mut b) = s.try_borrow_mut() {
+                    if let Some(st) = b.as_mut() {
+                        clip_children(st);
+                    }
+                }
+            });
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
     }
@@ -2968,8 +3053,22 @@ fn on_command(id: i32, code: u32) {
         commit(|c| c.default_writing_mode = mode);
         return;
     }
-    if (M_ACT..M_ACT + 6).contains(&id) && click {
+    // Every catalogue row, not the first six: SenseVoice and Whisper's buttons were dead.
+    if (M_ACT..M_ACT + ASR_UI_CATALOG.len() as i32).contains(&id) && click {
         model_action(&m, ASR_UI_CATALOG[(id - M_ACT) as usize].id);
+        return;
+    }
+    if id == M_GRAMMAR && click {
+        let downloading = m
+            .download
+            .as_ref()
+            .map(|d| d.is_active() && d.model_id.eq_ignore_ascii_case(GRAMMAR_MODEL_ID))
+            .unwrap_or(false);
+        if downloading {
+            send(UiAction::CancelModelDownload);
+        } else if !m.is_installed(GRAMMAR_MODEL_ID) {
+            send(UiAction::DownloadModel(GRAMMAR_MODEL_ID.to_string()));
+        }
         return;
     }
     if (P_PROF..P_PROF + 3).contains(&id) && click {
@@ -3832,9 +3931,33 @@ mod tests {
         let (_, ctrls) = build(PAGE_WRITING, 0, &m, false);
         assert_eq!(ctrls.iter().filter(|c| (W_MODE..W_MODE + 6).contains(&c.id)).count(), 6);
         let (_, ctrls) = build(PAGE_MODELS, 0, &m, false);
-        assert_eq!(ctrls.iter().filter(|c| (M_ACT..M_ACT + 6).contains(&c.id)).count(), 6);
+        assert_eq!(ctrls.iter().filter(|c| (M_ACT..M_ACT + ASR_UI_CATALOG.len() as i32).contains(&c.id)).count(), ASR_UI_CATALOG.len());
         let (_, ctrls) = build(PAGE_OUTPUT, 0, &m, false);
         assert_eq!(ctrls.iter().filter(|c| [O_TYPE, O_CLIP, O_ASK].contains(&c.id)).count(), 3);
+    }
+
+    #[test]
+    fn the_grammar_row_installs_but_never_becomes_a_speech_model() {
+        let label = |m: &SharedUiModel, want_enabled: bool| {
+            let (_, ctrls) = build(PAGE_MODELS, 0, m, false);
+            let c = ctrls.iter().find(|c| c.id == M_GRAMMAR).expect("grammar row").clone();
+            assert_eq!(c.enabled, want_enabled);
+            match c.kind {
+                Kind::Button { label, .. } => label,
+                _ => unreachable!(),
+            }
+        };
+        let mut m = model();
+        assert_eq!(label(&m, true), "Download");
+        m.download = Some(DownloadProgress { model_id: GRAMMAR_MODEL_ID.into(), stage: DownloadStage::Downloading, done_bytes: 1, total_bytes: Some(2) });
+        assert_eq!(label(&m, true), "Cancel");
+        m.download = Some(DownloadProgress { model_id: GRAMMAR_MODEL_ID.into(), stage: DownloadStage::Verifying, done_bytes: 0, total_bytes: None });
+        assert_eq!(label(&m, false), "Verifying…");
+        m.download = None;
+        m.installed_asr_models = vec![GRAMMAR_MODEL_ID.into()];
+        assert_eq!(label(&m, false), "Installed");
+        let (items, _) = build(PAGE_MODELS, 0, &m, false);
+        assert!(items.iter().any(|i| matches!(i, Item::Badge { s, .. } if s == "In use by Quick Fix")));
     }
 
     #[test]

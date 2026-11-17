@@ -166,7 +166,7 @@ impl RuntimePaths {
     /// Lists all catalog ASR model IDs currently installed on disk.
     fn list_installed_asr_ids(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for spec in vi_asr::catalog::ASR_CATALOG {
+        for spec in vi_asr::catalog::ASR_CATALOG.iter().chain(vi_asr::catalog::GRAMMAR_CATALOG) {
             if self.find_installed_model_root(spec.folder_name).is_some() {
                 out.push(spec.id.to_string());
             }
@@ -2369,12 +2369,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                             gui_dl.set_download(Some(progress(DownloadStage::Failed("this model isn't in KeyReed's catalog".into()), 0, None)), None);
                                             return;
                                         };
+                                        // The grammar tagger is found by Quick Fix itself; it must never become the dictation model.
+                                        let speech = spec.architecture != vi_asr::catalog::AsrArchitecture::GectorTagger;
                                         if let Some(existing_root) = rpaths.find_installed_model_root(spec.folder_name) {
                                             if vi_asr::integrity::prepare_installed_model(&existing_root, spec.id).is_ok() {
                                                 active_cl.store(false, Ordering::SeqCst);
                                                 let inst = rpaths.list_installed_asr_ids();
                                                 gui_dl.set_download(Some(progress(DownloadStage::Installed, 0, None)), Some(inst));
-                                                let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                if speech {
+                                                    let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                }
                                                 return;
                                             }
                                         }
@@ -2408,10 +2412,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         match res {
                                             Ok(_) => {
                                                 gui_dl.set_download(Some(progress(DownloadStage::Installed, 0, None)), Some(inst));
-                                                let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                if speech {
+                                                    let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                }
                                                 gui_dl.notify_toast(
                                                     &format!("{ui_name} is ready"),
-                                                    "Downloaded and verified. KeyReed will use it for your next dictation.",
+                                                    if speech {
+                                                        "Downloaded and verified. KeyReed will use it for your next dictation."
+                                                    } else {
+                                                        "Downloaded and verified. Quick Fix can check grammar now."
+                                                    },
                                                 );
                                             }
                                             Err(e) if e.to_string().to_ascii_lowercase().contains("cancel") => {
