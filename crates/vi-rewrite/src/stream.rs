@@ -172,7 +172,21 @@ pub(crate) mod tests {
         let h = std::thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
             let mut buf = [0u8; 8192];
-            let _ = s.read(&mut buf);
+            // Read the whole request (headers and body may arrive separately): closing a socket with unread
+            // data makes Windows send a reset, which the client then sees as a broken stream.
+            let mut req = Vec::new();
+            while let Ok(n @ 1..) = s.read(&mut buf) {
+                req.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                let Some(end) = text.find("\r\n\r\n") else { continue };
+                let len = text[..end]
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                    .unwrap_or(0);
+                if req.len() >= end + 4 + len {
+                    break;
+                }
+            }
             let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
             for t in tokens {
                 std::thread::sleep(gap);

@@ -42,6 +42,14 @@ pub enum ChordAction {
 /// At most this many extra chords (one latch bit each).
 pub const MAX_EXTRA_CHORDS: usize = 8;
 
+/// Set while the Settings shortcut-capture field is recording a chord: the hook then matches nothing.
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Pauses (true) or resumes shortcut matching for the duration of a capture in Settings.
+pub fn set_capture_active(on: bool) {
+    CAPTURE_ACTIVE.store(on, Ordering::Relaxed);
+}
+
 #[derive(Debug, Clone)]
 struct HookSharedConfig {
     ptt_spec: HotkeySpec,
@@ -370,6 +378,16 @@ mod win_impl {
                         mods.ptt_combo_latched = false;
                         let _ = ctx.tx.try_send(HotkeyEvent::EmergencyCancel);
                         return 1; // Suppress Escape from closing user's foreground dialog during cancel!
+                    }
+
+                    // Shortcut capture in Settings: every key goes to the capture field untouched. Only the modifier
+                    // state is kept current, and releasing Win must not open Start.
+                    if CAPTURE_ACTIVE.load(Ordering::Relaxed) {
+                        mods.update_modifier(vk, is_down);
+                        if is_up && matches!(vk, 0x5B | 0x5C) {
+                            send_menu_mask();
+                        }
+                        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
                     }
 
                     let d = decide(&cfg, &mut mods, vk, is_down);

@@ -1,11 +1,15 @@
 #[cfg(windows)]
 pub mod canvas;
+#[cfg(windows)]
+pub mod composer;
 pub mod clipboard;
 pub mod context;
 pub mod hotkey;
 pub mod icon_data;
 pub mod overlay;
 pub mod security;
+#[cfg(windows)]
+pub mod selection;
 #[cfg(windows)]
 pub mod settings;
 pub mod typing;
