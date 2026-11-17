@@ -762,6 +762,9 @@ impl InferenceSupervisor {
         let mut warning_note = rw.warning_note.clone();
 
         if deliver_output {
+            // The modal prompt waits for the user, so ask BEFORE taking the gate (Quick Fix and Copy Last use it).
+            let ask_decision = (cfg.output_mode == OutputMode::AskBeforeInserting)
+                .then(|| vi_win32::ask_before_inserting_decision(&rw.final_text, fg_ctx));
             let _gate = vi_win32::input_gate();
             match cfg.output_mode {
                 OutputMode::Clipboard => {
@@ -778,7 +781,7 @@ impl InferenceSupervisor {
                         cfg.privacy.block_password_fields,
                         rw.requires_confirmation,
                         cfg.privacy.exclude_from_clipboard_history,
-                        None,
+                        ask_decision,
                     )? {
                         DirectTypeOutcome::TypedDirectly { .. } => {
                             delivered_via = OutputMode::DirectTyping;
@@ -2426,7 +2429,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         }
                         if let Some(mic) = &mut active_mic {
                             supervisor.session_first_frame_ms = mic.first_frame_ms();
-                            let chunk = mic.take_new_16k();
+                            // Drain only into a live session; otherwise the audio stays in the capture
+                            // buffer for the whole-buffer path at stop (cloud profile, failed live start).
+                            let chunk = if supervisor.live_asr.is_some() { mic.take_new_16k() } else { Vec::new() };
                             supervisor.feed_live_audio(&cfg, chunk);
                             if mic.is_disconnected() {
                                 // Microphone disconnected mid-recording: attempt seamless rebind to default device
@@ -2499,22 +2504,19 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
                     }
-                    PttAction::CancelRecording { reason } => {
+                    PttAction::CancelRecording { .. } => {
                         if let Some(m) = active_mic.take() {
                             m.cancel_and_zeroize();
                         }
                         supervisor.cancel_live_session();
                         busy_flag.store(false, Ordering::Relaxed);
                         gui_for_worker.sync(ptt.state().clone(), 0.0, None);
-                        if reason == "recording_cap_discarded" {
-                            gui_for_worker.notify_toast(
-                                PRODUCT_NAME,
-                                "Recording discarded. The key release was lost or the time limit was reached. Hold the shortcut to start again.",
-                            );
-                        }
                     }
                     PttAction::StopAndProcess => {
                         timing_mark("coordinator_stop");
+                        // The coordinator is blocked in the pipeline from here on and cannot service a cancel,
+                        // so Escape must reach the user's app again instead of being swallowed.
+                        busy_flag.store(false, Ordering::Relaxed);
                         let cold = supervisor.session_cold_model && !supervisor.asr_ready(&cfg) && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy;
                         gui_for_worker.set_processing_note(if cold { Some("Loading model") } else { None });
                         gui_for_worker.sync(EngineState::Processing, 0.0, None);
@@ -2672,6 +2674,59 @@ fn print_foreground() -> Result<()> {
     }
 }
 
+/// `%LOCALAPPDATA%\Keyreed\logs\keyreed.log`. Rotated once to `.log.1` when it is over 1 MB at start.
+fn log_file_path() -> PathBuf {
+    let path = AppConfig::default_data_dir().join("logs").join("keyreed.log");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    path
+}
+
+#[cfg(windows)]
+fn console_attached() -> bool {
+    unsafe { !windows_sys::Win32::System::Console::GetConsoleWindow().is_null() }
+}
+#[cfg(not(windows))]
+fn console_attached() -> bool {
+    true
+}
+
+/// The release exe has no console, so stderr is lost: log to a file unless a console is attached. A panic
+/// hook records the panic before `panic = "abort"` ends the process. Never log transcript text.
+fn init_logging(keep_stderr: bool) {
+    let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"));
+    if keep_stderr {
+        builder.init();
+        return;
+    }
+    let path = log_file_path();
+    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    builder.init();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("(no message)");
+        // Slice-boundary panics quote the text being sliced, which can be a transcript: withhold those.
+        let msg = if msg.contains("byte index") || msg.contains("char boundary") { "(message withheld: may quote text)" } else { msg };
+        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let name = std::thread::current().name().unwrap_or("unnamed").to_string();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "[{secs}] PANIC thread '{name}' at {at}: {msg}");
+        }
+    }));
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     #[cfg(windows)]
@@ -2680,7 +2735,7 @@ fn main() -> Result<()> {
             windows_sys::Win32::System::Console::AttachConsole(0xFFFFFFFF);
         }
     }
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    init_logging(!args.is_empty() && console_attached());
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();

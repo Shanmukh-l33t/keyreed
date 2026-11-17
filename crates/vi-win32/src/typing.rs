@@ -140,12 +140,33 @@ pub fn is_current_process_elevated() -> bool {
     }
 }
 
+/// Fixed scan codes of the synthetic Enter, Tab and Shift (apps such as the VS Code terminal read
+/// `KeyboardEvent.code`, which needs a scan code). Every other key is sent as Unicode with wVk 0.
+fn synthetic_scan_code(vk: u16) -> u16 {
+    match vk {
+        0x0D => 0x1C, // VK_RETURN
+        0x09 => 0x0F, // VK_TAB
+        0x10 => 0x2A, // VK_SHIFT
+        _ => 0,
+    }
+}
+
+/// `SendInput` returns how many events were injected: fewer than sent means the target (for example an
+/// elevated window) rejected the rest.
+fn sendinput_shortfall(sent: u32, expected: usize) -> Option<&'static str> {
+    match sent as usize {
+        0 => Some("sendinput_blocked_by_target"),
+        n if n < expected => Some("sendinput_partial"),
+        _ => None,
+    }
+}
+
 pub fn is_unsupported_shell_target(window_class: &str, process_name: &str) -> bool {
     let cls = window_class.trim().to_lowercase();
     let proc_l = process_name.trim().to_lowercase();
     matches!(
         cls.as_str(),
-        "progman" | "workerw" | "shell_traywnd" | " shell_secondarytraywnd" | "dv2controlhost"
+        "progman" | "workerw" | "shell_traywnd" | "shell_secondarytraywnd" | "dv2controlhost"
     ) || proc_l == "lockapp.exe"
 }
 
@@ -333,11 +354,24 @@ pub fn deliver_direct_or_clipboard_fallback(
             return Ok(DirectTypeOutcome::TypedDirectly { code_units_sent: 0 });
         }
 
-        // Keep completed text on clipboard as backup so transcription is never lost
-        let _ = write_clipboard_unicode(&sanitized, exclude_from_clipboard_history);
+        // Keep completed text on clipboard as backup so transcription is never lost. Always excluded from
+        // Win+V history and cloud sync: this copy is written on every dictation, whatever the setting says.
+        let _ = write_clipboard_unicode(&sanitized, true);
 
         release_active_modifiers_cleanly();
 
+        let key = |vk: u16, flags: u32| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: synthetic_scan_code(vk),
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: KEYREED_SYNTHETIC_TAG,
+                },
+            },
+        };
         let mut inputs: Vec<INPUT> = Vec::with_capacity(sanitized.len() * 2 + 8);
         for ch in sanitized.chars() {
             if ch == '\x0d' {
@@ -346,58 +380,19 @@ pub fn deliver_direct_or_clipboard_fallback(
             if ch == '\n' {
                 if is_chat {
                     // In Chat apps (Slack, Teams, Discord, WhatsApp), Shift+Enter inserts a newline without sending!
-                    for (vk, flags) in [
-                        (VK_SHIFT, 0u32),
-                        (VK_RETURN, 0u32),
-                        (VK_RETURN, KEYEVENTF_KEYUP),
-                        (VK_SHIFT, KEYEVENTF_KEYUP),
-                    ] {
-                        inputs.push(INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: vk,
-                                    wScan: 0,
-                                    dwFlags: flags,
-                                    time: 0,
-                                    dwExtraInfo: KEYREED_SYNTHETIC_TAG,
-                                },
-                            },
-                        });
-                    }
+                    inputs.extend([
+                        key(VK_SHIFT, 0),
+                        key(VK_RETURN, 0),
+                        key(VK_RETURN, KEYEVENTF_KEYUP),
+                        key(VK_SHIFT, KEYEVENTF_KEYUP),
+                    ]);
                 } else {
-                    for flags in [0u32, KEYEVENTF_KEYUP] {
-                        inputs.push(INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: VK_RETURN,
-                                    wScan: 0,
-                                    dwFlags: flags,
-                                    time: 0,
-                                    dwExtraInfo: KEYREED_SYNTHETIC_TAG,
-                                },
-                            },
-                        });
-                    }
+                    inputs.extend([key(VK_RETURN, 0), key(VK_RETURN, KEYEVENTF_KEYUP)]);
                 }
                 continue;
             }
             if ch == '\t' {
-                for flags in [0u32, KEYEVENTF_KEYUP] {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_TAB,
-                                wScan: 0,
-                                dwFlags: flags,
-                                time: 0,
-                                dwExtraInfo: KEYREED_SYNTHETIC_TAG,
-                            },
-                        },
-                    });
-                }
+                inputs.extend([key(VK_TAB, 0), key(VK_TAB, KEYEVENTF_KEYUP)]);
                 continue;
             }
             let mut u16_buf = [0u16; 2];
@@ -432,10 +427,10 @@ pub fn deliver_direct_or_clipboard_fallback(
                 chunk.as_ptr(),
                 std::mem::size_of::<INPUT>() as i32,
             );
-            if sent == 0 {
-                return Ok(DirectTypeOutcome::FallbackToClipboard {
-                    reason: "sendinput_blocked_by_target",
-                });
+            if let Some(reason) = sendinput_shortfall(sent, chunk.len()) {
+                // A chat newline may have been cut between Shift down and up: never leave Shift held.
+                SendInput(1, &key(VK_SHIFT, KEYEVENTF_KEYUP), std::mem::size_of::<INPUT>() as i32);
+                return Ok(DirectTypeOutcome::FallbackToClipboard { reason });
             }
             total_sent += sent as usize;
             if inputs.len() > 64 {
@@ -455,6 +450,68 @@ pub fn deliver_direct_or_clipboard_fallback(
     }
 }
 
+/// Shows the modal "Ask Before Inserting" box and returns the user's choice. It blocks until answered,
+/// so call it BEFORE taking `input_gate`: holding the gate would stall Quick Fix and Copy Last meanwhile.
+pub fn ask_before_inserting_decision(text: &str, target_ctx: &ForegroundContext) -> AskInsertDecision {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, IDNO, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST,
+            MB_YESNOCANCEL,
+        };
+        let target_name = if target_ctx.process_name.is_empty() {
+            "the active window".to_string()
+        } else {
+            target_ctx.process_name.clone()
+        };
+        let preview: String = text.chars().take(280).collect();
+        let prompt = format!(
+            "Insert dictated text into {}?\n\n\"{}\"\n\n• Click Yes to auto-insert into {}.\n• Click No to keep on clipboard only.\n• Click Cancel to dismiss without inserting.",
+            target_name, preview, target_name
+        );
+        let title = "KeyReed — Ask Before Inserting\0"
+            .encode_utf16()
+            .collect::<Vec<u16>>();
+        let body: Vec<u16> = prompt.encode_utf16().chain(std::iter::once(0)).collect();
+        // Windows' foreground lock usually stops a background process from activating its own
+        // MessageBox, which left the dialog visible but without keyboard focus (Enter/Esc went to
+        // the user's app). Give it focus explicitly once it exists.
+        let focus_helper = std::thread::spawn(|| {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
+            let cls: Vec<u16> = "#32770\0".encode_utf16().collect();
+            let ttl: Vec<u16> = "KeyReed — Ask Before Inserting\0".encode_utf16().collect();
+            for _ in 0..60 {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                let h = FindWindowW(cls.as_ptr(), ttl.as_ptr());
+                if !h.is_null() && IsWindowVisible(h) != 0 {
+                    let first = force_foreground_window(h as isize);
+                    let second = first || focus_dialog_with_alt_unlock(h as isize);
+                    crate::security::timing_mark(&format!("ask_dialog_focus attach={first} alt={second}"));
+                    return;
+                }
+            }
+        });
+        let ans = MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
+        );
+        let _ = focus_helper.join();
+        if ans == IDYES {
+            AskInsertDecision::InsertIntoTarget
+        } else if ans == IDNO {
+            AskInsertDecision::CopyToClipboardOnly
+        } else {
+            AskInsertDecision::Cancel
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        AskInsertDecision::CopyToClipboardOnly
+    }
+}
+
 /// Prompts the user before inserting into `target_ctx` (`OutputMode::AskBeforeInserting`).
 /// Always copies `text` to the clipboard first so the transcription is never lost.
 pub fn prompt_and_deliver_ask_before_inserting(
@@ -465,67 +522,7 @@ pub fn prompt_and_deliver_ask_before_inserting(
     exclude_from_clipboard_history: bool,
     override_decision: Option<AskInsertDecision>,
 ) -> Result<DirectTypeOutcome> {
-    let decision = if let Some(d) = override_decision {
-        d
-    } else {
-        #[cfg(windows)]
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                MessageBoxW, IDNO, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST,
-                MB_YESNOCANCEL,
-            };
-            let target_name = if target_ctx.process_name.is_empty() {
-                "the active window".to_string()
-            } else {
-                target_ctx.process_name.clone()
-            };
-            let preview: String = text.chars().take(280).collect();
-            let prompt = format!(
-                "Insert dictated text into {}?\n\n\"{}\"\n\n• Click Yes to auto-insert into {}.\n• Click No to keep on clipboard only.\n• Click Cancel to dismiss without inserting.",
-                target_name, preview, target_name
-            );
-            let title = "KeyReed — Ask Before Inserting\0"
-                .encode_utf16()
-                .collect::<Vec<u16>>();
-            let body: Vec<u16> = prompt.encode_utf16().chain(std::iter::once(0)).collect();
-            // Windows' foreground lock usually stops a background process from activating its own
-            // MessageBox, which left the dialog visible but without keyboard focus (Enter/Esc went to
-            // the user's app). Give it focus explicitly once it exists.
-            let focus_helper = std::thread::spawn(|| {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
-                let cls: Vec<u16> = "#32770\0".encode_utf16().collect();
-                let ttl: Vec<u16> = "KeyReed — Ask Before Inserting\0".encode_utf16().collect();
-                for _ in 0..60 {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                    let h = FindWindowW(cls.as_ptr(), ttl.as_ptr());
-                    if !h.is_null() && IsWindowVisible(h) != 0 {
-                        let first = force_foreground_window(h as isize);
-                        let second = first || focus_dialog_with_alt_unlock(h as isize);
-                        crate::security::timing_mark(&format!("ask_dialog_focus attach={first} alt={second}"));
-                        return;
-                    }
-                }
-            });
-            let ans = MessageBoxW(
-                std::ptr::null_mut(),
-                body.as_ptr(),
-                title.as_ptr(),
-                MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
-            );
-            let _ = focus_helper.join();
-            if ans == IDYES {
-                AskInsertDecision::InsertIntoTarget
-            } else if ans == IDNO {
-                AskInsertDecision::CopyToClipboardOnly
-            } else {
-                AskInsertDecision::Cancel
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            AskInsertDecision::CopyToClipboardOnly
-        }
-    };
+    let decision = override_decision.unwrap_or_else(|| ask_before_inserting_decision(text, target_ctx));
 
     match decision {
         AskInsertDecision::InsertIntoTarget => {
@@ -570,7 +567,17 @@ mod tests {
     fn detects_unsupported_shell_targets() {
         assert!(is_unsupported_shell_target("Progman", "explorer.exe"));
         assert!(is_unsupported_shell_target("Shell_TrayWnd", "explorer.exe"));
+        assert!(is_unsupported_shell_target("Shell_SecondaryTrayWnd", "explorer.exe"));
         assert!(!is_unsupported_shell_target("Notepad", "notepad.exe"));
+    }
+
+    #[test]
+    fn short_sendinput_counts_fall_back_to_clipboard() {
+        assert_eq!(sendinput_shortfall(0, 64), Some("sendinput_blocked_by_target"));
+        assert_eq!(sendinput_shortfall(10, 64), Some("sendinput_partial"));
+        assert_eq!(sendinput_shortfall(64, 64), None);
+        assert_eq!(synthetic_scan_code(0x0D), 0x1C);
+        assert_eq!(synthetic_scan_code(0), 0);
     }
 
     #[test]

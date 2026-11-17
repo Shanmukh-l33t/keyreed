@@ -30,7 +30,7 @@ pub use security::{
     KEYREED_SYNTHETIC_TAG,
 };
 pub use typing::{
-    deliver_direct_or_clipboard_fallback, force_foreground_window,
+    ask_before_inserting_decision, deliver_direct_or_clipboard_fallback, force_foreground_window,
     is_current_process_elevated, is_unsupported_shell_target,
     prompt_and_deliver_ask_before_inserting, sanitize_for_injection, AskInsertDecision,
     DirectTypeOutcome,
