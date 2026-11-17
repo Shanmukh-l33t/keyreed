@@ -173,7 +173,7 @@ impl MicVerdict {
 
     pub fn advice(self) -> &'static str {
         match self {
-            MicVerdict::Silent => "Check the mute switch, pick another device, or allow desktop apps in Windows.",
+            MicVerdict::Silent => "Check the mute switch, or turn on \u{201C}Let desktop apps access your microphone\u{201D}.",
             MicVerdict::Low => "KeyReed can hear you. Move closer or raise the input volume for best accuracy.",
             MicVerdict::Good => "Your microphone is ready for dictation.",
             MicVerdict::TooLoud => "Lower the input volume in Windows Sound settings to avoid distortion.",
