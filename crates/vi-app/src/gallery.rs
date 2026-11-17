@@ -24,6 +24,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
 
+use windows_sys::Win32::Storage::Xps::PrintWindow;
+
 const CAPTUREBLT: u32 = 0x4000_0000;
 
 fn pump_for(ms: u64) {
@@ -68,23 +70,43 @@ fn frame_rect(h: HWND) -> RECT {
     rc
 }
 
-/// Captures a screen rectangle (including layered windows) to a 32-bit BMP.
-fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path) -> Result<()> {
+/// Captures a screen rectangle (including layered windows) to a 32-bit BMP. With `from`, the pixels come from that
+/// window itself (PrintWindow), so a window kept always on top (Task Manager, say) cannot cover the capture.
+fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path, from: Option<HWND>) -> Result<()> {
     unsafe {
         let screen = GetDC(std::ptr::null_mut());
         let mem = CreateCompatibleDC(screen);
+        let src = from.map(window_rect);
+        let (bw, bh) = src.map_or((w, h), |r| (r.right - r.left, r.bottom - r.top));
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h;
+        bmi.bmiHeader.biWidth = bw;
+        bmi.bmiHeader.biHeight = -bh;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
         let bmp = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
         let old = SelectObject(mem, bmp as _);
-        BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
-        let pixels = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+        let (ox, oy) = match (from, src) {
+            (Some(win), Some(r)) => {
+                PrintWindow(win, mem, 2 /* PW_RENDERFULLCONTENT */);
+                (x - r.left, y - r.top)
+            }
+            _ => {
+                BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
+                (0, 0)
+            }
+        };
+        let all = std::slice::from_raw_parts(bits as *const u32, (bw * bh) as usize);
+        let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h {
+            for col in 0..w {
+                let (sx, sy) = (col + ox, row + oy);
+                let p = if sx >= 0 && sy >= 0 && sx < bw && sy < bh { all[(sy * bw + sx) as usize] } else { 0 };
+                pixels.extend_from_slice(&p.to_le_bytes());
+            }
+        }
         SelectObject(mem, old);
         DeleteObject(bmp as _);
         DeleteDC(mem);
@@ -128,7 +150,7 @@ impl Gallery {
         let cx = (rc.left + rc.right) / 2;
         let cy = (rc.top + rc.bottom) / 2;
         let (cw, ch) = ((w + 80).max(340), (h + 60).max(100)); // wide states (Quick Fix chips) must not be cropped
-        capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")))?;
+        capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")), None)?;
         let dbg = win_gui::pill_debug_info();
         self.report.push(serde_json::json!({
             "shot": name,
@@ -146,7 +168,7 @@ impl Gallery {
         let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
         anyhow::ensure!(!h.is_null(), "Review panel not found");
         let rc = frame_rect(h);
-        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")))?;
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
         self.report.push(serde_json::json!({
             "shot": name,
             "kind": "review",
@@ -161,7 +183,7 @@ impl Gallery {
         let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
         anyhow::ensure!(!h.is_null(), "Settings window not found");
         let rc = frame_rect(h);
-        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")))?;
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
         self.report.push(serde_json::json!({
             "shot": name,
             "kind": "settings",
@@ -357,6 +379,21 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // Shortcut capture field (P2.7) on the Dictation page.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
+    pump_for(400);
+    for (step, name, note) in [
+        (0u8, "shortcut_01_recording", "Quick Fix shortcut field recording: nothing pressed yet"),
+        (1, "shortcut_02_held", "Recording with Ctrl and Win held"),
+        (2, "shortcut_03_refused", "Ctrl + C refused: the reason shows under the row, nothing saved"),
+    ] {
+        vi_win32::settings::shortcut_capture_for_test(step);
+        pump_for(400);
+        g.shot_settings(name, note)?;
+    }
+    vi_win32::settings::shortcut_capture_for_test(9);
+    pump_for(300);
+
     for step in 0..4 {
         vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_START, step);
         pump_for(500);

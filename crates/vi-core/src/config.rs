@@ -62,6 +62,12 @@ pub struct AppConfig {
     pub ptt_hotkey: HotkeySpec,
     pub cancel_hotkey: HotkeySpec,
     pub mode_cycle_hotkey: HotkeySpec,
+    /// Fix the selected text in any application (plan F1). Proposed default, not yet checked against every app.
+    #[serde(default = "default_quick_fix_hotkey")]
+    pub quick_fix_hotkey: HotkeySpec,
+    /// Open the Composer (plan F2).
+    #[serde(default = "default_composer_hotkey")]
+    pub composer_hotkey: HotkeySpec,
     pub output_mode: OutputMode,
     pub default_writing_mode: WritingMode,
     pub auto_context_mode: bool,
@@ -108,6 +114,8 @@ impl Default for AppConfig {
             ptt_hotkey: HotkeySpec::right_ctrl(),
             cancel_hotkey: HotkeySpec::cancel_escape(),
             mode_cycle_hotkey: HotkeySpec::ctrl_shift_space(),
+            quick_fix_hotkey: default_quick_fix_hotkey(),
+            composer_hotkey: default_composer_hotkey(),
             output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
             auto_context_mode: true,
@@ -130,6 +138,14 @@ impl Default for AppConfig {
             dictionary: PersonalDictionary::default(),
         }
     }
+}
+
+fn default_quick_fix_hotkey() -> HotkeySpec {
+    crate::shortcut::chord(true, false, false, true, 0x47) // Ctrl + Win + G
+}
+
+fn default_composer_hotkey() -> HotkeySpec {
+    crate::shortcut::chord(true, false, false, true, 0x4B) // Ctrl + Win + K
 }
 
 impl AppConfig {

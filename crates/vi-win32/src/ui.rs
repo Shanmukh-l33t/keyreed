@@ -462,21 +462,9 @@ pub fn hotkey_presets() -> Vec<(HotkeySpec, &'static str)> {
     ]
 }
 
-/// Real conflicts with KeyReed's own shortcuts.
+/// Real conflicts of a push-to-talk chord: the same rules as the shortcut capture field.
 pub fn hotkey_conflict(cfg: &AppConfig, candidate: &HotkeySpec) -> Option<String> {
-    let same = |a: &HotkeySpec, b: &HotkeySpec| {
-        a.vk == b.vk && a.ctrl == b.ctrl && a.alt == b.alt && a.shift == b.shift && a.win == b.win
-    };
-    if same(candidate, &cfg.mode_cycle_hotkey) {
-        Some(format!(
-            "{} is also the mode-cycle shortcut. Pick another one to avoid switching modes.",
-            candidate.display_name
-        ))
-    } else if same(candidate, &cfg.cancel_hotkey) {
-        Some(format!("{} is the cancel shortcut.", candidate.display_name))
-    } else {
-        None
-    }
+    cfg.shortcut_problem(vi_core::shortcut::ShortcutRole::Dictation, candidate).map(|p| p.message)
 }
 
 #[derive(Clone)]
