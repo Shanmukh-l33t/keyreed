@@ -8,6 +8,8 @@ pub mod overlay;
 pub mod security;
 #[cfg(windows)]
 pub mod settings;
+#[cfg(windows)]
+pub mod spell;
 pub mod typing;
 pub mod ui;
 

@@ -28,6 +28,8 @@ static COMMAND: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|\s)-{1,2}[A-Za-z][\
 const NEG: &[&str] = &["not", "never", "no", "without", "cannot", "none", "nothing", "nobody"];
 const ARTICLES: &[&str] = &["a", "an", "the"];
 const AGREE: &[&str] = &["is", "are", "was", "were", "am", "be", "been", "has", "have", "had", "does", "do", "did"];
+/// A noun changes number only next to one of these; a verb gains or loses "-s" only after a subject pronoun (plan C2, layer 4).
+const INFLECTION_CUES: &[&str] = &["two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "many", "several", "few", "both", "these", "those", "multiple", "various", "one", "a", "an", "each", "every", "this", "that", "he", "she", "it", "they", "we", "i", "you"];
 const CONFUSABLE: &[&str] = &["their", "there", "they're", "your", "you're", "its", "it's", "then", "than", "to", "too", "two", "lose", "loose", "affect", "effect", "whose", "who's"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +207,7 @@ impl QuickFixEngine {
         let protected = self.protected(s);
         let mut base: Vec<Cand> = Vec::new();
         for (start, end, rep) in self.speller.misspellings(s) {
-            if s.get(start..end).is_some() {
+            if s.get(start..end).is_some_and(|word| plausible_fix(word, &rep)) {
                 base.push(Cand { start, end, rep, layer: Layer::Spelling, class: "spelling".into(), conf: 1.0 });
             }
         }
@@ -261,6 +263,36 @@ fn sentence_ranges(text: &str) -> Vec<(usize, usize)> {
     }
     out.push((start, end));
     out
+}
+
+/// A spelling suggestion is taken only for a plain lower-case word and a plain one-word answer a typo away
+/// (names, acronyms, identifiers and "a lot"-style splits are left alone).
+fn plausible_fix(word: &str, fix: &str) -> bool {
+    let plain = |t: &str| t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'') && t.chars().next().is_some_and(|c| c.is_ascii_lowercase());
+    let len = word.chars().count();
+    len >= 3 && plain(word) && plain(fix) && word.chars().all(|c| !c.is_uppercase()) && edit_distance(word, fix) <= if len <= 4 { 1 } else { 2 }
+}
+
+/// Optimal string alignment distance: insertions, deletions, substitutions and swapped neighbours cost one each.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in 0..=a.len() {
+        d[i][0] = i;
+    }
+    for j in 0..=b.len() {
+        d[0][j] = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
 }
 
 /// KeyReed's rules on typed text: the pronoun "I" and the Indian-English patterns with one safe fix.
@@ -403,7 +435,12 @@ fn classify(text: &str, a: usize, b: usize, rep: &str) -> String {
     } else if ow.len() == 1 && rw.len() == 1 && all_in(&ow, ARTICLES) && all_in(&rw, ARTICLES) {
         "article"
     } else if ow.len() == 1 && rw.len() == 1 && (ow[0].starts_with(&rw[0]) || rw[0].starts_with(&ow[0])) {
-        "inflection"
+        let cue = words(&text[..a]).pop();
+        if cue.is_some_and(|c| INFLECTION_CUES.contains(&c.as_str()) || (!c.is_empty() && c.chars().all(|d| d.is_ascii_digit()))) {
+            "inflection_cued"
+        } else {
+            "inflection"
+        }
     } else if punctuation(&ow) && punctuation(&rw) {
         "punctuation"
     } else {
@@ -488,6 +525,30 @@ mod tests {
         assert_eq!(r.corrected, "I believe he doesn't know.");
     }
 
+    /// Suggests whatever it is told for any word that appears in its list.
+    struct Fixed(Vec<(&'static str, &'static str)>);
+    impl Speller for Fixed {
+        fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)> {
+            self.0.iter().filter_map(|(w, fix)| text.find(w).map(|a| (a, a + w.len(), fix.to_string()))).collect()
+        }
+    }
+
+    #[test]
+    fn spelling_layer_fixes_typos_but_not_names_or_far_suggestions() {
+        let speller = Fixed(vec![("recieve", "receive"), ("Karthik", "Karthick"), ("teh", "a lot"), ("wrold", "planet"), ("xyz", "xyzzy")]);
+        let mut e = engine(vec![]).with_speller(Box::new(speller));
+        let r = e.fix("I recieve mail from Karthik about teh wrold.", AppCategory::General).unwrap();
+        assert_eq!(r.corrected, "I receive mail from Karthik about teh wrold.");
+        assert_eq!((r.edits[0].layer, r.edits[0].class.as_str()), (Layer::Spelling, "spelling"));
+    }
+
+    #[test]
+    fn edit_distance_counts_a_swap_as_one() {
+        assert_eq!(edit_distance("teh", "the"), 1);
+        assert_eq!(edit_distance("recieve", "receive"), 1);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
     #[test]
     fn a_tagger_edit_over_a_rule_edit_swallows_it() {
         // t1 = "I am here"; tagger rewrites "I am" -> "We are", which covers the rule's "i" -> "I".
@@ -524,7 +585,9 @@ mod tests {
         assert_eq!(c("I have book", 7, 7, "a "), "article");
         assert_eq!(c("hello world", 0, 5, "Hello"), "capitalisation");
         assert_eq!(c("a cat", 1, 1, ","), "punctuation");
-        assert_eq!(c("two cat", 4, 7, "cats"), "inflection");
+        assert_eq!(c("two cat", 4, 7, "cats"), "inflection_cued");
+        assert_eq!(c("he go home", 3, 5, "goes"), "inflection_cued");
+        assert_eq!(c("the cat sat", 4, 7, "cats"), "inflection");
     }
 
     /// The Python reference and this engine make the same edits on every sentence of tests/data/quickfix_reference.json

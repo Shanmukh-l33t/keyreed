@@ -1032,6 +1032,92 @@ struct CorrectionEvalCase {
     must_not_contain: Vec<String>,
 }
 
+#[cfg(windows)]
+struct WindowsSpelling(vi_win32::spell::WindowsSpeller);
+
+#[cfg(windows)]
+impl vi_rewrite::quickfix::Speller for WindowsSpelling {
+    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)> {
+        self.0.misspellings(text)
+    }
+}
+
+/// `--eval-quickfix-jsonl <in> <out>` writes `{id, output, edits}` lines (the form `bench/score_quickfix.py` reads);
+/// `--eval-typed-jsonl <in> [<out>]` writes the one JSON document `bench/score_typed.py` reads (stdout without `<out>`).
+/// Inputs are gate cases (`id`, `input`, `app_context`). Offsets in the output are in characters. The model folder is
+/// `--grammar-model`, else `KEYREED_GRAMMAR_MODEL`, else `<models>/gector-bert-en`; `--threads N` sets the intra-op threads;
+/// `--spell` adds the Windows spell checker; `--gate-candidates` reports every edit class, including those the shipped table switches off.
+fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
+    use vi_rewrite::quickfix::{Layer, QuickFixEngine};
+    let flag = if typed_format { "--eval-typed-jsonl" } else { "--eval-quickfix-jsonl" };
+    let pos = args.iter().position(|a| a == flag).context("flag missing")?;
+    let input = PathBuf::from(args.get(pos + 1).with_context(|| format!("missing <in.jsonl> after {flag}"))?);
+    let output = args.get(pos + 2).filter(|a| !a.starts_with("--")).map(PathBuf::from);
+    if output.is_none() && !typed_format {
+        bail!("missing <out.jsonl> after {flag} <in.jsonl>");
+    }
+    let value_of = |name: &str| args.iter().position(|a| a == name).and_then(|p| args.get(p + 1).cloned());
+    let paths = RuntimePaths::discover(&AppConfig::default());
+    let model_dir = value_of("--grammar-model")
+        .or_else(|| env::var("KEYREED_GRAMMAR_MODEL").ok())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.models_dir.join("gector-bert-en"));
+    let threads = value_of("--threads").and_then(|t| t.parse().ok()).unwrap_or(0);
+    let gector = vi_rewrite::gector::Gector::load(&paths.sherpa_lib_dir.join("onnxruntime.dll"), &model_dir, threads)
+        .with_context(|| format!("load the grammar model from {}", model_dir.display()))?;
+    let mut engine = QuickFixEngine::new(Box::new(gector));
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--spell") {
+        engine = engine.with_speller(Box::new(WindowsSpelling(vi_win32::spell::WindowsSpeller::new())));
+    }
+    if args.iter().any(|a| a == "--gate-candidates") {
+        // Every class reported as a candidate (nothing off), so the scorer can grade each class alone.
+        engine = engine.with_table(vi_rewrite::quickfix::EditClassTable::parse(r#"{"unknown_class":"review_only","contexts":{},"classes":{}}"#)?);
+    }
+    engine.fix("This are a warm up sentence.", AppCategory::General)?;
+
+    let raw = std::fs::read_to_string(&input).with_context(|| format!("failed to read {}", input.display()))?;
+    let (mut lines, mut records) = (String::new(), Vec::new());
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        let mut case: serde_json::Value = serde_json::from_str(line)?;
+        let text = case["input"].as_str().context("case without input")?.to_string();
+        let context = parse_category_str(case["app_context"].as_str().unwrap_or("general"));
+        let started = Instant::now();
+        let result = engine.fix(&text, context)?;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let chars = |byte: usize| text[..byte].chars().count();
+        let edits: Vec<serde_json::Value> = result
+            .edits
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "start": chars(e.start), "length": chars(e.start + e.length) - chars(e.start), "replacement": e.replacement,
+                    "layer": match e.layer { Layer::Spelling => "spelling", Layer::Rule => "rule", Layer::Grammar => "grammar" },
+                    "class": e.class, "confidence": e.confidence, "silent": e.silent,
+                })
+            })
+            .collect();
+        if typed_format {
+            case["edits"] = edits.into();
+            case["ms"] = ms.into();
+            records.push(case);
+        } else {
+            lines.push_str(&serde_json::json!({"id": case["id"], "output": result.corrected, "edits": edits, "ms": ms}).to_string());
+            lines.push_str("\n");
+        }
+    }
+    if typed_format {
+        let doc = serde_json::json!({"engine": "keyreed quick fix (gector-bert-en + rules)", "records": records}).to_string();
+        match output {
+            Some(path) => std::fs::write(path, doc)?,
+            None => println!("{doc}"),
+        }
+    } else if let Some(path) = output {
+        std::fs::write(path, lines)?;
+    }
+    Ok(())
+}
+
 fn run_eval_correction_jsonl(jsonl_path: &Path, llm_model: &str) -> Result<()> {
     let raw = std::fs::read_to_string(jsonl_path)
         .with_context(|| format!("failed to read {}", jsonl_path.display()))?;
@@ -2571,6 +2657,13 @@ fn main() -> Result<()> {
 
     if args.iter().any(|a| a == "--transcribe-wav") {
         return run_cli_transcribe_wav(&args);
+    }
+
+    if args.iter().any(|a| a == "--eval-quickfix-jsonl") {
+        return run_eval_quickfix(&args, false);
+    }
+    if args.iter().any(|a| a == "--eval-typed-jsonl") {
+        return run_eval_quickfix(&args, true);
     }
 
     if let Some(pos) = args.iter().position(|a| a == "--eval-correction-jsonl") {
