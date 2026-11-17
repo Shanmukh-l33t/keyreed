@@ -60,7 +60,7 @@ impl Default for CloudSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PillClickAction {
-    /// Not offered in 2.0 beta 1: the Composer is not wired to a writing model yet (the setting is kept for later).
+    /// Open the Composer bar on the selection: type or pick an instruction for it.
     OpenComposer,
     #[default]
     Dictate,
@@ -68,13 +68,48 @@ pub enum PillClickAction {
 }
 
 impl PillClickAction {
-    pub const ALL: [PillClickAction; 2] = [PillClickAction::Dictate, PillClickAction::Nothing];
+    pub const ALL: [PillClickAction; 3] = [PillClickAction::Dictate, PillClickAction::OpenComposer, PillClickAction::Nothing];
 
     pub fn label(self) -> &'static str {
         match self {
             PillClickAction::OpenComposer => "Open the Composer",
             PillClickAction::Dictate => "Start or stop dictation",
             PillClickAction::Nothing => "Nothing",
+        }
+    }
+}
+
+/// What a bound mouse button does. The keyboard chords' actions, offered on the three buttons a mouse has
+/// beside its left and right click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseAction {
+    #[default]
+    Nothing,
+    /// A press toggles dictation, like a click on the floating listener.
+    Dictate,
+    QuickFix,
+    /// Held: a tap opens the Composer on the selection, a hold speaks the instruction.
+    VoiceCommand,
+    OpenComposer,
+}
+
+impl MouseAction {
+    pub const ALL: [MouseAction; 5] = [
+        MouseAction::Nothing,
+        MouseAction::Dictate,
+        MouseAction::QuickFix,
+        MouseAction::VoiceCommand,
+        MouseAction::OpenComposer,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MouseAction::Nothing => "Nothing",
+            MouseAction::Dictate => "Start or stop dictation",
+            MouseAction::QuickFix => "Quick Fix",
+            MouseAction::VoiceCommand => "Voice command",
+            MouseAction::OpenComposer => "Open the Composer",
         }
     }
 }
@@ -104,6 +139,13 @@ pub struct AppConfig {
     /// Hold with text selected and say what to do with it (plan P3.7).
     #[serde(default = "default_voice_command_hotkey")]
     pub voice_command_hotkey: HotkeySpec,
+    /// What the middle, back and forward mouse buttons do (all `Nothing` until the user binds one).
+    #[serde(default)]
+    pub mouse_middle_action: MouseAction,
+    #[serde(default)]
+    pub mouse_back_action: MouseAction,
+    #[serde(default)]
+    pub mouse_forward_action: MouseAction,
     pub output_mode: OutputMode,
     pub default_writing_mode: WritingMode,
     pub auto_context_mode: bool,
@@ -166,6 +208,9 @@ impl Default for AppConfig {
             quick_fix_intro_seen: false,
             composer_hotkey: default_composer_hotkey(),
             voice_command_hotkey: default_voice_command_hotkey(),
+            mouse_middle_action: MouseAction::Nothing,
+            mouse_back_action: MouseAction::Nothing,
+            mouse_forward_action: MouseAction::Nothing,
             output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
             auto_context_mode: true,
@@ -415,6 +460,38 @@ mod tests {
         let (c, dropped) = AppConfig::parse_lenient(&old.to_string());
         assert!(dropped.is_empty());
         assert_eq!(c.pill_click_action, PillClickAction::Nothing);
+    }
+
+    #[test]
+    fn every_pill_click_action_is_offered_including_the_composer() {
+        assert_eq!(PillClickAction::ALL.len(), 3);
+        assert_eq!(PillClickAction::ALL[1], PillClickAction::OpenComposer);
+        assert_eq!(PillClickAction::OpenComposer.label(), "Open the Composer");
+    }
+
+    /// The mouse slots are opt-in: a config that predates them keeps every button unbound.
+    #[test]
+    fn mouse_buttons_default_to_nothing_and_keep_a_saved_choice() {
+        let (c, dropped) = AppConfig::parse_lenient("{}");
+        assert!(dropped.is_empty());
+        assert_eq!(
+            (c.mouse_middle_action, c.mouse_back_action, c.mouse_forward_action),
+            (MouseAction::Nothing, MouseAction::Nothing, MouseAction::Nothing)
+        );
+        // A full old file, saved before the keys existed, loads with them on Nothing too.
+        let mut old = serde_json::to_value(AppConfig::default()).unwrap();
+        let o = old.as_object_mut().unwrap();
+        for k in ["mouse_middle_action", "mouse_back_action", "mouse_forward_action"] {
+            o.remove(k);
+        }
+        let (c, dropped) = AppConfig::parse_lenient(&old.to_string());
+        assert!(dropped.is_empty());
+        assert_eq!(c.mouse_middle_action, MouseAction::Nothing);
+        let (c, _) = AppConfig::parse_lenient(r#"{"mouse_back_action": "quick_fix"}"#);
+        assert_eq!(c.mouse_back_action, MouseAction::QuickFix);
+        // Every action the Settings combo offers has a label.
+        assert_eq!(MouseAction::ALL.len(), 5);
+        assert!(MouseAction::ALL.iter().all(|a| !a.label().is_empty()));
     }
 
     #[test]

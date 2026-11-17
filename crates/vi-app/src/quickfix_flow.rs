@@ -151,9 +151,10 @@ impl QuickFixFlow {
         self.pending = Some(Pending { id, ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
     }
 
-    /// The chord was cancelled, the microphone failed or nothing was said: the held selection is let go unread.
-    pub fn cancel_voice(&mut self) {
-        self.voice = None;
+    /// The chord was cancelled, the microphone failed or nothing was said: the held selection is handed back so a
+    /// tap can open the Composer on it. Every other caller just forgets the selection and ignores it.
+    pub fn cancel_voice(&mut self) -> Option<(ForegroundContext, Captured)> {
+        self.voice.take()
     }
 
     /// A text-job event; anything that is not this flow's job is ignored.

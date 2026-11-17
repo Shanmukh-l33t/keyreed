@@ -302,6 +302,19 @@ mod tests {
         assert!(matches!(c.key(0x1B, true, false), CaptureStep::Done(_)));
     }
 
+    /// The Composer chord is a real shortcut even when nothing is registered for it yet: another shortcut on the
+    /// same keys is refused, so a chord saved before it worked is never silently doubled up.
+    #[test]
+    fn a_saved_composer_chord_conflicts_like_any_other() {
+        let cfg = AppConfig::default();
+        let composer = cfg.composer_hotkey.clone();
+        let p = cfg.shortcut_problem(ShortcutRole::QuickFix, &composer).expect("refused");
+        assert!(p.blocks && p.message.contains("already the Composer shortcut"), "{}", p.message);
+        let qf = cfg.quick_fix_hotkey.clone();
+        assert!(cfg.shortcut_problem(ShortcutRole::Composer, &qf).expect("refused").blocks);
+        assert!(cfg.shortcut_problem(ShortcutRole::Composer, &composer).is_none(), "its own chord is free");
+    }
+
     #[test]
     fn key_names_are_plain() {
         assert_eq!(key_name(0x41), "A");

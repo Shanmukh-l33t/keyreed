@@ -9,6 +9,9 @@
 //! - Injects unassigned `VK_MENU_MASK` (`0xE8`) when `Win` or `Alt` chord triggers so releasing `Win`/`Alt`
 //!   never pops open the Windows Start Menu or app menu bar!
 //! - Dynamically installs and removes (`UnhookWindowsHookEx`) the hook when Push-to-Talk is independently toggled!
+//! - Runs a second `WH_MOUSE_LL` hook on the same thread for the three bindable buttons (middle, back, forward).
+//!   Moves, the wheel and left/right clicks return before any state is read, so a mouse never fires an action
+//!   it was not bound to.
 
 use crate::security::KEYREED_SYNTHETIC_TAG;
 use crossbeam_channel::Sender;
@@ -25,6 +28,8 @@ pub enum HotkeyEvent {
     CycleMode,
     CorrectSelection,
     OpenComposer,
+    /// A bound mouse button: start or stop dictation, as a click on the floating listener does.
+    ToggleDictation,
     VoiceCommandDown,
     VoiceCommandUp,
     /// A longer chord fired while a modifier-only dictation chord (its prefix) had already
@@ -39,6 +44,16 @@ pub enum ChordAction {
     OpenComposer,
     /// Held like dictation: `VoiceCommandDown` on press, `VoiceCommandUp` on release.
     VoiceCommand,
+    /// Only a mouse binding asks for this: a press toggles dictation.
+    Dictate,
+}
+
+/// The buttons KeyReed can bind. Left and right are never intercepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Middle,
+    Back,
+    Forward,
 }
 
 /// At most this many extra chords (one latch bit each).
@@ -58,6 +73,8 @@ struct HookSharedConfig {
     mode_cycle_spec: HotkeySpec,
     /// Extra chords; only entries with a trigger key (`vk != 0`) are used.
     chords: Vec<(HotkeySpec, ChordAction)>,
+    /// Bound mouse buttons; an unbound button is not in here and is never swallowed.
+    mouse: Vec<(MouseButton, ChordAction)>,
     cancel_vk: u16,
     active_recording_or_busy: Arc<AtomicBool>,
 }
@@ -142,6 +159,7 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
                 ChordAction::CorrectSelection => HotkeyEvent::CorrectSelection,
                 ChordAction::OpenComposer => HotkeyEvent::OpenComposer,
                 ChordAction::VoiceCommand => HotkeyEvent::VoiceCommandDown,
+                ChordAction::Dictate => HotkeyEvent::ToggleDictation,
             });
             d.menu_mask = spec.win || spec.alt;
             d.swallow = !is_modifier_vk(spec.vk);
@@ -186,6 +204,32 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         d.events.push(HotkeyEvent::PttUp);
     }
     d
+}
+
+/// What the mouse hook does with one press or release of a bindable button.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MouseDecision {
+    events: Vec<HotkeyEvent>,
+    swallow: bool,
+}
+
+/// The mouse matcher (pure so it can be unit-tested): a bound button sends the same events its keyboard chord
+/// would, so the coordinator handles it identically. Only a bound button is swallowed — an unbound one, and
+/// every left/right click, is never seen here.
+fn decide_mouse(cfg: &HookSharedConfig, button: MouseButton, is_down: bool) -> MouseDecision {
+    let Some(action) = cfg.mouse.iter().find(|(b, _)| *b == button).map(|(_, a)| *a) else {
+        return MouseDecision::default();
+    };
+    let event = match (action, is_down) {
+        (ChordAction::VoiceCommand, true) => Some(HotkeyEvent::VoiceCommandDown),
+        (ChordAction::VoiceCommand, false) => Some(HotkeyEvent::VoiceCommandUp),
+        (_, false) => None,
+        (ChordAction::CorrectSelection, true) => Some(HotkeyEvent::CorrectSelection),
+        (ChordAction::OpenComposer, true) => Some(HotkeyEvent::OpenComposer),
+        (ChordAction::Dictate, true) => Some(HotkeyEvent::ToggleDictation),
+    };
+    // The release is swallowed too: the application must never see a lone button-up.
+    MouseDecision { events: event.into_iter().collect(), swallow: true }
 }
 
 /// Pure VK-matching state tracker (unit-testable across platforms).
@@ -345,8 +389,8 @@ mod win_impl {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
         SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-        PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
-        WM_USER,
+        MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN,
+        WM_MBUTTONUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP,
     };
 
     pub const WM_ENABLE_HOOK: u32 = WM_USER + 10;
@@ -487,6 +531,44 @@ mod win_impl {
         CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
     }
 
+    /// The bindable button of one hook message, and whether it went down. Everything else (moves, the wheel,
+    /// left and right clicks) is not ours.
+    pub(super) fn mouse_button(msg: u32, mouse_data: u32) -> Option<(MouseButton, bool)> {
+        let down = msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
+        match msg {
+            WM_MBUTTONDOWN | WM_MBUTTONUP => Some((MouseButton::Middle, down)),
+            WM_XBUTTONDOWN | WM_XBUTTONUP => match (mouse_data >> 16) as u16 {
+                1 => Some((MouseButton::Back, down)),
+                2 => Some((MouseButton::Forward, down)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    unsafe extern "system" fn ll_mouse_proc(
+        code: i32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // The early test keeps moves and the wheel off every lock and every keystroke path.
+        if code >= 0 && lparam != 0 && matches!(wparam as u32, WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP) {
+            let ms = &*(lparam as *const MSLLHOOKSTRUCT);
+            if let Some((button, is_down)) = mouse_button(wparam as u32, ms.mouseData) {
+                if let Some(ctx) = HOOK_CTX.get().filter(|_| !CAPTURE_ACTIVE.load(Ordering::Relaxed)) {
+                    let d = decide_mouse(&ctx.shared.lock(), button, is_down);
+                    for ev in d.events {
+                        let _ = ctx.tx.try_send(ev);
+                    }
+                    if d.swallow {
+                        return 1;
+                    }
+                }
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
     pub fn spawn_hook_thread(
         tx: Sender<HotkeyEvent>,
         shared: Arc<Mutex<HookSharedConfig>>,
@@ -517,6 +599,11 @@ mod win_impl {
                     crate::security::timing_mark_async("hook_initially_disabled");
                     std::ptr::null_mut()
                 };
+                let mut hmouse: HHOOK = if initially_enabled {
+                    SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), std::ptr::null_mut(), 0)
+                } else {
+                    std::ptr::null_mut()
+                };
 
                 let mut msg: MSG = std::mem::zeroed();
                 while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -530,11 +617,18 @@ mod win_impl {
                                     0,
                                 );
                             }
+                            if hmouse.is_null() {
+                                hmouse = SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), std::ptr::null_mut(), 0);
+                            }
                         }
                         WM_DISABLE_HOOK => {
                             if !hhook.is_null() {
                                 let _ = UnhookWindowsHookEx(hhook);
                                 hhook = std::ptr::null_mut();
+                            }
+                            if !hmouse.is_null() {
+                                let _ = UnhookWindowsHookEx(hmouse);
+                                hmouse = std::ptr::null_mut();
                             }
                             if let Some(ctx) = HOOK_CTX.get() {
                                 ctx.mods.lock().reset();
@@ -554,6 +648,9 @@ mod win_impl {
                 }
                 if !hhook.is_null() {
                     let _ = UnhookWindowsHookEx(hhook);
+                }
+                if !hmouse.is_null() {
+                    let _ = UnhookWindowsHookEx(hmouse);
                 }
             })?;
 
@@ -580,6 +677,7 @@ impl GlobalHotkeyEngine {
             ptt_spec,
             mode_cycle_spec,
             chords: Vec::new(),
+            mouse: Vec::new(),
             cancel_vk: 0x1B, // VK_ESCAPE
             active_recording_or_busy,
         }));
@@ -609,6 +707,11 @@ impl GlobalHotkeyEngine {
     pub fn set_extra_chords(&self, mut chords: Vec<(HotkeySpec, ChordAction)>) {
         chords.truncate(MAX_EXTRA_CHORDS);
         self.shared.lock().chords = chords;
+    }
+
+    /// Replaces the mouse bindings: only bound buttons are matched, everything else is left alone.
+    pub fn set_mouse_bindings(&self, bindings: Vec<(MouseButton, ChordAction)>) {
+        self.shared.lock().mouse = bindings;
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -711,6 +814,7 @@ mod tests {
                 (chord(K), ChordAction::OpenComposer),
                 (chord(V), ChordAction::VoiceCommand),
             ],
+            mouse: Vec::new(),
             cancel_vk: 0x1B,
             active_recording_or_busy: Arc::new(AtomicBool::new(false)),
         }
@@ -868,5 +972,53 @@ mod tests {
         m.swallowed = vec![G];
         m.resync(|_| false, G);
         assert_eq!(m.swallowed, [G]);
+    }
+
+    fn cfg_with_mouse(bindings: &[(MouseButton, ChordAction)]) -> HookSharedConfig {
+        let mut cfg = cfg_with_chords();
+        cfg.mouse = bindings.to_vec();
+        cfg
+    }
+
+    #[test]
+    fn a_bound_mouse_button_fires_what_its_chord_would() {
+        let cfg = cfg_with_mouse(&[
+            (MouseButton::Middle, ChordAction::Dictate),
+            (MouseButton::Back, ChordAction::CorrectSelection),
+            (MouseButton::Forward, ChordAction::VoiceCommand),
+        ]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Middle, true).events, [HotkeyEvent::ToggleDictation]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Back, true).events, [HotkeyEvent::CorrectSelection]);
+        // A voice command is held like its chord: the release ends it.
+        assert_eq!(decide_mouse(&cfg, MouseButton::Forward, true).events, [HotkeyEvent::VoiceCommandDown]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Forward, false).events, [HotkeyEvent::VoiceCommandUp]);
+        // The press-and-release actions fire once, on the press.
+        assert!(decide_mouse(&cfg, MouseButton::Middle, false).events.is_empty());
+        assert!(decide_mouse(&cfg, MouseButton::Back, false).events.is_empty());
+    }
+
+    #[test]
+    fn only_a_bound_button_is_swallowed() {
+        let cfg = cfg_with_mouse(&[(MouseButton::Back, ChordAction::CorrectSelection)]);
+        assert!(decide_mouse(&cfg, MouseButton::Back, true).swallow, "it fires, so the app must not get the click");
+        assert!(decide_mouse(&cfg, MouseButton::Back, false).swallow, "nor a lone release");
+        assert!(!decide_mouse(&cfg, MouseButton::Middle, true).swallow, "unbound");
+        assert!(!decide_mouse(&cfg, MouseButton::Forward, false).swallow);
+        // Nothing bound at all: an old config with no mouse keys leaves every button alone.
+        assert!(!decide_mouse(&cfg_with_mouse(&[]), MouseButton::Middle, true).swallow);
+    }
+
+    /// Left and right clicks, moves and the wheel never reach the matcher.
+    #[test]
+    #[cfg(windows)]
+    fn other_mouse_events_are_not_ours() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        for msg in [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MOUSEWHEEL, WM_MOUSEHWHEEL] {
+            assert!(super::win_impl::mouse_button(msg, 0).is_none(), "{msg:#x}");
+        }
+        assert_eq!(super::win_impl::mouse_button(WM_MBUTTONDOWN, 0), Some((MouseButton::Middle, true)));
+        assert_eq!(super::win_impl::mouse_button(WM_XBUTTONDOWN, 1 << 16), Some((MouseButton::Back, true)));
+        assert_eq!(super::win_impl::mouse_button(WM_XBUTTONUP, 2 << 16), Some((MouseButton::Forward, false)));
+        assert!(super::win_impl::mouse_button(WM_XBUTTONDOWN, 3 << 16).is_none(), "XBUTTON3 is not ours");
     }
 }

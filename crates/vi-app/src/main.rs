@@ -29,7 +29,7 @@ use vi_core::style::{LearnState, LoadOutcome, StyleStore};
 use vi_core::{
     brand::{AUTOSTART_REG_VALUE, PRODUCT_NAME, PRODUCT_TAGLINE, SINGLE_INSTANCE_MUTEX, VERSION_STR},
     AppCategory, AppConfig, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
-    PipelineMetrics, PipelineResult, PttAction, PttController, WritingMode,
+    HotkeySpec, MouseAction, PipelineMetrics, PipelineResult, PttAction, PttController, WritingMode,
 };
 use vi_rewrite::{slm::LlamaServerSupervisor, RewriteEngine};
 use vi_win32::{
@@ -38,7 +38,7 @@ use vi_win32::{
     harden_and_init_process, is_spec_physically_down, perf_trace_record,
     prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
     set_autostart_enabled, system_available_ram_mb, timing_mark, write_clipboard_unicode,
-    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
+    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, MouseButton, SingleInstanceGuard, UiAction,
 };
 #[cfg(windows)]
 use vi_core::editwatch::UndoToken;
@@ -251,14 +251,40 @@ fn with_engine_or_rules<R>(
     }
 }
 
-/// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
-/// Registers the Quick Fix and voice-command chords with the hook. The Composer chord is left out of beta.1
-/// (the bar is not wired).
-fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
-    hk.set_extra_chords(vec![
+/// The chords the hook matches beside dictation and mode cycle: Quick Fix, the Composer and the voice command.
+fn extra_chords(cfg: &AppConfig) -> Vec<(HotkeySpec, ChordAction)> {
+    vec![
         (cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection),
+        (cfg.composer_hotkey.clone(), ChordAction::OpenComposer),
         (cfg.voice_command_hotkey.clone(), ChordAction::VoiceCommand),
-    ]);
+    ]
+}
+
+/// The mouse buttons the user bound. `Nothing` binds nothing, so that button is never intercepted.
+fn mouse_bindings(cfg: &AppConfig) -> Vec<(MouseButton, ChordAction)> {
+    [
+        (MouseButton::Middle, cfg.mouse_middle_action),
+        (MouseButton::Back, cfg.mouse_back_action),
+        (MouseButton::Forward, cfg.mouse_forward_action),
+    ]
+    .into_iter()
+    .filter_map(|(button, action)| {
+        let action = match action {
+            MouseAction::Nothing => return None,
+            MouseAction::Dictate => ChordAction::Dictate,
+            MouseAction::QuickFix => ChordAction::CorrectSelection,
+            MouseAction::VoiceCommand => ChordAction::VoiceCommand,
+            MouseAction::OpenComposer => ChordAction::OpenComposer,
+        };
+        Some((button, action))
+    })
+    .collect()
+}
+
+/// Registers KeyReed's chords and mouse bindings with the hook (at start, and after every save).
+fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
+    hk.set_extra_chords(extra_chords(cfg));
+    hk.set_mouse_bindings(mouse_bindings(cfg));
 }
 
 /// The learning switch is a setting (setup and My style both edit it) while the store is what records, so the
@@ -1929,6 +1955,44 @@ fn job_cloud(cfg: &AppConfig, route: &vi_core::route::Route) -> Option<vi_core::
     route.target(&cfg.cloud, key)
 }
 
+/// Opens the Composer bar on the selection (plan P3.4). One function for the tray item, the pill and the
+/// Composer chord, so the three can never drift. `held` is the selection a voice-command tap already captured;
+/// without it the selection is copied again, and a window that refuses the copy opens the bar empty.
+#[cfg(windows)]
+fn open_composer(
+    cfg: &AppConfig,
+    composer: &mut composer_flow::ComposerFlow,
+    gui: &vi_win32::ui::win_gui::WinGuiHandle,
+    held: Option<(ForegroundContext, vi_win32::selection::Captured)>,
+) {
+    let (ctx, captured, allowed) = match held {
+        Some((ctx, captured)) => (ctx, Some(captured), true),
+        None => {
+            let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+            // Never copy from KeyReed's own windows or where the selection service refuses.
+            let allowed = ctx.process_id != std::process::id()
+                && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
+            let captured = if allowed {
+                vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
+            } else {
+                None
+            };
+            (ctx, captured, allowed)
+        }
+    };
+    // One rule decides the route, for the label and for the job (plan P3.5).
+    let route = route_for(cfg);
+    let selection = captured.as_ref().map(|c| c.text.clone());
+    composer.open(captured, ctx.clone(), job_cloud(cfg, &route));
+    gui.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
+        selection,
+        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
+        route: route.label,
+        cloud: route.cloud,
+        unavailable: !route.allowed,
+    }));
+}
+
 #[cfg(windows)]
 fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     harden_and_init_process();
@@ -2032,6 +2096,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut quick_fix = quickfix_flow::QuickFixFlow::default();
             // Where this capture's transcript goes (plan P3.7); ordinary dictation delivers it.
             let mut capture_target = CaptureTarget::Deliver;
+            // When the voice-command chord went down: a tap opens the Composer, a hold speaks.
+            let mut voice_pressed_ms: Option<u64> = None;
             // The word the pill just announced, so its Undo chip can take it back.
             let mut learned_undo: Option<UndoToken> = None;
             let mut saw_physical_key_down = false;
@@ -2073,26 +2139,45 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
                                 }
                             }
-                            // The Composer chord is not wired in beta.1.
-                            Ok(HotkeyEvent::OpenComposer) => {}
-                            // The voice-command chord: capture the selection on press, record while it is held, run the
-                            // spoken words on the selection on release. Without a selection nothing records.
+                            Ok(HotkeyEvent::OpenComposer) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    open_composer(&cfg, &mut composer, &gui_for_worker, None);
+                                }
+                            }
+                            Ok(HotkeyEvent::ToggleDictation) => {
+                                // A bound mouse button: the floating listener's click, without the pill.
+                                pending_action = ptt.on_floating_mic_click(now_ms());
+                            }
+                            // The voice-command chord: capture the selection on press, record while it is held, and on
+                            // release either speak the instruction (a hold) or open the Composer on it (a tap).
+                            // Without a selection nothing records and nothing opens.
                             Ok(HotkeyEvent::VoiceCommandDown) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
                                     let armed = quick_fix.arm_voice(&cfg, &gui_for_worker);
                                     if voice::may_record(CaptureTarget::VoiceCommand, true, armed) {
                                         capture_target = CaptureTarget::VoiceCommand;
+                                        voice_pressed_ms = Some(now_ms());
+                                        // The microphone opens on the press so a hold never clips its first word;
+                                        // a tap throws those few milliseconds away unread.
                                         pending_action = ptt.on_floating_mic_click(now_ms());
                                     }
                                 }
                             }
                             Ok(HotkeyEvent::VoiceCommandUp) => {
-                                if capture_target == CaptureTarget::VoiceCommand && ptt.is_recording() {
-                                    pending_action = ptt.on_floating_mic_click(now_ms());
-                                } else {
-                                    // The press never started a recording (refused, or a dictation was running).
-                                    quick_fix.cancel_voice();
-                                }
+                                let held = voice_pressed_ms.take().map_or(0, |t| now_ms().saturating_sub(t));
+                                let armed = capture_target == CaptureTarget::VoiceCommand && ptt.is_recording();
+                                match voice::release(armed, held) {
+                                    Some(voice::ChordRelease::Speak) => pending_action = ptt.on_floating_mic_click(now_ms()),
+                                    Some(voice::ChordRelease::OpenComposer) => {
+                                        // Discard the tap's audio, then open the bar on the selection the press took.
+                                        pending_action = ptt.on_emergency_cancel("voice_tap");
+                                        open_composer(&cfg, &mut composer, &gui_for_worker, quick_fix.cancel_voice());
+                                    }
+                                    // The press never captured a selection (refused, or a dictation was running).
+                                    None => {
+                                        quick_fix.cancel_voice();
+                                    }
+                                };
                             }
                             Ok(HotkeyEvent::CycleMode) => {
                                 cfg.default_writing_mode = cfg.default_writing_mode.next();
@@ -2129,26 +2214,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Ok(UiAction::OpenComposer) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
-                                    let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-                                    // Never copy from KeyReed's own windows or where the selection service refuses.
-                                    let allowed = ctx.process_id != std::process::id()
-                                        && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
-                                    let captured = if allowed {
-                                        vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
-                                    } else {
-                                        None
-                                    };
-                                    // One rule decides the route, for the label and for the job (plan P3.5).
-                                    let route = route_for(&cfg);
-                                    let selection = captured.as_ref().map(|c| c.text.clone());
-                                    composer.open(captured, ctx.clone(), job_cloud(&cfg, &route));
-                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
-                                        selection,
-                                        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
-                                        route: route.label,
-                                        cloud: route.cloud,
-                                        unavailable: !route.allowed,
-                                    }));
+                                    open_composer(&cfg, &mut composer, &gui_for_worker, None);
                                 }
                             }
                             Ok(UiAction::ComposerClosed) => {
@@ -3102,6 +3168,49 @@ mod slm_lock_tests {
         holder.join().unwrap();
         // Free again: the shared engine is used.
         assert!(!with_engine_or_rules(&lock, SLM_LOCK_WAIT, |_, busy| busy));
+    }
+}
+
+#[cfg(test)]
+mod input_binding_tests {
+    use super::*;
+
+    #[test]
+    fn all_three_chords_are_registered_for_the_hook() {
+        let mut cfg = AppConfig::default();
+        cfg.composer_hotkey = vi_core::shortcut::chord(true, true, false, false, 0x4B);
+        let chords = extra_chords(&cfg);
+        assert_eq!(chords.len(), 3);
+        assert_eq!(chords[0], (cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection));
+        assert_eq!(chords[1], (cfg.composer_hotkey.clone(), ChordAction::OpenComposer));
+        assert_eq!(chords[1].0.display_name, "Ctrl + Alt + K");
+        assert_eq!(chords[2], (cfg.voice_command_hotkey.clone(), ChordAction::VoiceCommand));
+    }
+
+    #[test]
+    fn each_mouse_slot_maps_to_its_action_and_nothing_binds_nothing() {
+        let mut cfg = AppConfig::default();
+        assert!(mouse_bindings(&cfg).is_empty(), "an unconfigured mouse is never intercepted");
+        cfg.mouse_middle_action = MouseAction::Dictate;
+        cfg.mouse_back_action = MouseAction::QuickFix;
+        cfg.mouse_forward_action = MouseAction::VoiceCommand;
+        assert_eq!(
+            mouse_bindings(&cfg),
+            [
+                (MouseButton::Middle, ChordAction::Dictate),
+                (MouseButton::Back, ChordAction::CorrectSelection),
+                (MouseButton::Forward, ChordAction::VoiceCommand),
+            ]
+        );
+        cfg.mouse_middle_action = MouseAction::OpenComposer;
+        cfg.mouse_back_action = MouseAction::Nothing;
+        assert_eq!(
+            mouse_bindings(&cfg),
+            [
+                (MouseButton::Middle, ChordAction::OpenComposer),
+                (MouseButton::Forward, ChordAction::VoiceCommand),
+            ]
+        );
     }
 }
 
