@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.0.0-beta.1 (2026-11-17)
+
+Beta. First public build of the 2.0 line. Quick Fix is the new feature; the dictation path is the 0.5.1 path plus the changes listed below. No dictation benchmark was run for this beta.
+
+### What works
+
+- **Quick Fix (Ctrl + Win + G).** Select text in another application, press the shortcut, and KeyReed shows the proposed corrections in a Review panel. Nothing is replaced until you confirm (`quick_fix_always_review` is on by default; a Settings switch turns on silent replace). Spelling uses the Windows spell checker; grammar uses the Apache-2.0 `gector-bert-en` model (int8, 73 MB download, runs locally through the ONNX Runtime that ships with the app). Undo restores the original text.
+- **Safer text handling.** Selection capture and replacement restore your clipboard; a busy language model never blocks dictation (it falls back to basic cleanup); streaming client with limits; the shortcut table supports several chords.
+- **Shortcut capture.** Press the keys you want in Settings instead of picking a preset; conflicting or reserved chords are refused.
+- **New pill states and Review panel** with short motion that respects reduced-motion.
+
+### Not in this beta
+
+- The Composer (the window that rewrites a selection with a preset such as Shorter or Summarise): the window exists but is not connected, so its shortcut and the pill click do nothing beyond starting dictation.
+- Voice commands, learning from your edits, and the "My style" Settings page.
+- The deeper grammar pass.
+- Quick Fix in Chromium-based apps, Outlook and Word has not been checked by hand; the automated check ran in a plain Windows edit control. Quick Fix grammar edits stay Review-only.
+- The default shortcuts (Ctrl + Win + G) have not been checked against every app's own shortcuts; change them in Settings if they clash.
+- The build is unsigned.
+
+The Quick Fix grammar model is downloaded from this release (`gector-bert-en-int8.tar.bz2`, SHA-256 pinned in the app). The full offline archive already contains it.
+
+| File | Size | SHA-256 |
+| --- | --- | --- |
+| `KeyReed-Setup-x64.exe` | 24.2 MB | `2c11bde55ee52bf91d2c762f10709825dd2af553212f51f726acd7d3f0021631` |
+| `keyreed-2.0.0-beta.1-windows-x86_64-portable.zip` | 47.0 MB | `4936c20ed3286bb6309e1a47caaad6ba2df6def7e6cd3c3f68c9edec3279c732` |
+| `keyreed-2.0.0-beta.1-windows-x64-full-offline.zip` | 1.10 GB | `b87365519ba2662d11debbeb263d01ad5f8ef9717b2e6d77ad5e77473d3f5c5f` |
+| `gector-bert-en-int8.tar.bz2` | 73.1 MB | `5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0` |
+
 ## 0.5.1 (2026-11-17)
 
 Design release: new installer, redesigned Settings controls. Speech, grammar and insertion code are unchanged from 0.5.0.
