@@ -402,7 +402,7 @@ pub struct AsrUiInfo {
     pub recommended: bool,
 }
 
-pub const ASR_UI_CATALOG: [AsrUiInfo; 6] = [
+pub const ASR_UI_CATALOG: [AsrUiInfo; 8] = [
     AsrUiInfo {
         id: "parakeet-tdt-0.6b-v2-int8",
         name: "Parakeet v2",
@@ -419,6 +419,24 @@ pub const ASR_UI_CATALOG: [AsrUiInfo; 6] = [
         languages: "25 languages",
         download_mb: 465,
         measured_s_per_10s: Some(1.7),
+        recommended: false,
+    },
+    AsrUiInfo {
+        id: "parakeet-tdt-110m-en-int8",
+        name: "Parakeet 110M",
+        summary: "Small and quick English model for low-RAM PCs.",
+        languages: "English",
+        download_mb: 103,
+        measured_s_per_10s: None,
+        recommended: false,
+    },
+    AsrUiInfo {
+        id: "parakeet-tdt-0.6b-ultra-int8",
+        name: "Parakeet Ultra",
+        summary: "Newer 25-language model. Worth comparing with v2.",
+        languages: "25 languages",
+        download_mb: 465,
+        measured_s_per_10s: None,
         recommended: false,
     },
     AsrUiInfo {

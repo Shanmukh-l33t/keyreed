@@ -17,8 +17,8 @@ flowchart TD
 ```
 
 1. **Hotkey.** A low-level keyboard hook on its own thread watches the configured trigger, Escape and the mode-cycle shortcut. Key repeat is ignored. Minimum hold is 110 ms.
-2. **Capture.** The microphone opens when recording starts and closes when it stops, is cancelled or hits the 30 minute cap. Audio stays in memory and is zeroized after decode.
-3. **Transcription.** sherpa-onnx runs the selected speech model on the CPU. Hotwords come from your personal vocabulary.
+2. **Capture.** The microphone opens when recording starts. After the key is released it keeps recording for 200 ms, up to 600 ms while you are still speaking, so the last word is not clipped; it then closes. Audio is resampled to 16 kHz with a windowed-sinc low-pass filter. A 30 minute recording is processed at the cap, not discarded. Audio stays in memory and is zeroized after decode.
+3. **Transcription.** sherpa-onnx runs the selected speech model on the CPU. When your personal vocabulary is not empty and the model is a Parakeet transducer, the recognizer uses `modified_beam_search` with a BPE vocabulary derived from the model's `tokens.txt` so your terms bias decoding; with an empty vocabulary it uses the faster greedy search. Quiet recordings are judged by a 30 ms windowed level gate, not the clip average.
 4. **Tier 0.** Fillers, stutters and spoken self-corrections are removed, casing and your vocabulary are applied, and Terminal / Code mode compiles spoken flags and paths into commands. Likely silence hallucinations are dropped.
 5. **Grammar model.** If installed, a small local model polishes Smart, Professional, Casual and Technical text. Exact and Terminal / Code do not rephrase.
 6. **Guards.** The model output is rejected, and Tier 0 text is used, if it is empty, starts with assistant chatter, changes numbers or identifiers, or is far longer or shorter than the input.
@@ -42,6 +42,8 @@ All are INT8 and run on the CPU. Figures are approximate catalog values from `cr
 | --- | --- | --- | --- |
 | `parakeet-tdt-0.6b-v2-int8` (default) | English | 460 MB | 690 MB |
 | `parakeet-tdt-0.6b-v3-int8` | 25 European languages | 465 MB | 710 MB |
+| `parakeet-tdt-0.6b-ultra-int8` | 25 European languages (compare with v2 before relying on it) | 465 MB | 715 MB |
+| `parakeet-tdt-110m-en-int8` | English, low-RAM tier | 103 MB | 190 MB |
 | `whisper-small.en-int8` | English | 606 MB | 440 MB |
 | `sense-voice-small-int8` | en, zh, ja, ko, yue | 999 MB | 290 MB |
 | `moonshine-base-en-int8` | English | 239 MB | 165 MB |

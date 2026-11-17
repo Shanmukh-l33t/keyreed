@@ -1,5 +1,39 @@
 # Changelog
 
+## 2.1.0-beta.1 (release candidate, not published)
+
+Hex-informed round. Built on Linux and compiled for Windows x64. No tests, benchmarks or manual runs were performed for this candidate; it is meant for hands-on evaluation. Research notes are in `docs/research/`.
+
+### Speech recognition
+
+- **Personal vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords whenever your dictionary has terms (greedy search otherwise). Before this, the terms were passed to a greedy decoder that ignores them. The runtime version is checked first.
+- **Quiet microphones are no longer dropped.** The clip-average level test is replaced by a 30 ms windowed gate that also accepts speech 12 dB above the clip's own floor.
+- **Better audio in.** A windowed-sinc resampler replaces the 3-tap box and linear interpolation, and a 20 Hz DC blocker runs before level and speech detection.
+- **Release tail.** Recording continues 200 ms after release (up to 600 ms while you keep speaking) so the last word survives an early key-up.
+- **Two more models, both verified against pinned SHA-256:** Parakeet TDT 110M (English, 103 MB, low RAM) and Parakeet Ultra (25 languages). The default is unchanged.
+- **Cleanup that changes less.** Filler removal keeps your full stops, "hmm" and "ah" stay, only doubled function words collapse ("had had" stays), wording polish only runs in Professional mode, and "march" and "august" are no longer recased.
+
+### Interface
+
+- Waveform with real meter ballistics (35 ms attack, 95 ms decay, auto level that adapts to your voice and microphone), taller bars for speech, smoother colour.
+- Teal for "working" (Transcribing, Fixing) so amber means only "look at this".
+- A "Open privacy settings" button when the microphone fails. Setup starts the model download when you press Next, shows progress on every page, auto-advances when the model is ready, and ends with a practice step that says what went wrong.
+- Emerald focus ring, arrow keys in the sidebar, Enter on the default button, a vocabulary editor with Term and Sounds like rows, a screen-reader name for the pill.
+
+### Windows reliability
+
+- A 30 minute recording is processed at the cap instead of being discarded. Audio is no longer dropped on the cloud profile path.
+- A held trigger key's repeats and key-up are swallowed; modifiers resync from the OS on every key event; key chords need exact modifiers; pressing another key while Right Ctrl is held cancels the dictation.
+- Clipboard history exclusion now defaults on for new settings and always applies to the typing backup copy.
+- A log file at `%LOCALAPPDATA%\keyreed\logs\keyreed.log` and a panic hook. The installer stops only KeyReed's own `llama-server.exe`.
+- The build script embeds the manifest and icon for MSVC builds too.
+
+### Known limits
+
+- Everything above is untested at runtime. Beam search speed with hotwords, the new resampler, the release tail and the UI changes need your eyes.
+- Hook re-arm on foreground change and the session-lock modifier reset were not implemented.
+- The build is unsigned.
+
 ## 2.0.0-beta.1 (2026-11-17)
 
 Beta. First public build of the 2.0 line. Quick Fix is the new feature; the dictation path is the 0.5.1 path plus the changes listed below. No dictation benchmark was run for this beta.

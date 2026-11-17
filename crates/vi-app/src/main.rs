@@ -2459,6 +2459,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 // Microphone disconnected mid-recording: attempt seamless rebind to default device
                                 log::warn!("Active microphone disconnected mid-session; attempting default-device recovery");
                                 if let Ok( fallback_cap ) = ActiveCapture::start(None) {
+                                    gui_for_worker.set_level_source(Some(fallback_cap.level_handle()));
                                     active_mic = Some(fallback_cap);
                                     gui_for_worker.notify_warning(
                                         "Microphone disconnected",
@@ -2505,6 +2506,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(cap) => {
                                 supervisor.session_mic_init_ms = t_mic.elapsed().as_secs_f64() * 1000.0;
                                 timing_mark("mic_started");
+                                gui_for_worker.set_level_source(Some(cap.level_handle()));
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
                                 gui_for_worker.sync(EngineState::Listening, 0.0, None);

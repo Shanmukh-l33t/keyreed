@@ -63,7 +63,7 @@ keyreed.exe --list-models
 keyreed.exe --download-model parakeet-tdt-0.6b-v3-int8
 ```
 
-Available ids: `parakeet-tdt-0.6b-v2-int8` (default), `parakeet-tdt-0.6b-v3-int8`, `moonshine-base-en-int8`, `moonshine-tiny-en-int8`, `sense-voice-small-int8`, `whisper-small.en-int8`.
+Available ids: `parakeet-tdt-0.6b-v2-int8` (default), `parakeet-tdt-0.6b-v3-int8`, `parakeet-tdt-0.6b-ultra-int8`, `parakeet-tdt-110m-en-int8`, `moonshine-base-en-int8`, `moonshine-tiny-en-int8`, `sense-voice-small-int8`, `whisper-small.en-int8`.
 
 ## Uninstall
 
