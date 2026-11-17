@@ -1869,6 +1869,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 physical_key_up_ticks = 0;
                                 pending_action = ptt.on_emergency_cancel("escape_pressed");
                             }
+                            Ok(HotkeyEvent::PttSuperseded) => {
+                                saw_physical_key_down = false;
+                                physical_key_up_ticks = 0;
+                                pending_action = ptt.on_emergency_cancel("superseded_by_chord");
+                            }
+                            // Handled from Quick Fix (P2.6) and the Composer (P3) on.
+                            Ok(HotkeyEvent::CorrectSelection)
+                            | Ok(HotkeyEvent::OpenComposer)
+                            | Ok(HotkeyEvent::VoiceCommandDown)
+                            | Ok(HotkeyEvent::VoiceCommandUp) => {}
                             Ok(HotkeyEvent::CycleMode) => {
                                 cfg.default_writing_mode = cfg.default_writing_mode.next();
                                 let _ = cfg.save_atomic(&cfg_path);

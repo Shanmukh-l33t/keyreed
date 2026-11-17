@@ -21,14 +21,127 @@ pub enum HotkeyEvent {
     PttUp,
     EmergencyCancel,
     CycleMode,
+    CorrectSelection,
+    OpenComposer,
+    VoiceCommandDown,
+    VoiceCommandUp,
+    /// A longer chord fired while a modifier-only dictation chord (its prefix) had already
+    /// started: the recording that began must be dropped silently.
+    PttSuperseded,
 }
+
+/// What an extra chord in the shortcut table does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChordAction {
+    CorrectSelection,
+    OpenComposer,
+    /// Held like dictation: `VoiceCommandDown` on press, `VoiceCommandUp` on release.
+    VoiceCommand,
+}
+
+/// At most this many extra chords (one latch bit each).
+pub const MAX_EXTRA_CHORDS: usize = 8;
 
 #[derive(Debug, Clone)]
 struct HookSharedConfig {
     ptt_spec: HotkeySpec,
     mode_cycle_spec: HotkeySpec,
+    /// Extra chords; only entries with a trigger key (`vk != 0`) are used.
+    chords: Vec<(HotkeySpec, ChordAction)>,
     cancel_vk: u16,
     active_recording_or_busy: Arc<AtomicBool>,
+}
+
+fn is_modifier_vk(vk: u16) -> bool {
+    matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
+}
+
+impl HookSharedConfig {
+    /// Privacy / anti-keylogger invariant: only modifier keys, the cancel key and configured
+    /// trigger keys are ever looked at.
+    fn is_relevant(&self, vk: u16) -> bool {
+        is_modifier_vk(vk)
+            || vk == self.cancel_vk
+            || (self.ptt_spec.vk != 0 && vk == self.ptt_spec.vk)
+            || (self.mode_cycle_spec.vk != 0 && vk == self.mode_cycle_spec.vk)
+            || self.chords.iter().any(|(c, _)| c.vk != 0 && c.vk == vk)
+    }
+}
+
+/// What the hook does with one relevant key event.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyDecision {
+    events: Vec<HotkeyEvent>,
+    /// Do not pass the key on to the focused application.
+    swallow: bool,
+    /// Inject the menu mask so releasing Win/Alt does not open Start or a menu bar.
+    menu_mask: bool,
+}
+
+/// The shortcut matcher (everything but Escape-cancel), pure so it can be unit-tested.
+fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bool) -> KeyDecision {
+    let mut d = KeyDecision::default();
+    if !mods.update_modifier(vk, is_down) {
+        if is_down {
+            mods.main_vk_down = vk;
+        } else if mods.main_vk_down == vk {
+            mods.main_vk_down = 0;
+        }
+    }
+    if !(mods.any_ctrl() || mods.any_alt() || mods.any_shift() || mods.any_win()) {
+        mods.ptt_blocked_by_chord = false;
+    }
+
+    // Mode cycle chord
+    if is_down && !mods.ptt_combo_latched && mods.matches_spec(&cfg.mode_cycle_spec, vk, true) {
+        d.events.push(HotkeyEvent::CycleMode);
+        d.swallow = true;
+        return d;
+    }
+
+    // Extra chords, before dictation so a longer chord wins over a modifier-only prefix.
+    for (i, (spec, action)) in cfg.chords.iter().take(MAX_EXTRA_CHORDS).enumerate() {
+        let bit = 1u8 << i;
+        if spec.vk == 0 {
+            continue;
+        }
+        if is_down && mods.chord_latch & bit == 0 && mods.matches_spec(spec, vk, true) {
+            mods.chord_latch |= bit;
+            mods.ptt_blocked_by_chord = true;
+            if mods.ptt_combo_latched {
+                mods.ptt_combo_latched = false;
+                d.events.push(HotkeyEvent::PttSuperseded);
+            }
+            d.events.push(match action {
+                ChordAction::CorrectSelection => HotkeyEvent::CorrectSelection,
+                ChordAction::OpenComposer => HotkeyEvent::OpenComposer,
+                ChordAction::VoiceCommand => HotkeyEvent::VoiceCommandDown,
+            });
+            d.menu_mask = spec.win || spec.alt;
+            d.swallow = !is_modifier_vk(spec.vk);
+            return d;
+        }
+        if mods.chord_latch & bit != 0 && !mods.still_holding_spec(spec) {
+            mods.chord_latch &= !bit;
+            if *action == ChordAction::VoiceCommand {
+                d.events.push(HotkeyEvent::VoiceCommandUp);
+            }
+        }
+    }
+
+    // Push-to-Talk trigger
+    if is_down && !mods.ptt_combo_latched && !mods.ptt_blocked_by_chord && mods.matches_spec(&cfg.ptt_spec, vk, true) {
+        mods.ptt_combo_latched = true;
+        d.menu_mask = cfg.ptt_spec.win || cfg.ptt_spec.alt;
+        d.events.push(HotkeyEvent::PttDown);
+        // Suppress non-modifier trigger key so Space/F8 doesn't leak into active document;
+        // pass pure modifiers through so standard Ctrl+C / Win+D keep working if pressed differently.
+        d.swallow = cfg.ptt_spec.vk != 0 && !matches!(cfg.ptt_spec.vk, 0xA0..=0xA5 | 0x5B | 0x5C);
+    } else if mods.ptt_combo_latched && !mods.still_holding_spec(&cfg.ptt_spec) {
+        mods.ptt_combo_latched = false;
+        d.events.push(HotkeyEvent::PttUp);
+    }
+    d
 }
 
 /// Pure VK-matching state tracker (unit-testable across platforms).
@@ -44,6 +157,11 @@ pub struct ModifierState {
     pub rwin: bool,
     pub main_vk_down: u16,
     pub ptt_combo_latched: bool,
+    /// One bit per extra chord that is currently held.
+    pub chord_latch: u8,
+    /// An extra chord fired: dictation cannot start until every modifier is released, so a held
+    /// Ctrl+Win left over from Ctrl+Win+G never starts a recording on key repeat.
+    pub ptt_blocked_by_chord: bool,
 }
 
 impl ModifierState {
@@ -237,23 +355,10 @@ mod win_impl {
                 let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
                 let vk = kb.vkCode as u16;
 
-                let cfg = ctx.shared.lock().clone();
-                // Privacy / anti-keylogger invariant: ONLY inspect modifier VKs, cancel VK, and configured trigger VKs!
-                let is_relevant = matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
-                    || vk == cfg.cancel_vk
-                    || (cfg.ptt_spec.vk != 0 && vk == cfg.ptt_spec.vk)
-                    || (cfg.mode_cycle_spec.vk != 0 && vk == cfg.mode_cycle_spec.vk);
+                let cfg = ctx.shared.lock();
 
-                if is_relevant && (is_down || is_up) {
+                if cfg.is_relevant(vk) && (is_down || is_up) {
                     let mut mods = ctx.mods.lock();
-                    let was_mod = mods.update_modifier(vk, is_down);
-                    if !was_mod {
-                        if is_down {
-                            mods.main_vk_down = vk;
-                        } else if mods.main_vk_down == vk {
-                            mods.main_vk_down = 0;
-                        }
-                    }
 
                     // Emergency Escape cancel while active — except when KeyReed's own dialog
                     // (e.g. "Ask before inserting") is in front: Escape must reach it as Cancel.
@@ -267,33 +372,20 @@ mod win_impl {
                         return 1; // Suppress Escape from closing user's foreground dialog during cancel!
                     }
 
-                    // Mode cycle chord
-                    if is_down
-                        && !mods.ptt_combo_latched
-                        && mods.matches_spec(&cfg.mode_cycle_spec, vk, true)
-                    {
-                        let _ = ctx.tx.try_send(HotkeyEvent::CycleMode);
-                        return 1;
+                    let d = decide(&cfg, &mut mods, vk, is_down);
+                    if d.menu_mask {
+                        send_menu_mask();
                     }
-
-                    // Push-to-Talk trigger
-                    if is_down && !mods.ptt_combo_latched && mods.matches_spec(&cfg.ptt_spec, vk, true)
-                    {
-                        mods.ptt_combo_latched = true;
-                        if cfg.ptt_spec.win || cfg.ptt_spec.alt {
-                            send_menu_mask();
+                    for ev in d.events {
+                        match ev {
+                            HotkeyEvent::PttDown => crate::security::timing_mark("hook_ptt_down"),
+                            HotkeyEvent::PttUp => crate::security::timing_mark("hook_ptt_up"),
+                            _ => {}
                         }
-                        let _ = ctx.tx.try_send(HotkeyEvent::PttDown);
-                        crate::security::timing_mark("hook_ptt_down");
-                        // Suppress non-modifier trigger key so Space/F8 doesn't leak into active document;
-                        // pass pure modifiers through so standard Ctrl+C / Win+D keep working if pressed differently.
-                        if cfg.ptt_spec.vk != 0 && !matches!(cfg.ptt_spec.vk, 0xA0..=0xA5 | 0x5B | 0x5C) {
-                            return 1;
-                        }
-                    } else if mods.ptt_combo_latched && !mods.still_holding_spec(&cfg.ptt_spec) {
-                        mods.ptt_combo_latched = false;
-                        let _ = ctx.tx.try_send(HotkeyEvent::PttUp);
-                        crate::security::timing_mark("hook_ptt_up");
+                        let _ = ctx.tx.try_send(ev);
+                    }
+                    if d.swallow {
+                        return 1;
                     }
                 }
             }
@@ -393,6 +485,7 @@ impl GlobalHotkeyEngine {
         let shared = Arc::new(Mutex::new(HookSharedConfig {
             ptt_spec,
             mode_cycle_spec,
+            chords: Vec::new(),
             cancel_vk: 0x1B, // VK_ESCAPE
             active_recording_or_busy,
         }));
@@ -416,6 +509,12 @@ impl GlobalHotkeyEngine {
         let mut guard = self.shared.lock();
         guard.ptt_spec = ptt_spec;
         guard.mode_cycle_spec = mode_cycle_spec;
+    }
+
+    /// Replaces the extra chords (Quick Fix, Composer, voice command); at most `MAX_EXTRA_CHORDS`.
+    pub fn set_extra_chords(&self, mut chords: Vec<(HotkeySpec, ChordAction)>) {
+        chords.truncate(MAX_EXTRA_CHORDS);
+        self.shared.lock().chords = chords;
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -499,5 +598,85 @@ mod tests {
         assert!(m.still_holding_spec(&cw));
         m.update_modifier(0x5B, false);
         assert!(!m.still_holding_spec(&cw));
+    }
+
+    const G: u16 = 0x47;
+    const K: u16 = 0x4B;
+    const V: u16 = 0x56;
+
+    fn chord(vk: u16) -> HotkeySpec {
+        HotkeySpec { ctrl: true, alt: false, shift: false, win: true, vk, display_name: String::new() }
+    }
+
+    fn cfg_with_chords() -> HookSharedConfig {
+        HookSharedConfig {
+            ptt_spec: HotkeySpec::default(), // Ctrl + Win, modifier-only
+            mode_cycle_spec: HotkeySpec { ctrl: true, alt: true, shift: false, win: false, vk: 0x4D, display_name: String::new() },
+            chords: vec![
+                (chord(G), ChordAction::CorrectSelection),
+                (chord(K), ChordAction::OpenComposer),
+                (chord(V), ChordAction::VoiceCommand),
+            ],
+            cancel_vk: 0x1B,
+            active_recording_or_busy: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn press(cfg: &HookSharedConfig, m: &mut ModifierState, keys: &[(u16, bool)]) -> Vec<HotkeyEvent> {
+        keys.iter().flat_map(|&(vk, down)| decide(cfg, m, vk, down).events).collect()
+    }
+
+    #[test]
+    fn extra_chord_supersedes_modifier_only_dictation_prefix() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        // Ctrl, Win (dictation starts: its chord is a prefix), then G.
+        let ev = press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]);
+        assert_eq!(ev, [HotkeyEvent::PttDown]);
+        let d = decide(&cfg, &mut m, G, true);
+        assert_eq!(d.events, [HotkeyEvent::PttSuperseded, HotkeyEvent::CorrectSelection]);
+        assert!(d.swallow && d.menu_mask);
+        // G released, Ctrl+Win still held and repeating: dictation must not start again.
+        assert!(press(&cfg, &mut m, &[(G, false), (0x5B, true), (0xA2, true)]).is_empty());
+        // Everything released, then Ctrl+Win alone: dictation works again.
+        assert!(press(&cfg, &mut m, &[(0x5B, false), (0xA2, false)]).is_empty());
+        assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]), [HotkeyEvent::PttDown]);
+    }
+
+    #[test]
+    fn each_chord_has_its_own_latch_and_voice_command_is_held() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]);
+        assert_eq!(press(&cfg, &mut m, &[(K, true)]), [HotkeyEvent::PttSuperseded, HotkeyEvent::OpenComposer]);
+        // Key repeat of K while held fires nothing new.
+        assert!(press(&cfg, &mut m, &[(K, true)]).is_empty());
+        assert!(press(&cfg, &mut m, &[(K, false)]).is_empty());
+        assert_eq!(press(&cfg, &mut m, &[(V, true)]), [HotkeyEvent::VoiceCommandDown]);
+        assert_eq!(press(&cfg, &mut m, &[(V, false)]), [HotkeyEvent::VoiceCommandUp]);
+    }
+
+    #[test]
+    fn unconfigured_keys_are_not_relevant() {
+        let cfg = cfg_with_chords();
+        for vk in [G, K, V, 0x1B, 0x4D, 0xA2, 0x5B] {
+            assert!(cfg.is_relevant(vk), "{vk:#x}");
+        }
+        for vk in [0x41u16, 0x20, 0x0D, 0x70, 0x31] {
+            assert!(!cfg.is_relevant(vk), "{vk:#x}");
+        }
+        // A chord without a trigger key adds nothing.
+        let mut c = cfg_with_chords();
+        c.chords = vec![(HotkeySpec { vk: 0, ..chord(0) }, ChordAction::OpenComposer)];
+        assert!(!c.is_relevant(0));
+    }
+
+    #[test]
+    fn dictation_chord_still_works_without_extra_chords() {
+        let mut cfg = cfg_with_chords();
+        cfg.chords.clear();
+        let mut m = ModifierState::default();
+        assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]), [HotkeyEvent::PttDown]);
+        assert_eq!(press(&cfg, &mut m, &[(0x5B, false)]), [HotkeyEvent::PttUp]);
     }
 }
