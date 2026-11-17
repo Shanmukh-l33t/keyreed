@@ -18,9 +18,9 @@ static RE_TRAILING_MM: Lazy<Regex> =
 /// The same sound at the very start of a dictation, followed by a comma/dash.
 static RE_LEADING_MM: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*(?:m{2,}|mhm+)[-–—,.]+\s*").unwrap());
 
-static RE_FILLERS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(um+|uh+|uhm+|erm+|er+|hmm+|ah+)\b[,.]?\s*").unwrap()
-});
+/// One whole token that is a hesitation sound. "hmm" and "ah" are left alone because they can be
+/// meaningful, and "err" is a real word.
+static RE_FILLER_WORD: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:um+|uh+|uhm+|erm+|er)$").unwrap());
 static RE_STUTTER: Lazy<Regex> = Lazy::new(|| {
     // Rust regex doesn't have backreferences; handled token-by-token below.
     Regex::new(r"\s+").unwrap()
@@ -224,11 +224,9 @@ const TECH_CASING: &[(&str, &str)] = &[
     ("sunday", "Sunday"),
     ("january", "January"),
     ("february", "February"),
-    ("march", "March"),
     ("april", "April"),
     ("june", "June"),
     ("july", "July"),
-    ("august", "August"),
     ("september", "September"),
     ("october", "October"),
     ("november", "November"),
@@ -275,26 +273,66 @@ pub fn is_likely_silence_hallucination(raw: &str, speech_ratio: f32) -> bool {
     false
 }
 
+/// Drops standalone filler tokens. A sentence-ending mark that followed the filler moves onto the
+/// previous word ("so, um." -> "so."), commas around it disappear with it, and when the filler
+/// started a sentence the next word takes the capital (skipped for terminal commands).
+fn remove_fillers(input: &str, hand_off_capital: bool) -> String {
+    let is_end = |c: char| matches!(c, '.' | '!' | '?');
+    let mut out: Vec<String> = Vec::new();
+    let mut capitalize_next = false;
+    for tok in input.split_whitespace() {
+        let core = tok.trim_end_matches(|c: char| matches!(c, ',' | '.' | '!' | '?' | ';' | ':'));
+        if !RE_FILLER_WORD.is_match(core) {
+            let mut t = tok.to_string();
+            if capitalize_next {
+                if let Some(first) = t.chars().next().filter(|c| c.is_lowercase()) {
+                    t = format!("{}{}", first.to_uppercase(), &t[first.len_utf8()..]);
+                }
+                capitalize_next = false;
+            }
+            out.push(t);
+            continue;
+        }
+        let starts_sentence = out.last().map_or(true, |p| p.ends_with(is_end));
+        if let Some(end) = tok[core.len()..].chars().find(|&c| is_end(c)) {
+            if let Some(prev) = out.last_mut().filter(|p| !p.ends_with(is_end)) {
+                *prev = format!("{}{}", prev.trim_end_matches(|c: char| matches!(c, ',' | ';' | ':')), end);
+            }
+            capitalize_next = hand_off_capital;
+        } else if starts_sentence {
+            capitalize_next = hand_off_capital;
+        }
+    }
+    out.join(" ")
+}
+
+/// Words that are safe to treat as an accidental stutter when exactly doubled ("the the", "I I").
+/// Repeats of any other word ("had had", "that that", "no no", "bye bye") are real language.
+const STUTTER_WORDS: &[&str] = &[
+    "the", "a", "an", "to", "of", "in", "and", "i", "is", "it", "we", "you", "my", "so", "but", "for",
+    "on", "at", "or", "if",
+];
+
 fn dedup_adjacent_stutters(input: &str) -> String {
     let tokens: Vec<&str> = RE_STUTTER.split(input.trim()).filter(|s| !s.is_empty()).collect();
     if tokens.is_empty() {
         return String::new();
     }
+    let plain = |t: &str| t.chars().all(|c| c.is_alphabetic());
     let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
-    for tok in tokens {
-        let clean_curr = tok.trim_matches(|c: char| c.is_ascii_punctuation());
-        if let Some(prev) = out.last() {
-            let clean_prev = prev.trim_matches(|c: char| c.is_ascii_punctuation());
-            // Collapse accidental spoken word stutters ("the the", "i i", "in in")
-            if !clean_curr.is_empty()
-                && clean_curr.len() <= 5
-                && clean_curr.chars().all(|c| c.is_alphabetic())
-                && clean_curr.eq_ignore_ascii_case(clean_prev)
-            {
-                continue;
-            }
-        }
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
         out.push(tok);
+        // Exactly two in a row, both free of punctuation; a third copy means it is not a stutter.
+        if plain(tok)
+            && STUTTER_WORDS.iter().any(|w| tok.eq_ignore_ascii_case(w))
+            && tokens.get(i + 1).is_some_and(|n| plain(n) && n.eq_ignore_ascii_case(tok))
+            && !tokens.get(i + 2).is_some_and(|n| n.eq_ignore_ascii_case(tok))
+        {
+            i += 1;
+        }
+        i += 1;
     }
     out.join(" ")
 }
@@ -302,7 +340,7 @@ fn dedup_adjacent_stutters(input: &str) -> String {
 fn compile_terminal_command(raw: &str) -> String {
     let mut s = raw.trim().to_string();
     // Remove leading conversational filler if user accidentally said "um" before command
-    s = RE_FILLERS.replace_all(&s, "").to_string();
+    s = remove_fillers(&s, false);
 
     for (re, rep) in RE_TERM_RULES.iter() {
         s = re.replace_all(&s, *rep).to_string();
@@ -606,7 +644,7 @@ pub fn run_tier0(
     if mode != WritingMode::Exact {
         s = RE_TRAILING_MM.replace(&s, "$1").to_string();
         s = RE_LEADING_MM.replace(&s, "").to_string();
-        s = RE_FILLERS.replace_all(&s, "").to_string();
+        s = remove_fillers(&s, true);
         s = dedup_adjacent_stutters(&s);
         // Resolve spoken self-repairs ("push to Tuesday, sorry no wait, Wednesday" -> "push to Wednesday")
         s = RE_SELF_REPAIR
@@ -625,26 +663,13 @@ pub fn run_tier0(
     }
 
     if matches!(mode, WritingMode::Smart | WritingMode::Professional | WritingMode::Technical | WritingMode::Casual) {
+        // These phrase rewrites change the user's wording, so only the polish mode applies them.
         if mode == WritingMode::Professional {
             s = RE_NOT_ABLE_REASON
                 .replace_all(&s, "I could not identify the reason the $1 is going down")
                 .to_string();
             s = RE_NOT_ABLE_GENERIC
                 .replace_all(&s, "could not identify the reason for")
-                .to_string();
-        } else if mode == WritingMode::Technical {
-            s = RE_NOT_ABLE_REASON
-                .replace_all(&s, "unable to identify the cause of the $1 outage")
-                .to_string();
-            s = RE_NOT_ABLE_GENERIC
-                .replace_all(&s, "unable to identify the cause of")
-                .to_string();
-        } else {
-            s = RE_NOT_ABLE_REASON
-                .replace_all(&s, "I couldn't identify the reason the $1 is going down")
-                .to_string();
-            s = RE_NOT_ABLE_GENERIC
-                .replace_all(&s, "couldn't identify the reason for")
                 .to_string();
         }
         s = RE_INDIRECT_WHAT_IS
@@ -655,16 +680,11 @@ pub fn run_tier0(
             s = RE_REVERT_EARLIEST
                 .replace_all(&s, "please get back to me as soon as possible")
                 .to_string();
-        } else {
-            s = RE_MYSELF_INTRO.replace_all(&s, "I'm $1 from").to_string();
-            s = RE_REVERT_EARLIEST
-                .replace_all(&s, "please reply as soon as you can")
+            s = RE_HAVING_DOUBT
+                .replace_all(&s, "I have a question about")
                 .to_string();
+            s = RE_REVERT_BACK.replace_all(&s, "reply").to_string();
         }
-        s = RE_HAVING_DOUBT
-            .replace_all(&s, "I have a question about")
-            .to_string();
-        s = RE_REVERT_BACK.replace_all(&s, "reply").to_string();
         for (re, rep) in RE_ESL_RULES.iter() {
             s = re.replace_all(&s, *rep).to_string();
         }
@@ -750,8 +770,16 @@ mod tests {
         );
         assert_eq!(
             out.text,
-            "I checked the server but I couldn't identify the reason the website is going down."
+            "I checked the server but I am not able to find what is the reason for the website going down."
         );
+        let pro = run_tier0(
+            "I checked the server but I am not able to find what is the reason for the website going down",
+            0.85,
+            WritingMode::Professional,
+            AppCategory::General,
+            &dict,
+        );
+        assert_eq!(pro.text, "I checked the server but I could not identify the reason the website is going down.");
     }
 
     #[test]
@@ -803,9 +831,9 @@ mod tests {
 
         assert!(exact.to_lowercase().contains("um "), "Exact must preserve wording: {exact}");
         assert!(!smart.to_lowercase().contains("um "), "Smart must strip fillers: {smart}");
-        assert!(smart.contains("couldn't identify"), "Smart uses natural contraction: {smart}");
+        assert!(smart.contains("not able to find"), "Smart keeps the user's wording: {smart}");
         assert!(pro.contains("could not identify"), "Professional uses formal full words: {pro}");
-        assert!(tech.contains("Unable to identify"), "Technical uses technical phrasing: {tech}");
+        assert!(tech.contains("not able to find"), "Technical keeps the user's wording: {tech}");
         assert!(tech.contains("192.168.1.10"), "IP address must be preserved: {tech}");
 
         let chat_in = "um i will check auth_middleware dot rs now";
@@ -825,5 +853,43 @@ mod tests {
         assert!(tech.contains("10.0.0.1"), "must format 10.0.0.1: {tech}");
         assert!(tech.contains("₹1,250"), "must preserve ₹1,250: {tech}");
         assert!(tech.contains(r"C:\Dev\KeyReed") || tech.contains(r"C:\Dev\keyreed"), "must format Windows path: {tech}");
+    }
+
+    fn smart(raw: &str) -> String {
+        run_tier0(raw, 1.0, WritingMode::Smart, AppCategory::General, &PersonalDictionary::default()).text
+    }
+
+    #[test]
+    fn filler_removal_keeps_sentence_end_and_hands_off_capital() {
+        assert_eq!(smart("I think so, um. Then we ship"), "I think so. Then we ship.");
+        assert_eq!(smart("Okay. Um, the build is green"), "Okay. The build is green.");
+        assert_eq!(smart("so um, the build is green"), "So the build is green.");
+        assert_eq!(smart("Hmm, ah, that is odd"), "Hmm, ah, that is odd.");
+    }
+
+    #[test]
+    fn stutter_dedupe_only_collapses_doubled_function_words() {
+        assert_eq!(smart("he had had enough"), "He had had enough.");
+        assert_eq!(smart("I said that that is fine"), "I said that that is fine.");
+        assert_eq!(smart("no no it works"), "No no it works.");
+        assert_eq!(smart("the the build is stuck"), "The build is stuck.");
+        assert_eq!(smart("i i think so"), "I think so.");
+        assert_eq!(smart("the, the build"), "The, the build.");
+        let exact = run_tier0("the the build", 1.0, WritingMode::Exact, AppCategory::General, &PersonalDictionary::default());
+        assert!(exact.text.to_lowercase().contains("the the"), "{}", exact.text);
+    }
+
+    #[test]
+    fn phrase_rewrites_only_in_professional_mode() {
+        let raw = "please revert back, I am having a doubt regarding the plan";
+        assert!(smart(raw).contains("revert back"));
+        let pro = run_tier0(raw, 1.0, WritingMode::Professional, AppCategory::General, &PersonalDictionary::default()).text;
+        assert!(pro.contains("reply") && pro.contains("I have a question about"), "{pro}");
+    }
+
+    #[test]
+    fn ambiguous_words_are_not_recased() {
+        assert_eq!(smart("we march forward in august"), "We march forward in august.");
+        assert!(smart("see you on monday").contains("Monday"));
     }
 }

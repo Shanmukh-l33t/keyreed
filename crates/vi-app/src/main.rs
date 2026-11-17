@@ -2543,7 +2543,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         if let Some(m) = active_mic.take() {
                             supervisor.session_first_frame_ms = m.first_frame_ms();
                             let t_fin = Instant::now();
-                            let samples = m.stop_and_take_16k();
+                            // Keeps capturing 200 to 600 ms after release so the last word is not clipped.
+                            let samples = m.stop_with_release_tail_and_take_16k();
                             supervisor.session_chunk_finalize_ms = t_fin.elapsed().as_secs_f64() * 1000.0;
                             let gui_stage = gui_for_worker.clone();
                             let on_corr = move || {
