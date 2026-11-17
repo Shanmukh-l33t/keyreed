@@ -26,11 +26,11 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM}
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW,
-    InvalidateRect, MonitorFromPoint, SetBkColor, SetTextColor, SetWindowRgn, HDC, HFONT, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
+    IntersectClipRect, InvalidateRect, MonitorFromPoint, RestoreDC, SaveDC, SetBkColor, SetTextColor, SetWindowRgn,
+    HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -69,15 +69,27 @@ const REPO_URL: &str = "https://github.com/Shanmukh-l33t/keyreed";
 // Logical (96-DPI) geometry.
 const WIN_W: i32 = 940;
 const WIN_H: i32 = 660;
+/// The frameless header: KeyReed's own title row (mark, name, window buttons), drawn on the canvas.
+const HEADER_H: i32 = 52;
+/// First navigation row, below the header.
+const NAV_Y: i32 = HEADER_H + 20;
 const SIDEBAR_W: i32 = 236;
 const X0: i32 = SIDEBAR_W + 40;
 const CW: i32 = WIN_W - X0 - 40;
 const ROW_H: i32 = 56;
 const ROW_H_SHORT: i32 = 46;
 const PAD: i32 = 16;
+/// The confirmation card (replaces the stock MessageBox).
+const MODAL_W: i32 = 460;
+const MODAL_H: i32 = 196;
 
 // Control ids.
 const ID_NAV: i32 = 100;
+const HEADER_MIN: i32 = 90;
+const HEADER_CLOSE: i32 = 91;
+/// The confirmation card's two buttons (see `ask`).
+const MODAL_CANCEL: i32 = 92;
+const MODAL_CONFIRM: i32 = 93;
 const G_ENABLED: i32 = 201;
 const G_AUTOSTART: i32 = 202;
 const G_PILL: i32 = 203;
@@ -533,22 +545,25 @@ enum Kind {
     Combo { items: Vec<String>, sel: usize },
     Edit { text: String, password: bool, multiline: bool, cue: String },
     /// "Press your shortcut" field: shows `spec` as keycaps; Space or a click starts a capture.
-    Shortcut { spec: HotkeySpec, role: ShortcutRole },
-}
+        Shortcut { spec: HotkeySpec, role: ShortcutRole },
+        /// A window button in the frameless header: minimize, or close.
+        WinBtn { close: bool },
+    }
 
-impl Kind {
-    fn tag(&self) -> u8 {
-        match self {
-            Kind::Nav { .. } => 0,
-            Kind::Toggle { .. } => 1,
-            Kind::Choice { .. } => 2,
-            Kind::Button { .. } => 3,
-            Kind::Combo { .. } => 4,
-            Kind::Edit { .. } => 5,
-            Kind::Shortcut { .. } => 6,
+    impl Kind {
+        fn tag(&self) -> u8 {
+            match self {
+                Kind::Nav { .. } => 0,
+                Kind::Toggle { .. } => 1,
+                Kind::Choice { .. } => 2,
+                Kind::Button { .. } => 3,
+                Kind::Combo { .. } => 4,
+                Kind::Edit { .. } => 5,
+                Kind::Shortcut { .. } => 6,
+                Kind::WinBtn { .. } => 7,
+            }
         }
     }
-}
 
 #[derive(Clone, PartialEq, Debug)]
 struct Ctrl {
@@ -571,7 +586,7 @@ struct Builder {
 
 impl Builder {
     fn new() -> Self {
-        Builder { items: Vec::new(), ctrls: Vec::new(), y: 28, group_start: None, rows_in_group: 0 }
+        Builder { items: Vec::new(), ctrls: Vec::new(), y: HEADER_H + 24, group_start: None, rows_in_group: 0 }
     }
 
     fn text(&mut self, rr: R, s: impl Into<String>, font: F, color: C, flags: u32) {
@@ -761,6 +776,73 @@ thread_local! {
     static VOCAB_DRAFT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// My style: the page of learned habits on show.
     static STYLE_PAGE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The confirmation card on show, if any: the window's own replacement for the stock dialog box.
+    static MODAL: RefCell<Option<Modal>> = const { RefCell::new(None) };
+}
+
+/// What confirming the card does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ModalAction {
+    /// Nothing to confirm: a notice with one OK button.
+    Notice,
+    DeleteLearned,
+    ResetAll,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct Modal {
+    title: String,
+    body: String,
+    confirm: String,
+    action: ModalAction,
+}
+
+impl Modal {
+    fn destructive(&self) -> bool {
+        self.action != ModalAction::Notice
+    }
+
+    /// Destructive cards get Cancel (the default button); a notice only has OK.
+    fn cancel(&self) -> Option<&'static str> {
+        self.destructive().then_some("Cancel")
+    }
+}
+
+/// Where the card sits: centred on the design size.
+fn modal_card() -> R {
+    r((WIN_W - MODAL_W) / 2, (WIN_H - MODAL_H) / 2, MODAL_W, MODAL_H)
+}
+
+/// Shows the card and hands the keyboard to its default button (Cancel where the action destroys something).
+fn ask(title: &str, body: &str, confirm: &str, action: ModalAction) {
+    MODAL.with(|m| {
+        *m.borrow_mut() = Some(Modal { title: title.into(), body: body.into(), confirm: confirm.into(), action })
+    });
+    rebuild(true);
+}
+
+fn ask_delete_learned() {
+    ask(
+        "Delete everything KeyReed learned?",
+        "Every learned word and habit, the suggestions and the excluded apps go. Your switches and other settings stay.",
+        "Delete",
+        ModalAction::DeleteLearned,
+    );
+}
+
+/// Drops the card and puts focus back on something reachable.
+fn close_modal() {
+    MODAL.with(|m| *m.borrow_mut() = None);
+    rebuild(false);
+    let page = ST.with(|s| s.borrow().as_ref().map(|st| st.page).unwrap_or(PAGE_GENERAL));
+    if unsafe { GetFocus() }.is_null() {
+        focus_ctrl(ID_NAV + page as i32);
+    }
+}
+
+/// Controls that never scroll with the page: the navigation and the header's window buttons.
+fn fixed_in_place(k: &Kind) -> bool {
+    matches!(k, Kind::Nav { .. } | Kind::WinBtn { .. })
 }
 
 /// Window DPI, honouring the gallery's scale override.
@@ -886,7 +968,8 @@ pub fn open(page: Option<usize>) {
         let hinst = GetModuleHandleW(std::ptr::null());
         let cls = to_wide(SETTINGS_WINDOW_CLASS);
         let title = to_wide(&format!("{PRODUCT_NAME} Settings"));
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        // Frameless: the window is its own frame (WM_NCCALCSIZE / WM_NCHITTEST below); the edges still resize.
+        let style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             cls.as_ptr(),
@@ -904,11 +987,9 @@ pub fn open(page: Option<usize>) {
         if hwnd.is_null() {
             return;
         }
-        // Size for the DPI of the monitor the window landed on, then centre it.
+        // The client area is the whole window, so the design size is the window size. Centre it on the monitor.
         let dpi = window_dpi(hwnd);
-        let mut rc = RECT { left: 0, top: 0, right: sc(WIN_W, dpi), bottom: sc(WIN_H, dpi) };
-        AdjustWindowRectExForDpi(&mut rc, style, 0, WS_EX_CONTROLPARENT, dpi);
-        let (w, h) = (rc.right - rc.left, (rc.bottom - rc.top).min(wa.bottom - wa.top));
+        let (w, h) = (sc(WIN_W, dpi), sc(WIN_H, dpi).min(wa.bottom - wa.top));
         let x = wa.left + ((wa.right - wa.left) - w) / 2;
         let y = (wa.top + ((wa.bottom - wa.top) - h) / 2).max(wa.top);
         SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -951,6 +1032,15 @@ pub fn show_page_for_test(page: usize, step: usize) {
         }
     });
     navigate(page);
+}
+
+/// Gallery hooks: the Delete-all card (the one the My style page opens), and dismissing it again.
+pub fn confirm_delete_for_test() {
+    ask_delete_learned();
+}
+
+pub fn dismiss_modal_for_test() {
+    close_modal();
 }
 
 /// Gallery hook: scroll the content column of the page on show (logical offset, clamped like the wheel).
@@ -1020,9 +1110,12 @@ fn navigate(page: usize) {
 
 fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>, Vec<Ctrl>) {
     let mut b = Builder::new();
+    // The frameless header's window buttons: real controls, so hover, press and focus draw as everywhere else.
+    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - 92, 10, 40, 32), Bg::Content, "Minimize");
+    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - 48, 10, 40, 32), Bg::Content, "Close");
     // Navigation
     for (i, (label, _)) in NAV.iter().enumerate() {
-        let y = 92 + i as i32 * 38;
+        let y = NAV_Y + i as i32 * 38;
         b.ctrl(ID_NAV + i as i32, Kind::Nav { page: i, selected: i == page }, r(12, y, SIDEBAR_W - 24, 36), Bg::Sidebar, label);
     }
     match page {
@@ -1043,6 +1136,19 @@ fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>
         if saved {
             b.text(r(X0, WIN_H - 34, CW, 18), "Saved", F::Caption, C::Accent, DT_SINGLELINE | DT_RIGHT);
         }
+    }
+    // The confirmation card (see `ask`): Cancel first, so Enter on the default button never deletes anything.
+    if let Some(md) = MODAL.with(|m| m.borrow().clone()) {
+        let card = modal_card();
+        let (bh, by) = (32, card.y + card.h - 24 - 32);
+        let cw = button_width(&md.confirm);
+        let confirm_x = card.x + card.w - 24 - cw;
+        if let Some(label) = md.cancel() {
+            let nw = button_width(label);
+            b.ctrl(MODAL_CANCEL, Kind::Button { style: BtnStyle::Secondary, label: label.into() }, r(confirm_x - 8 - nw, by, nw, bh), Bg::Surface, label);
+        }
+        let style = if md.destructive() { BtnStyle::Danger } else { BtnStyle::Primary };
+        b.ctrl(MODAL_CONFIRM, Kind::Button { style, label: md.confirm.clone() }, r(confirm_x, by, cw, bh), Bg::Surface, &md.confirm);
     }
     (b.items, b.ctrls)
 }
@@ -1985,10 +2091,12 @@ fn child_rect(c: &Ctrl) -> R {
 unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     let hinst = GetModuleHandleW(std::ptr::null());
     let d = cx.dpi;
-    let dy = if matches!(c.kind, Kind::Nav { .. }) { 0 } else { cx.scroll };
+    let dy = if fixed_in_place(&c.kind) { 0 } else { cx.scroll };
     let cr = child_rect(c);
     let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - dy, d), sc(cr.w, d), sc(cr.h, d));
     let (cls, style, ex, text): (&str, u32, u32, String) = match &c.kind {
+        // Window buttons are not in the tab order: Tab belongs to the page.
+        Kind::WinBtn { .. } => ("BUTTON", 0x0B /* BS_OWNERDRAW */, 0, c.name.clone()),
         Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } | Kind::Combo { .. } | Kind::Shortcut { .. } => {
             ("BUTTON", 0x0B /* BS_OWNERDRAW */ | WS_TABSTOP, 0, c.name.clone())
         }
@@ -2289,7 +2397,9 @@ fn rebuild(focus_first: bool) {
             let h = create_ctrl(&cx, &c);
             (c, h)
         }).collect();
-        let target = if focus_first {
+        let target = if MODAL.with(|m| m.borrow().is_some()) {
+            created.iter().find(|(c, _)| matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM)).map(|(_, h)| *h)
+        } else if focus_first {
             created.iter().find(|(c, _)| c.id == ID_NAV + page as i32).map(|(_, h)| *h)
         } else {
             focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h))
@@ -2299,6 +2409,7 @@ fn rebuild(focus_first: bool) {
             if let Some(st) = s.borrow_mut().as_mut() {
                 st.ctrls = created;
                 clip_children(st);
+                show_children(st);
             }
         });
         if let Some(h) = target {
@@ -2455,18 +2566,23 @@ unsafe fn paint(st: &St, hdc: HDC) {
     GetClientRect(st.hwnd, &mut rc);
     let Some(mut cv) = Canvas::new(rc.right, rc.bottom) else { return };
     cv.fill(t.bg);
-    cv.rect(0, 0, s(SIDEBAR_W), rc.bottom, t.sidebar);
-    cv.rect(s(SIDEBAR_W), 0, 1.max(s(1)), rc.bottom, t.border);
+    // Frameless: KeyReed's own header row across the top; both columns start below it.
+    let head = s(HEADER_H);
+    cv.rect(0, head, s(SIDEBAR_W), rc.bottom - head, t.sidebar);
+    cv.rect(s(SIDEBAR_W), head, 1.max(s(1)), rc.bottom - head, t.border);
+    cv.rect(0, head, rc.right, 1.max(s(1)), t.border);
 
-    // Brand block
-    let icon_n = s(30) as usize;
-    blit_icon(&mut cv, s(22), s(26), icon_n);
-    cv.text(PRODUCT_NAME, s(62), s(24), s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE);
-    cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
+    // The mark lives in the header now, where the stock title bar used to be.
+    blit_icon(&mut cv, s(16), (head - s(20)) / 2, s(20) as usize);
+    let ty = (head - s(20)) / 2;
+    cv.text(PRODUCT_NAME, s(46), ty, s(160), s(20), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_VCENTER);
+    let dot_x = s(46) + text_width(PRODUCT_NAME, st.fonts.get(F::Brand)) + s(8);
+    cv.text("\u{00B7}", dot_x, ty, s(12), s(20), st.fonts.get(F::Body), t.text3, DT_SINGLELINE | DT_VCENTER);
+    cv.text("Settings", dot_x + s(14), ty, s(140), s(20), st.fonts.get(F::BodySemi), t.text2, DT_SINGLELINE | DT_VCENTER);
 
     // Status chip at the bottom of the sidebar
     // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
-    let nav_bottom = s(92 + NAV.len() as i32 * 38);
+    let nav_bottom = s(NAV_Y + NAV.len() as i32 * 38);
     if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
         let (label, dot) = status_chip(&m, &t);
         let y = rc.bottom - s(52);
@@ -2481,7 +2597,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let sy = |v: i32| sc(v - off, d);
     // Only the column right of the sidebar scrolls: clip the canvas to it so no scrolled row can paint over the
     // sidebar or past the window edges.
-    cv.set_clip(s(SIDEBAR_W + 1), 0, rc.right - s(SIDEBAR_W + 1), rc.bottom);
+    cv.set_clip(s(SIDEBAR_W + 1), head, rc.right - s(SIDEBAR_W + 1), rc.bottom - head);
     // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
     let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
@@ -2592,6 +2708,17 @@ unsafe fn paint(st: &St, hdc: HDC) {
         }
     }
     cv.clear_clip();
+    // The confirmation card: the page dims behind it, and only the card's own buttons (child windows) stay live.
+    if let Some(md) = MODAL.with(|m| m.borrow().clone()) {
+        cv.round_rect(0.0, 0.0, rc.right as f32, rc.bottom as f32, 0.0, rgb(0, 0, 0), 0.55);
+        let card = modal_card();
+        let (x, y, w, h) = (s(card.x) as f32, s(card.y) as f32, s(card.w) as f32, s(card.h) as f32);
+        cv.round_rect(x - s(6) as f32, y + s(4) as f32, w + s(12) as f32, h + s(14) as f32, s(16) as f32, rgb(0, 0, 0), 0.12);
+        cv.round_rect(x, y, w, h, s(12) as f32, t.surface, 1.0);
+        cv.round_rect_stroke(x, y, w, h, s(12) as f32, 1.0, t.border, 1.0);
+        cv.text(&md.title, s(card.x + 24), s(card.y + 22), s(card.w - 48), s(24), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_END_ELLIPSIS);
+        cv.text(&md.body, s(card.x + 24), s(card.y + 54), s(card.w - 48), s(62), st.fonts.get(F::Body), t.text2, DT_WORDBREAK);
+    }
     cv.blit_to(hdc, 0, 0);
 }
 
@@ -2794,6 +2921,19 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 cv.text("\u{E70F}", w - right_w, 0, right_w - s(6), h, st.fonts.get(F::IconSmall), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
             }
         }
+        Kind::WinBtn { close } => {
+            let (fill, fg) = match (*close, pressed || hot) {
+                (_, false) => (None, t.text2),
+                (true, _) => (Some(t.err_bg), t.err_fg),
+                (false, _) => (Some(t.hover), t.text),
+            };
+            if let Some(f) = fill {
+                cv.round_rect(0.0, 0.0, wf, hf, rad, f, 1.0);
+            }
+            // Segoe Fluent Icons / MDL2: ChromeMinimize, ChromeClose.
+            let glyph = if *close { "\u{E8BB}" } else { "\u{E921}" };
+            cv.text(glyph, 0, 0, w, h, st.fonts.get(F::Icon), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
         _ => {}
     }
     if focus {
@@ -2803,7 +2943,17 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
         let (ring, inset) = if t.hc { (t.focus, 0.0) } else if primary { (t.on_accent, s(2) as f32) } else { (t.focus_ring, 0.0) };
         cv.round_rect_stroke(x + inset, y + inset, fw - 2.0 * inset, fh - 2.0 * inset, (fr - inset).max(1.0), 2.0_f32.max(s(2) as f32), ring, 1.0);
     }
+    // An owner-drawn control paints into its own window, whose coordinates start at its own top edge, so a
+    // control scrolled under the header is cut off here instead of hanging over it.
+    let cut = if fixed_in_place(&c.kind) { 0 } else { sc(HEADER_H + 1, d) - sc(child_rect(c).y - st.scroll, d) };
+    let saved = if cut > 0 { SaveDC(di.hdc) } else { 0 };
+    if cut > 0 {
+        IntersectClipRect(di.hdc, 0, cut, 1 << 20, 1 << 20);
+    }
     cv.blit_to(di.hdc, di.rc.left, di.rc.top);
+    if cut > 0 {
+        RestoreDC(di.hdc, saved);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -2816,23 +2966,34 @@ unsafe fn clip_children(st: &St) {
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(st.hwnd, &mut rc);
     let left = sc(SIDEBAR_W + 1, st.dpi);
+    let top = sc(HEADER_H + 1, st.dpi);
     for (c, h) in &st.ctrls {
-        // Navigation never scrolls; clipping it to the content column would hide it.
-        if matches!(c.kind, Kind::Nav { .. }) {
+        // The navigation and the header's buttons stay put; clipping them to the page would hide them.
+        if fixed_in_place(&c.kind) {
             continue;
         }
         let cr = child_rect(c);
-        let x = sc(cr.x, st.dpi);
-        let y = sc(cr.y - st.scroll, st.dpi);
+        let (x, y) = (sc(cr.x, st.dpi), sc(cr.y - st.scroll, st.dpi));
+        let (w, hh) = (sc(cr.w, st.dpi), sc(cr.h, st.dpi));
         let x0 = x.max(left);
-        let y0 = y.max(0);
-        let x1 = (x + sc(cr.w, st.dpi)).min(rc.right).max(x0);
-        let y1 = (y + sc(cr.h, st.dpi)).min(rc.bottom).max(y0);
+        let y0 = y.max(top);
+        let x1 = (x + w).min(rc.right).max(x0);
+        let y1 = (y + hh).min(rc.bottom).max(y0);
+        // A region is in the child's own coordinates, and the page's visible part is the strip below the header.
         // The system owns the region after a successful SetWindowRgn and frees it when it is replaced.
-        let rgn = CreateRectRgn(x0, y0, x1, y1);
+        let rgn = CreateRectRgn(x0 - x, y0 - y, x1 - x, y1 - y);
         if SetWindowRgn(*h, rgn, 1) == 0 {
             DeleteObject(rgn as _);
         }
+    }
+}
+
+/// While a confirmation card is up, the page's controls are hidden: the card's buttons are the only ones.
+unsafe fn show_children(st: &St) {
+    let card = MODAL.with(|m| m.borrow().is_some());
+    for (c, h) in &st.ctrls {
+        let own = matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM);
+        ShowWindow(*h, if card == own { SW_SHOWNA } else { SW_HIDE });
     }
 }
 
@@ -2850,7 +3011,7 @@ fn scroll_by(delta: i32) {
         let moves: Vec<(HWND, i32, i32)> = st
             .ctrls
             .iter()
-            .filter(|(c, _)| !matches!(c.kind, Kind::Nav { .. }))
+            .filter(|(c, _)| !fixed_in_place(&c.kind))
             .map(|(c, h)| {
                 let cr = child_rect(c);
                 (*h, sc(cr.x, st.dpi), sc(cr.y - new, st.dpi))
@@ -3013,6 +3174,10 @@ fn on_command(id: i32, code: u32) {
     const EN_KILLFOCUS: u32 = 0x0200;
     const EN_SETFOCUS: u32 = 0x0100;
     const EN_CHANGE: u32 = 0x0300;
+    // A confirmation card owns the window: nothing on the page behind it reacts until it is answered.
+    if MODAL.with(|m| m.borrow().is_some()) && !matches!(id, MODAL_CANCEL | MODAL_CONFIRM) {
+        return;
+    }
     let click = code == BN_CLICKED || code == BN_DOUBLECLICKED;
     if code == EN_SETFOCUS || code == EN_KILLFOCUS {
         unsafe { InvalidateRect(hwnd(), std::ptr::null(), 0) };
@@ -3078,6 +3243,23 @@ fn on_command(id: i32, code: u32) {
     }
 
     match (id, click, code) {
+        (HEADER_MIN, true, _) => unsafe { ShowWindow(hwnd(), SW_MINIMIZE); },
+        // The same path as the system close button.
+        (HEADER_CLOSE, true, _) => unsafe { PostMessageW(hwnd(), WM_CLOSE, 0, 0); },
+        (MODAL_CANCEL, true, _) => close_modal(),
+        (MODAL_CONFIRM, true, _) => {
+            let action = MODAL.with(|m| m.borrow_mut().take().map(|md| md.action)).unwrap_or(ModalAction::Notice);
+            close_modal();
+            match action {
+                // A fresh store: the coordinator puts the learning switch back from the setting.
+                ModalAction::DeleteLearned => commit_style(|s| *s = Default::default()),
+                ModalAction::ResetAll => {
+                    send(UiAction::ResetToDefaults);
+                    flash_saved();
+                }
+                ModalAction::Notice => {}
+            }
+        }
         (G_ENABLED, true, _) => send(UiAction::ToggleAppEnabled),
         (G_AUTOSTART, true, _) => {
             let v = !c.autostart_on_login;
@@ -3202,22 +3384,15 @@ fn on_command(id: i32, code: u32) {
                     open_url(&path.to_string_lossy());
                     flash_saved();
                 }
-                Err(_) => unsafe {
-                    let title = to_wide("The export failed");
-                    let body = to_wide("KeyReed could not write style-export.json to its folder. Nothing was changed.");
-                    MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
-                },
+                Err(_) => ask(
+                    "The export failed",
+                    "KeyReed could not write style-export.json to its folder. Nothing was changed.",
+                    "OK",
+                    ModalAction::Notice,
+                ),
             }
         }
-        (Y_DELETE, true, _) => unsafe {
-            let title = to_wide("Delete everything KeyReed learned?");
-            let body = to_wide("Every learned word and habit, the suggestions and the excluded apps go. Your switches and other settings stay.\n\nDelete now?");
-            let r = MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
-            if r == IDOK {
-                // A fresh store: the coordinator puts the learning switch back from the setting.
-                commit_style(|s| *s = Default::default());
-            }
-        },
+        (Y_DELETE, true, _) => ask_delete_learned(),
         (MIC_PRIVACY, true, _) => open_url("ms-settings:privacy-microphone"),
         (O_TYPE, true, _) => commit(|c| c.output_mode = OutputMode::DirectTyping),
         (O_CLIP, true, _) => commit(|c| c.output_mode = OutputMode::Clipboard),
@@ -3290,15 +3465,12 @@ fn on_command(id: i32, code: u32) {
             });
             navigate(PAGE_START);
         }
-        (AB_RESET, true, _) => unsafe {
-            let title = to_wide("Reset all settings?");
-            let body = to_wide("KeyReed will restore its default settings. Downloaded speech models are kept.\n\nReset now?");
-            let r = MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
-            if r == IDOK {
-                send(UiAction::ResetToDefaults);
-                flash_saved();
-            }
-        },
+        (AB_RESET, true, _) => ask(
+            "Reset all settings?",
+            "KeyReed will restore its default settings. Downloaded speech models are kept.",
+            "Reset",
+            ModalAction::ResetAll,
+        ),
         (S_DL, true, _) => {
             let id = if m.active_model_ready() { c.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
             model_action(&m, &id);
@@ -3591,13 +3763,15 @@ unsafe fn apply_menu_theme() {
 unsafe fn apply_window_chrome(hwnd: HWND) {
     apply_menu_theme();
     let t = theme();
-    // Windows 11: tint the caption to match the sidebar and use the brand border. Ignored on Windows 10.
-    let caption: u32 = t.sidebar;
     let border: u32 = t.border;
     let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) as u32;
     DwmSetWindowAttribute(hwnd, 20, &dark as *const u32 as *const _, 4); // DWMWA_USE_IMMERSIVE_DARK_MODE
-    DwmSetWindowAttribute(hwnd, 35, &caption as *const u32 as *const _, 4);
     DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const _, 4);
+    // Frameless (Windows 11; ignored on Windows 10): round the corners, and keep a popup's drop shadow.
+    let round: u32 = 2; // DWMWCP_ROUND
+    DwmSetWindowAttribute(hwnd, 33, &round as *const u32 as *const _, 4); // DWMWA_WINDOW_CORNER_PREFERENCE
+    let shadow: u32 = 2; // DWMNCRP_ENABLED
+    DwmSetWindowAttribute(hwnd, 2, &shadow as *const u32 as *const _, 4); // DWMWA_NCRENDERING_POLICY
     let big = brand_hicon(32);
     let small = brand_hicon(20);
     SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, big as LPARAM);
@@ -3655,6 +3829,37 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_ERASEBKGND => 1,
+        // Frameless: no system frame. The client area is the whole window, so the resize grip and the caption
+        // live inside it (WM_NCHITTEST below).
+        WM_NCCALCSIZE if wparam != 0 => 0,
+        WM_NCPAINT => 0,
+        WM_NCHITTEST => {
+            let (x, y) = (((lparam & 0xFFFF) as u16 as i16) as i32, (((lparam >> 16) & 0xFFFF) as u16 as i16) as i32);
+            let mut rc: RECT = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut rc);
+            let dpi = window_dpi(hwnd);
+            let g = sc(6, dpi);
+            let (near_left, near_top) = (x < rc.left + g, y < rc.top + g);
+            let (near_right, near_bottom) = (x >= rc.right - g, y >= rc.bottom - g);
+            let edge = match (near_left, near_top, near_right, near_bottom) {
+                (true, true, _, _) => HTTOPLEFT,
+                (_, true, true, _) => HTTOPRIGHT,
+                (true, _, _, true) => HTBOTTOMLEFT,
+                (_, _, true, true) => HTBOTTOMRIGHT,
+                (true, _, _, _) => HTLEFT,
+                (_, true, _, _) => HTTOP,
+                (_, _, true, _) => HTRIGHT,
+                (_, _, _, true) => HTBOTTOM,
+                _ => 0,
+            };
+            if edge != 0 {
+                return edge as LRESULT;
+            }
+            // The header row drags the window; the page below it does not.
+            if y - rc.top < sc(HEADER_H, dpi) { HTCAPTION as LRESULT } else { HTCLIENT as LRESULT }
+        }
+        // A double-click on the header must not maximise a window that has no maximise button.
+        WM_NCLBUTTONDBLCLK => 0,
         WM_DICT_COMMIT => {
             dict_commit_deferred();
             0
@@ -3693,6 +3898,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
+            if id == IDCANCEL as i32 && MODAL.with(|m| m.borrow().is_some()) {
+                close_modal(); // Esc answers the card first
+                return 0;
+            }
             if id == IDCANCEL as i32 && VOCAB_VIEW.with(|v| v.get()).is_some() {
                 close_vocab(); // Esc leaves the dictionary editor first, not the window
                 return 0;
@@ -3723,6 +3932,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_MOUSEWHEEL => {
+            if MODAL.with(|m| m.borrow().is_some()) {
+                return 0;
+            }
             let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
             scroll_by(-(delta * 56) / 120);
             0
@@ -3934,6 +4146,53 @@ mod tests {
         assert_eq!(ctrls.iter().filter(|c| (M_ACT..M_ACT + ASR_UI_CATALOG.len() as i32).contains(&c.id)).count(), ASR_UI_CATALOG.len());
         let (_, ctrls) = build(PAGE_OUTPUT, 0, &m, false);
         assert_eq!(ctrls.iter().filter(|c| [O_TYPE, O_CLIP, O_ASK].contains(&c.id)).count(), 3);
+    }
+
+    /// The frameless header owns the top of the window, everything else starts below it, and the confirmation
+    /// card fits the design size with Cancel (the default button) to the left of Confirm.
+    #[test]
+    fn the_header_and_the_confirmation_card_fit_the_window() {
+        let (items, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        let win_btn = |id: i32| ctrls.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is missing"));
+        for id in [HEADER_MIN, HEADER_CLOSE] {
+            let b = win_btn(id);
+            assert!(b.r.y >= 0 && b.r.y + b.r.h <= HEADER_H, "window button {id} inside the header: {:?}", b.r);
+            assert!(b.r.x >= SIDEBAR_W && b.r.x + b.r.w <= WIN_W, "window button {id} on the right: {:?}", b.r);
+        }
+        assert!(win_btn(HEADER_MIN).r.x < win_btn(HEADER_CLOSE).r.x, "minimise left of close");
+        let nav = ctrls.iter().find(|c| c.id == ID_NAV + PAGE_GENERAL as i32).expect("nav");
+        assert!(nav.r.y >= HEADER_H, "navigation below the header: {:?}", nav.r);
+        let top = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Text { r, .. } => Some(r.y),
+                _ => None,
+            })
+            .min()
+            .expect("page text");
+        assert!(top >= HEADER_H, "page content below the header, was {top}");
+
+        MODAL.with(|m| {
+            *m.borrow_mut() = Some(Modal {
+                title: "Delete everything KeyReed learned?".into(),
+                body: "Every learned word and habit go.".into(),
+                confirm: "Delete".into(),
+                action: ModalAction::DeleteLearned,
+            })
+        });
+        let (_, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        MODAL.with(|m| *m.borrow_mut() = None);
+        let card = modal_card();
+        assert!(card.x >= 0 && card.y >= 0 && card.x + card.w <= WIN_W && card.y + card.h <= WIN_H, "{card:?}");
+        let cancel = ctrls.iter().find(|c| c.id == MODAL_CANCEL).expect("cancel");
+        let confirm = ctrls.iter().find(|c| c.id == MODAL_CONFIRM).expect("confirm");
+        for b in [cancel, confirm] {
+            assert!(b.r.x >= card.x && b.r.x + b.r.w <= card.x + card.w, "{:?} inside the card", b.r);
+            assert!(b.r.y >= card.y && b.r.y + b.r.h <= card.y + card.h, "{:?} inside the card", b.r);
+        }
+        assert!(cancel.r.x < confirm.r.x, "Cancel on the left of Confirm");
+        assert!(matches!(confirm.kind, Kind::Button { style: BtnStyle::Danger, .. }), "the destructive action is red");
+        assert!(matches!(cancel.kind, Kind::Button { style: BtnStyle::Secondary, .. }));
     }
 
     #[test]

@@ -21,7 +21,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, SetWindowPos, TranslateMessage, HWND_TOP, MSG,
+    PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
 };
 
 use windows_sys::Win32::Storage::Xps::PrintWindow;
@@ -187,6 +188,34 @@ impl Gallery {
         self.report.push(serde_json::json!({
             "shot": name,
             "kind": "review",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
+    /// The window as the desktop shows it: DWM's rounded corners and shadow are composited outside PrintWindow,
+    /// so this one is a plain screen capture with some desktop around the window.
+    fn shot_settings_on_desktop(&mut self, name: &str, note: &str) -> Result<()> {
+        let cls: Vec<u16> = "KeyreedSettingsClass\0".encode_utf16().collect();
+        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+        anyhow::ensure!(!h.is_null(), "Settings window not found");
+        let rc = frame_rect(h);
+        let pad = 28;
+        // This one reads the screen, so the window has to be on top of the other windows for a moment.
+        unsafe { SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        pump_for(120);
+        capture(
+            rc.left - pad,
+            rc.top - pad,
+            rc.right - rc.left + 2 * pad,
+            rc.bottom - rc.top + 2 * pad,
+            &self.dir.join(format!("{name}.bmp")),
+            None,
+        )?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "settings",
             "note": note,
             "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
         }));
@@ -459,6 +488,17 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // The frameless window on the desktop: rounded corners and the DWM shadow, no stock title bar.
+    g.shot_settings_on_desktop("settings_12_on_desktop", "Frameless Settings on the desktop: rounded corners, shadow, KeyReed's header")?;
+
+    // Delete-all is KeyReed's own card now: the page dims behind it, Cancel has the focus, Delete is red.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MYSTYLE, 0);
+    vi_win32::settings::confirm_delete_for_test();
+    pump_for(400);
+    g.shot_settings("settings_13_confirm_delete", "Delete-all confirmation: in-app card instead of the system dialog")?;
+    vi_win32::settings::dismiss_modal_for_test();
+    pump_for(300);
+
     // The Speech models page is taller than the window: the scrolled view must stay inside the content column,
     // and the Quick Fix grammar row sits at its end.
     vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);
