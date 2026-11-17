@@ -2,6 +2,7 @@ pub mod analysers;
 pub mod brand;
 pub mod config;
 pub mod dictionary;
+pub mod editwatch;
 pub mod history;
 pub mod ptt;
 pub mod shortcut;
