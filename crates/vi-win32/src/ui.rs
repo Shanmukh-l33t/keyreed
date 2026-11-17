@@ -1004,6 +1004,10 @@ pub mod win_gui {
         cur_w: f32,
         from_w: f32,
         to_w: f32,
+        /// Height tweens with the same curve, so a state that draws smaller shrinks instead of snapping.
+        cur_h: f32,
+        from_h: f32,
+        to_h: f32,
         tween_start: Instant,
         content_since: Instant,
         state_since: Instant,
@@ -1305,8 +1309,8 @@ pub mod win_gui {
             let scale = dpi_scale(hwnd);
             if (scale - pill.last_scale).abs() > 0.01 {
                 // Moved onto a monitor with another DPI: keep the same vertical centre.
-                let old_h = PillMetrics::for_scale(pill.last_scale).window_height() as i32;
-                let new_h = PillMetrics::for_scale(scale).window_height() as i32;
+                let old_h = PillMetrics::for_pill(pill.last_scale, pill.last_kind).window_height() as i32;
+                let new_h = PillMetrics::for_pill(scale, pill.last_kind).window_height() as i32;
                 pill.top += (old_h - new_h) / 2;
                 pill.last_scale = scale;
             }
@@ -1412,9 +1416,12 @@ pub mod win_gui {
                 (final_w, padded)
             };
             let target_w = pill_window_width(scale, view.kind, lw, sw, tw) as f32;
-            if (target_w - pill.to_w).abs() > 0.5 {
+            let target_h = PillMetrics::for_pill(scale, view.kind).window_height() as f32;
+            if (target_w - pill.to_w).abs() > 0.5 || (target_h - pill.to_h).abs() > 0.5 {
                 pill.from_w = pill.cur_w;
                 pill.to_w = target_w;
+                pill.from_h = pill.cur_h;
+                pill.to_h = target_h;
                 pill.tween_start = now;
             }
             let tween_t =
@@ -1424,12 +1431,17 @@ pub mod win_gui {
             } else {
                 pill.from_w + (pill.to_w - pill.from_w) * ease_out_cubic(tween_t)
             };
+            pill.cur_h = if tween_t >= 1.0 {
+                pill.to_h
+            } else {
+                pill.from_h + (pill.to_h - pill.from_h) * ease_out_cubic(tween_t)
+            };
             let fade_t =
                 if reduced { 1.0 } else { now.duration_since(pill.content_since).as_secs_f32() * 1000.0 / FADE_MS };
             let tweening = tween_t < 1.0 || fade_t < 1.0 || qf_moving || tick_moving || hold;
 
             let w = pill.cur_w.round().max(8.0) as usize;
-            let h = PillMetrics::for_scale(scale).window_height();
+            let h = pill.cur_h.round().max(8.0) as usize;
             let lbl = (lw > 0).then_some(TextMask { width: lw, height: lh, coverage: &lcov });
             let sec = (sw > 0).then_some(TextMask { width: sw, height: sh, coverage: &scov });
             let ter = (tw > 0).then_some(TextMask { width: tw, height: th, coverage: &tcov });
@@ -1461,9 +1473,11 @@ pub mod win_gui {
             let bgra = render_pill(w, h, &frame);
 
             // Position: centred on the anchor, clamped into the monitor's work area.
-            let wa = work_area_at(pill.cx, pill.top + h as i32 / 2);
+            let base_h = PillMetrics::for_scale(scale).window_height() as i32;
+            let wa = work_area_at(pill.cx, pill.top + base_h / 2);
             let x = (pill.cx - w as i32 / 2).clamp(wa.left, (wa.right - w as i32).max(wa.left));
-            let y = pill.top.clamp(wa.top, (wa.bottom - h as i32).max(wa.top));
+            // Growing or shrinking around the same centre keeps the pill from bouncing on a state change.
+            let y = (pill.top + (base_h - h as i32) / 2).clamp(wa.top, (wa.bottom - h as i32).max(wa.top));
             let (ox, oy) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
             present_layered(hwnd, &bgra, w as i32, h as i32, x + ox, y + oy);
             pill.frames_painted += 1;
@@ -2290,6 +2304,7 @@ pub mod win_gui {
                     _ => dpi_scale(pill_hwnd),
                 };
                 let idle_w0 = pill_window_width(scale0, PillKind::Idle, 0, 0, 0) as i32;
+                let idle_h0 = PillMetrics::for_scale(scale0).window_height() as i32;
                 let (cx, top) = match initial_cfg.floating_pill_pos {
                     Some((sx, sy))
                         if !MonitorFromPoint(POINT { x: sx + idle_w0 / 2, y: sy + 4 }, MONITOR_DEFAULTTONULL)
@@ -2308,6 +2323,9 @@ pub mod win_gui {
                         cur_w: idle_w0 as f32,
                         from_w: idle_w0 as f32,
                         to_w: idle_w0 as f32,
+                        cur_h: idle_h0 as f32,
+                        from_h: idle_h0 as f32,
+                        to_h: idle_h0 as f32,
                         tween_start: now,
                         content_since: now,
                         state_since: now,
