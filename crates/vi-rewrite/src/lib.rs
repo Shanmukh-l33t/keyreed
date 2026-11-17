@@ -2,6 +2,7 @@ pub mod cloud_llm;
 pub mod gector;
 pub mod guards;
 pub mod paragraphs;
+pub mod quickfix;
 pub mod slm;
 pub mod stream;
 pub mod symbols;

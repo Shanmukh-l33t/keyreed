@@ -121,8 +121,8 @@ static RE_PORT_HTTP_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
 static RE_BULLET: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:^|\s+)(?:bullet\s+point|bullet\s+(?:one|two|three|four|five|\d+))[:.,]?\s+").unwrap()
 });
-static RE_PRONOUN_I: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi\b").unwrap());
-static RE_PRONOUN_IM: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi'(m|ve|ll|d)\b").unwrap());
+pub(crate) static RE_PRONOUN_I: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi\b").unwrap());
+pub(crate) static RE_PRONOUN_IM: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi'(m|ve|ll|d)\b").unwrap());
 static RE_TECH_CASING: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     TECH_CASING
         .iter()
@@ -162,7 +162,7 @@ static RE_CASUAL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     ])
 });
 /// Well-known Indian-English / non-native constructions that have one safe deterministic fix.
-static RE_ESL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+pub(crate) static RE_ESL_RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     compile_pairs(&[
         (r"(?i)^myself\s+([a-z]+),?\s+", "I am $1, and "),
         (r"(?i)\bkindly\s+do\s+the\s+needful(?:\s+and)?\b", "please"),

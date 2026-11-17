@@ -171,12 +171,17 @@ impl Gector {
     fn guarded_tags(&mut self, words: &[String]) -> Result<Vec<(usize, f32)>> {
         let mut tags = self.tag(words)?;
         let low: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
-        for i in 1..tags.len() {
+        // The reference guards words 1..n only. A word appended after `$START` (an article at the start of the text) is
+        // the same insertion the append guard exists to stop, so it is guarded too (the only deviation).
+        for i in 0..tags.len() {
             if tags[i].0 == self.keep {
                 continue;
             }
             let label = self.labels[tags[i].0].clone();
-            let (w, lw) = (&words[i - 1], low[i - 1].as_str());
+            if i == 0 && !label.starts_with("$APPEND_") {
+                continue;
+            }
+            let (w, lw) = if i == 0 { ("$START", "$start") } else { (words[i - 1].as_str(), low[i - 1].as_str()) };
             let lp = if i >= 2 { low[i - 2].as_str() } else { "" };
             let last = i == words.len() || !words[i].chars().next().is_some_and(char::is_alphanumeric);
             let new = self.edit(w, &label);

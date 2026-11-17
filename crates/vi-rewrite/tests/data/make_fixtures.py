@@ -10,10 +10,10 @@
 Sentences are the inputs of bench/typed_gate.jsonl (written for KeyReed; no third-party text). Run with the scratch
 Python packages on the path:
 
-  PYTHONPATH=<kr_bench>/site python crates/vi-rewrite/tests/data/make_fixtures.py <model_dir> <kr_bench>/eval
+  PYTHONPATH=<kr_bench>/site python crates/vi-rewrite/tests/data/make_fixtures.py <model_dir> <kr_bench>/eval [<out_dir>]
 
 <model_dir> is the int8 grammar model folder (gector-bert-en-int8), the second argument the folder holding
-evalkit.py and data/words_alpha.txt.
+evalkit.py and data/words_alpha.txt. The fixtures go to <out_dir> (default: beside this script).
 """
 import json
 import os
@@ -22,6 +22,7 @@ import sys
 
 model_dir, eval_dir = sys.argv[1], sys.argv[2]
 here = os.path.dirname(os.path.abspath(__file__))
+out_dir = sys.argv[3] if len(sys.argv) > 3 else here
 repo = os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
 sys.path.insert(0, eval_dir)
 import evalkit  # noqa: E402
@@ -53,7 +54,7 @@ for words in cases:
     e = tok.encode(words, is_pretokenized=True)
     out.append({"words": words, "ids": e.ids, "word_ids": e.word_ids})
 json.dump({"made_by": "Python tokenizers %s, tokenizer.json of gector-bert-en-int8, encode(words, is_pretokenized=True)"
-           % __import__("tokenizers").__version__, "cases": out}, open(os.path.join(here, "wordpiece_golden.json"), "w", encoding="utf-8"),
+           % __import__("tokenizers").__version__, "cases": out}, open(os.path.join(out_dir, "wordpiece_golden.json"), "w", encoding="utf-8"),
           ensure_ascii=False, indent=0)
 
 # ---- engine reference edits
@@ -69,5 +70,5 @@ for s in sentences:
 import onnxruntime  # noqa: E402
 json.dump({"made_by": "Python reference evalkit.Engine(guards=True, protect=True), int8 model, onnxruntime %s, tokenizers %s; "
            "sentences from bench/typed_gate.jsonl" % (onnxruntime.__version__, __import__("tokenizers").__version__),
-           "sentences": ref}, open(os.path.join(here, "quickfix_reference.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+           "sentences": ref}, open(os.path.join(out_dir, "quickfix_reference.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=0)
 print(len(cases), "tokenizer cases;", len(ref), "sentences;", sum(1 for r in ref if r["edits"]), "with edits")

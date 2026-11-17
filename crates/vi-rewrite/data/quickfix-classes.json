@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "_comment": "Which edit classes Quick Fix may apply silently. silent = replaced without asking; review_only = shown in the Review panel first; off = never produced. A class is silent only where the gate set (bench/typed_gate.jsonl, scored by bench/score_typed.py) shows G1, G2 and G5 within target; 'gate' records that run. 'contexts' caps every class in an app category (the lowest of the two wins).",
+  "unknown_class": "review_only",
+  "contexts": { "terminal": "off", "password_protected": "off", "code_editor": "review_only" },
+  "classes": {
+    "spelling": { "policy": "review_only", "gate": "none yet" },
+    "rule_pronoun_i": { "policy": "review_only", "gate": "none yet" },
+    "rule_esl": { "policy": "review_only", "gate": "none yet" },
+    "capitalisation": { "policy": "review_only", "gate": "none yet" },
+    "doubled_word": { "policy": "review_only", "gate": "none yet" },
+    "article": { "policy": "review_only", "gate": "none yet" },
+    "punctuation": { "policy": "review_only", "gate": "none yet" },
+    "agreement": { "policy": "review_only", "gate": "none yet" },
+    "confusable": { "policy": "review_only", "gate": "none yet" },
+    "inflection": { "policy": "review_only", "gate": "none yet" },
+    "insertion": { "policy": "review_only", "gate": "none yet" },
+    "deletion": { "policy": "review_only", "gate": "none yet" },
+    "replacement": { "policy": "review_only", "gate": "none yet" },
+    "merged": { "policy": "review_only", "gate": "none yet" }
+  }
+}
