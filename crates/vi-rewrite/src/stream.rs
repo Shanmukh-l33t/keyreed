@@ -136,7 +136,7 @@ pub fn stream_chat(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -166,7 +166,7 @@ mod tests {
     }
 
     /// A one-request SSE server: sends `tokens`, one every `gap`, then `[DONE]`.
-    fn serve(tokens: Vec<&'static str>, gap: Duration) -> (String, std::thread::JoinHandle<()>) {
+    pub(crate) fn serve(tokens: Vec<&'static str>, gap: Duration) -> (String, std::thread::JoinHandle<()>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", l.local_addr().unwrap().port());
         let h = std::thread::spawn(move || {
