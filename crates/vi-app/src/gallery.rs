@@ -21,7 +21,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, SetForegroundWindow, SetWindowPos,
+    ShowWindow, TranslateMessage, MSG, PM_REMOVE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
 };
 
 use windows_sys::Win32::Storage::Xps::PrintWindow;
@@ -210,10 +211,42 @@ impl Gallery {
         Ok(())
     }
 
-    fn shot_settings(&mut self, name: &str, note: &str) -> Result<()> {
-        let cls: Vec<u16> = "KeyreedSettingsClass\0".encode_utf16().collect();
-        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+    /// This process's own Settings window: the class name alone can also match the user's installed app.
+    fn settings_hwnd() -> Result<HWND> {
+        let h = vi_win32::settings::hwnd();
         anyhow::ensure!(!h.is_null(), "Settings window not found");
+        Ok(h)
+    }
+
+    /// Pixels as a person sees them (BitBlt of the screen). PrintWindow ignores child-window regions, so it
+    /// shows controls that were clipped away entirely; the shots that prove controls are reachable use this.
+    fn shot_settings_live(&mut self, name: &str, note: &str) -> Result<()> {
+        let h = Self::settings_hwnd()?;
+        // Briefly on top, so nothing of the desktop covers the pixels being measured.
+        let top = |after: *mut std::ffi::c_void| unsafe {
+            SetWindowPos(h, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        };
+        top(-1isize as *mut std::ffi::c_void);
+        unsafe {
+            ShowWindow(h, 9 /* SW_RESTORE */);
+            SetForegroundWindow(h);
+        }
+        pump_for(800);
+        let rc = frame_rect(h);
+        let shot = capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), None);
+        top(-2isize as *mut std::ffi::c_void);
+        shot?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "settings-live",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
+    fn shot_settings(&mut self, name: &str, note: &str) -> Result<()> {
+        let h = Self::settings_hwnd()?;
         let rc = frame_rect(h);
         capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
         self.report.push(serde_json::json!({
@@ -582,6 +615,43 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     pump_for(400);
     g.shot_settings("settings_11_grammar_downloading", "Quick Fix grammar row: download in progress")?;
     g.gui.set_download(None, Some(installed.clone()));
+    vi_win32::settings::scroll_to_for_test(0);
+    pump_for(200);
+
+    // Taller pages: the Dictation page's Mouse group sits below the fold, so the page must scroll to its end
+    // and every control there must be reachable. The wheel goes to the focused control, not the canvas, so a
+    // notch sent to a control has to scroll the page as well (that is what made the page feel stuck).
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
+    pump_for(400);
+    vi_win32::settings::scroll_to_for_test(i32::MAX);
+    pump_for(400);
+    let (bottom, content, view) = vi_win32::settings::scroll_state_for_test();
+    g.shot_settings_live(
+        "settings_02_dictation_bottom",
+        &format!("Dictation scrolled to its end: offset {bottom} of {content} (view {view}); Mouse group reachable"),
+    )?;
+    // The "Forward button" combo of that group is on screen here.
+    let handled = vi_win32::settings::wheel_over_control_for_test(322, 120);
+    pump_for(200);
+    let (after_wheel, _, _) = vi_win32::settings::scroll_state_for_test();
+    anyhow::ensure!(
+        handled && after_wheel < bottom,
+        "a wheel notch over a control must scroll the page ({bottom} -> {after_wheel}, handled {handled})"
+    );
+    g.report.push(serde_json::json!({
+        "shot": "settings_wheel_over_control",
+        "kind": "check",
+        "note": format!("wheel over the Forward-button combo scrolled the page {bottom} -> {after_wheel} (content {content}, view {view})"),
+    }));
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);
+    pump_for(300);
+    let (_, models_h, models_view) = vi_win32::settings::scroll_state_for_test();
+    vi_win32::settings::scroll_to_for_test((models_h - models_view) / 2);
+    pump_for(400);
+    g.shot_settings_live(
+        "settings_06_models_middle",
+        &format!("Speech models scrolled to the middle: offset {} of {} (view {models_view})", (models_h - models_view) / 2, models_h - models_view),
+    )?;
     vi_win32::settings::scroll_to_for_test(0);
     pump_for(200);
 
