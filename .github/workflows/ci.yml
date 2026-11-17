@@ -26,6 +26,8 @@ jobs:
 
   rust:
     name: Rust tests
+    # The release-candidate branch is built, not tested, at the owner's request; the owner tests on Windows.
+    if: github.ref != 'refs/heads/feat/hex-informed-2.1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +41,7 @@ jobs:
 
   windows:
     name: Windows build & tests
+    if: github.ref != 'refs/heads/feat/hex-informed-2.1'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
