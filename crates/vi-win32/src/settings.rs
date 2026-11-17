@@ -123,6 +123,8 @@ const V_PWD: i32 = 850;
 const V_REDACT: i32 = 851;
 const V_CLIPHIST: i32 = 852;
 const V_CLEAR_HIST: i32 = 853;
+/// Text jobs (Composer, Quick Fix, voice commands) may use the cloud key. Never under Maximum Privacy.
+const V_CLOUD_JOBS: i32 = 854;
 const AB_RELEASES: i32 = 901;
 const AB_UPDATES: i32 = 902;
 const AB_GITHUB: i32 = 903;
@@ -1652,6 +1654,7 @@ fn page_privacy(b: &mut Builder, m: &SharedUiModel) {
     b.toggle_row(V_PWD, "Never type into password fields", "Password boxes get the clipboard, never keystrokes.", c.privacy.block_password_fields, true);
     b.toggle_row(V_REDACT, "Hide private window titles", "Don't read titles of private browser windows and password managers.", c.privacy.redact_sensitive_window_titles, true);
     b.toggle_row(V_CLIPHIST, "Keep dictation out of clipboard history", "Excludes KeyReed text from Win+V history and cloud clipboard.", c.privacy.exclude_from_clipboard_history, true);
+    b.toggle_row(V_CLOUD_JOBS, "Let text jobs use the cloud", "Composer, Quick Fix and voice commands may send text to your cloud key. This never applies under Maximum Privacy.", c.text_jobs_allow_cloud, true);
     b.end_group();
     b.section("Your data");
     b.group();
@@ -2913,6 +2916,10 @@ fn on_command(id: i32, code: u32) {
         (V_CLIPHIST, true, _) => {
             let v = !c.privacy.exclude_from_clipboard_history;
             commit(|c| c.privacy.exclude_from_clipboard_history = v)
+        }
+        (V_CLOUD_JOBS, true, _) => {
+            let v = !c.text_jobs_allow_cloud;
+            commit(|c| c.text_jobs_allow_cloud = v)
         }
         (V_CLEAR_HIST, true, _) => send(UiAction::ClearHistory),
         (AB_RELEASES, true, _) => open_url(&format!("{REPO_URL}/releases")),
