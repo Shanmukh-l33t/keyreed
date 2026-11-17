@@ -68,7 +68,7 @@ grep -q "^version = \"$VERSION\"" Cargo.toml || die "Cargo.toml was not updated"
 sed -i -E 's/^!define APP_VERSION "[^"]*"/!define APP_VERSION "'"$VERSION"'"/; s/^VIProductVersion "[^"]*"/VIProductVersion "'"$NSIS_VERSION"'"/' scripts/keyreed.nsi
 grep -q "APP_VERSION \"$VERSION\"" scripts/keyreed.nsi || die "keyreed.nsi was not updated"
 # Cargo.lock: the six workspace packages follow the workspace version; cargo rewrites them.
-CARGO_NET_OFFLINE=true cargo metadata --format-version 1 --offline >/dev/null || die "cargo could not update Cargo.lock offline"
+cargo update --workspace --offline || die "cargo could not update Cargo.lock offline"
 grep -c "^version = \"$VERSION\"" Cargo.lock | xargs echo "Cargo.lock packages at $VERSION:"
 
 # ---------------------------------------------------------------------------------------------------------------
