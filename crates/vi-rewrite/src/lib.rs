@@ -1,10 +1,12 @@
 pub mod cloud_llm;
+pub mod gector;
 pub mod guards;
 pub mod paragraphs;
 pub mod slm;
 pub mod stream;
 pub mod symbols;
 pub mod tier0;
+pub mod wordpiece;
 
 use guards::{verify_rewrite_candidate, GuardVerdict};
 use slm::LlamaServerSupervisor;
