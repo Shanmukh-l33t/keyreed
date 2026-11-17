@@ -119,6 +119,19 @@ for gguf in "${LLM_SET[@]}"; do
   loc "$DIST/models/$gguf" "$src"
 done
 
+# 4b) grammar model for Quick Fix (Apache-2.0, proofbird/gector-bert-en, int8): the model files with their LICENSE and
+# NOTICE, in the full bundles only. The folder name is the one the app looks for under models/.
+GRAMMAR_DIR="gector-bert-en"
+GRAMMAR_FILES=(model.onnx tokenizer.json config.json verb-form-vocab.txt gector-guards.json language-rules.json gector-meta.json LICENSE NOTICE)
+if [[ "$MODE" != "slim" ]]; then
+  GRAMMAR_SRC="${KEYREED_GRAMMAR_SRC:-$VENDOR/models/gector-bert-en-int8}"
+  mkdir -p "$DIST/models/$GRAMMAR_DIR"
+  for f in "${GRAMMAR_FILES[@]}"; do
+    [[ -f "$GRAMMAR_SRC/$f" ]] || { echo "FATAL: grammar model file missing: $GRAMMAR_SRC/$f (set KEYREED_GRAMMAR_SRC)"; exit 1; }
+    loc "$DIST/models/$GRAMMAR_DIR/$f" "$GRAMMAR_SRC/$f"
+  done
+fi
+
 # 5) provenance: license, readme, checksums
 [[ -f "$ROOT/LICENSE" ]] && cp -f "$ROOT/LICENSE" "$DIST/LICENSE" || true
 cat > "$DIST/README.txt" <<EOF
@@ -126,6 +139,7 @@ Keyreed Windows bundle (offline-first push-to-talk dictation).
 Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 ASR models: ${ASR_SET[*]}
 SLM models: ${LLM_SET[*]}
+Grammar model (Quick Fix): $([[ "$MODE" == "slim" ]] && echo "not included" || echo "$GRAMMAR_DIR (Apache-2.0, see models/$GRAMMAR_DIR/LICENSE and NOTICE)")
 Selection rationale: research/01-speech-recognition.md, research/03-ai-correction-context.md.
 All model archives are SHA-256 pinned in crates/vi-asr/src/catalog.rs (threat model T9).
 Runtime DLLs (onnxruntime, llama) must be code-signed before public release (threat model T12).

@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn grammar_edits_equal_the_python_reference() {
         let Some(dir) = test_model_dir() else { return };
-        let mut e = QuickFixEngine::new(Box::new(Gector::load(&test_ort_dll(), &dir, 0).unwrap()));
+        let mut e = QuickFixEngine::new(Box::new(Gector::load(&test_ort_dll(), &dir, 2).unwrap()));
         let raw = match std::env::var_os("KEYREED_QF_REFERENCE") {
             Some(p) => std::fs::read_to_string(p).unwrap(),
             None => include_str!("../tests/data/quickfix_reference.json").to_string(),

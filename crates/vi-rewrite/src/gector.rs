@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn fixes_agreement_and_leaves_empty_text_alone() {
         let Some(dir) = test_model_dir() else { return };
-        let mut g = Gector::load(&test_ort_dll(), &dir, 0).unwrap();
+        let mut g = Gector::load(&test_ort_dll(), &dir, 2).unwrap();
         for (text, from, to) in [("This are a test.", "are", "is"), ("My brother have two cat.", "have", "has")] {
             let edits = g.tag_sentence(text).unwrap();
             assert!(edits.iter().any(|e| &text[e.start..e.start + e.length] == from && e.replacement == to), "{edits:?}");
