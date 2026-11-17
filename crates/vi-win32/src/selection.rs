@@ -307,6 +307,10 @@ pub fn capture(ctx: &ForegroundContext) -> Result<Captured, Refusal> {
         return Err(refusal);
     }
     let _gate = input_gate();
+    // KeyReed's own window can be in front: the Review panel takes the foreground when it opens, and the chord
+    // can be pressed again straight after a fix. The selection is still in the window the chord was for, so put
+    // it back in front first; another application's window is never taken from.
+    return_to_target(ctx.hwnd);
     let (text, structured, clipboard_restored) = copy_selection(ctx.hwnd)?;
     Ok(Captured {
         copied_line: looks_like_copied_line(&text),

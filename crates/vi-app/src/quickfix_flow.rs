@@ -57,14 +57,14 @@ pub struct QuickFixFlow {
 
 impl QuickFixFlow {
     /// The Quick Fix chord: capture the selection and hand it to the worker.
-    pub fn start(&mut self, cfg: &AppConfig, gui: &WinGuiHandle, jobs: &Sender<JobRequest>, engine: &SharedEngine) {
+    pub fn start(&mut self, cfg: &AppConfig, gui: &WinGuiHandle, jobs: &Sender<JobRequest>, engine: &SharedEngine, external: &ForegroundContext) {
         if self.pending.is_some() {
+            // A change is running or waiting in the Review panel: a second capture would take the selection
+            // out from under it. Say so instead of doing nothing.
+            refuse(gui, "Finish the change on screen first.");
             return;
         }
-        let ctx = vi_win32::context::capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-        if ctx.process_id == std::process::id() {
-            return;
-        }
+        let Some(ctx) = target(cfg, external) else { return };
         gui.quick_fix(QuickFixStage::Working);
         let captured = match selection::capture(&ctx) {
             // The editor copied a whole line because nothing was selected: replacing it would duplicate the line.
@@ -96,7 +96,7 @@ impl QuickFixFlow {
 
     /// The voice-command chord's press: capture the selection exactly as Quick Fix does and hold it until the
     /// chord is released. False when there is nothing to rewrite; the pill then says why.
-    pub fn arm_voice(&mut self, cfg: &AppConfig, gui: &WinGuiHandle) -> bool {
+    pub fn arm_voice(&mut self, cfg: &AppConfig, gui: &WinGuiHandle, external: &ForegroundContext) -> bool {
         if self.voice.is_some() {
             return false;
         }
@@ -106,10 +106,7 @@ impl QuickFixFlow {
             refuse(gui, "Finish the change in the Review panel first.");
             return false;
         }
-        let ctx = vi_win32::context::capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-        if ctx.process_id == std::process::id() {
-            return false;
-        }
+        let Some(ctx) = target(cfg, external) else { return false };
         match selection::capture(&ctx) {
             // The editor copied a whole line because nothing was selected: rewriting it would replace the line.
             Ok(c) if c.copied_line => refuse(gui, NOTHING_SELECTED),
@@ -243,6 +240,17 @@ fn refuse(gui: &WinGuiHandle, sentence: &str) {
     gui.quick_fix(QuickFixStage::Refused { text: sentence.to_string(), settings: false });
 }
 
+/// The window a chord acts on. KeyReed's own window can be in front — the Review panel takes the foreground
+/// when it opens, and a chord pressed straight after a fix lands on the listener — so the selection is taken
+/// from the last external window the coordinator saw. None when there is no external window to act on.
+fn target(cfg: &AppConfig, external: &ForegroundContext) -> Option<ForegroundContext> {
+    let front = vi_win32::context::capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+    if front.hwnd != 0 && front.process_id != std::process::id() {
+        return Some(front);
+    }
+    (external.hwnd != 0 && external.process_id != std::process::id()).then(|| external.clone())
+}
+
 /// Why a job stopped, in one sentence. Voice commands take their ids from `VOICE_ID_BASE`, so the reason is
 /// always about the right kind of job.
 fn failure_sentence(id: u64, reason: JobFailure) -> &'static str {
@@ -253,8 +261,8 @@ fn failure_sentence(id: u64, reason: JobFailure) -> &'static str {
         };
     }
     match reason {
-        // Neither model is available: name the install route, and for a long selection the way out.
-        JobFailure::NoGrammarModel => "The grammar model isn't installed; install it in Settings › Speech models.",
+        // Neither model is available: name both install routes, and for a long selection the way out.
+        JobFailure::NoGrammarModel => "Quick Fix has no model to fix with: install the grammar model or a writing model in Settings › Speech models.",
         JobFailure::SelectionTooLong => "That selection is too long for the writing model. Select less text, or install the grammar model.",
         _ => "Quick Fix couldn't finish. Nothing was changed.",
     }
@@ -347,8 +355,8 @@ mod tests {
         );
         assert!(failure_sentence(VOICE_ID_BASE + 1, JobFailure::ModelFailed).contains("voice command"));
         assert!(failure_sentence(1, JobFailure::ModelFailed).contains("Quick Fix"));
-        // The refusal names the install route, and a too-long selection names its way out.
-        assert!(failure_sentence(1, JobFailure::NoGrammarModel).contains("Settings › Speech models"));
+        // The refusal names both install routes, and a too-long selection names its way out.
+        assert!(failure_sentence(1, JobFailure::NoGrammarModel).contains("writing model in Settings › Speech models"));
         assert!(failure_sentence(1, JobFailure::SelectionTooLong).contains("Select less text"));
     }
 
