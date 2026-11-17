@@ -11,7 +11,7 @@
 //! Every edit carries a class, and the edit-class table (`data/quickfix-classes.json`) says per class and app
 //! category whether it may be applied silently, only after review, or not at all.
 
-use crate::gector::{SentenceTagger, WORD};
+use crate::gector::{is_known_word, SentenceTagger, WORD};
 use crate::tier0::{RE_ESL_RULES, RE_PRONOUN_I, RE_PRONOUN_IM};
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
@@ -30,6 +30,10 @@ const ARTICLES: &[&str] = &["a", "an", "the"];
 const AGREE: &[&str] = &["is", "are", "was", "were", "am", "be", "been", "has", "have", "had", "does", "do", "did"];
 /// A noun changes number only next to one of these; a verb gains or loses "-s" only after a subject pronoun (plan C2, layer 4).
 const INFLECTION_CUES: &[&str] = &["two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "many", "several", "few", "both", "these", "those", "multiple", "various", "one", "a", "an", "each", "every", "this", "that", "he", "she", "it", "they", "we", "i", "you"];
+/// Command words that are never typos ("sudo", "nginx").
+const SHELL_WORDS: &[&str] = &["sudo", "systemctl", "nginx", "docker", "kubectl", "npm", "cargo", "git", "pip", "curl", "ssh", "chmod", "chown", "grep", "sed", "awk", "pwsh", "powershell", "rustc", "gcc", "apt", "yum", "brew"];
+/// The only answers accepted for a three-letter typo ("teh", "adn", "hte"): the rest are acronyms more often than typos.
+const COMMON_SHORT: &[&str] = &["the", "and", "for", "are", "you", "but", "not", "was", "has", "had", "its", "can", "out"];
 const CONFUSABLE: &[&str] = &["their", "there", "they're", "your", "you're", "its", "it's", "then", "than", "to", "too", "two", "lose", "loose", "affect", "effect", "whose", "who's"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,16 +137,16 @@ pub fn context_name(c: AppCategory) -> &'static str {
     }
 }
 
-/// The spelling layer. `misspellings` returns `(start, end, suggestion)` byte ranges in `text` for words that are
-/// wrong. The default checks nothing; a Windows implementation can be supplied by the application.
+/// The spelling layer. `misspellings` returns `(start, end, suggestions)` byte ranges in `text` for words that are
+/// wrong, best suggestion first. The default checks nothing; a Windows implementation can be supplied by the application.
 pub trait Speller: Send {
-    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)>;
+    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, Vec<String>)>;
 }
 
 pub struct NoSpeller;
 
 impl Speller for NoSpeller {
-    fn misspellings(&mut self, _text: &str) -> Vec<(usize, usize, String)> {
+    fn misspellings(&mut self, _text: &str) -> Vec<(usize, usize, Vec<String>)> {
         Vec::new()
     }
 }
@@ -206,9 +210,13 @@ impl QuickFixEngine {
         }
         let protected = self.protected(s);
         let mut base: Vec<Cand> = Vec::new();
-        for (start, end, rep) in self.speller.misspellings(s) {
-            if s.get(start..end).is_some_and(|word| plausible_fix(word, &rep)) {
-                base.push(Cand { start, end, rep, layer: Layer::Spelling, class: "spelling".into(), conf: 1.0 });
+        let flagged = self.speller.misspellings(s);
+        // Three or more unknown words in one sentence: another language or technical text, not typos.
+        if flagged.len() < 3 {
+            for (start, end, suggestions) in flagged {
+                if let Some(rep) = s.get(start..end).and_then(|word| spelling_fix(word, &suggestions)) {
+                    base.push(Cand { start, end, rep, layer: Layer::Spelling, class: "spelling".into(), conf: 1.0 });
+                }
             }
         }
         base.extend(rule_edits(s));
@@ -265,12 +273,28 @@ fn sentence_ranges(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
-/// A spelling suggestion is taken only for a plain lower-case word and a plain one-word answer a typo away
-/// (names, acronyms, identifiers and "a lot"-style splits are left alone).
-fn plausible_fix(word: &str, fix: &str) -> bool {
+/// The spelling fix for a flagged word, or `None` when it is not plainly a typo: a lower-case word with a vowel that
+/// is not in the word list and not a shell command, with exactly one suggestion that is in the word list and one edit
+/// away (for a three-letter word only a very common short word), or the same word with its apostrophe put back
+/// ("didnt"). Several candidates mean the writer's intent is unclear, so nothing is taken. Names, acronyms and
+/// technical terms the word list lacks still get through sometimes, which is why spelling is review-only unless the
+/// gate says otherwise.
+fn spelling_fix(word: &str, suggestions: &[String]) -> Option<String> {
     let plain = |t: &str| t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'') && t.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let len = word.chars().count();
-    len >= 3 && plain(word) && plain(fix) && word.chars().all(|c| !c.is_uppercase()) && edit_distance(word, fix) <= if len <= 4 { 1 } else { 2 }
+    if len < 3 || !plain(word) || !word.chars().any(|c| "aeiouy".contains(c)) || SHELL_WORDS.contains(&word) {
+        return None;
+    }
+    // "didnt": the word list holds the contractions without their apostrophe, so this comes before the list check.
+    if let Some(fix) = suggestions.iter().find(|fix| len >= 4 && fix.ends_with("n't") && fix.replace('\'', "") == word) {
+        return Some(fix.clone());
+    }
+    if is_known_word(word) {
+        return None;
+    }
+    let mut candidates = suggestions.iter().filter(|fix| plain(fix) && !fix.contains('\'') && is_known_word(fix) && edit_distance(word, fix) == 1 && (len > 3 || COMMON_SHORT.contains(&fix.as_str())));
+    let first = candidates.next()?;
+    candidates.next().is_none().then(|| first.clone())
 }
 
 /// Optimal string alignment distance: insertions, deletions, substitutions and swapped neighbours cost one each.
@@ -526,20 +550,36 @@ mod tests {
     }
 
     /// Suggests whatever it is told for any word that appears in its list.
-    struct Fixed(Vec<(&'static str, &'static str)>);
+    struct Fixed(Vec<(&'static str, Vec<&'static str>)>);
     impl Speller for Fixed {
-        fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)> {
-            self.0.iter().filter_map(|(w, fix)| text.find(w).map(|a| (a, a + w.len(), fix.to_string()))).collect()
+        fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, Vec<String>)> {
+            self.0.iter().filter_map(|(w, fixes)| text.find(w).map(|a| (a, a + w.len(), fixes.iter().map(|f| f.to_string()).collect()))).collect()
         }
     }
 
     #[test]
-    fn spelling_layer_fixes_typos_but_not_names_or_far_suggestions() {
-        let speller = Fixed(vec![("recieve", "receive"), ("Karthik", "Karthick"), ("teh", "a lot"), ("wrold", "planet"), ("xyz", "xyzzy")]);
+    fn spelling_layer_fixes_typos_but_not_names_or_unclear_ones() {
+        let speller = Fixed(vec![("recieve", vec!["receive"]), ("Karthik", vec!["Karthick"])]);
         let mut e = engine(vec![]).with_speller(Box::new(speller));
-        let r = e.fix("I recieve mail from Karthik about teh wrold.", AppCategory::General).unwrap();
-        assert_eq!(r.corrected, "I receive mail from Karthik about teh wrold.");
+        let r = e.fix("I recieve mail from Karthik today.", AppCategory::General).unwrap();
+        assert_eq!(r.corrected, "I receive mail from Karthik today.");
         assert_eq!((r.edits[0].layer, r.edits[0].class.as_str()), (Layer::Spelling, "spelling"));
+        let one = |word: &str, fixes: &[&str]| spelling_fix(word, &fixes.iter().map(|f| f.to_string()).collect::<Vec<_>>());
+        assert_eq!(one("teh", &["the", "tea"]).as_deref(), Some("the"));
+        assert_eq!(one("sening", &["sensing", "sending"]), None, "two candidates: intent unclear");
+        assert_eq!(one("usb", &["sub"]), None);
+        assert_eq!(one("src", &["sac"]), None, "no vowel: an abbreviation");
+        assert_eq!(one("behaviour", &["behavior"]), None, "in the word list");
+        assert_eq!(one("teh", &["a lot"]), None);
+        assert_eq!(one("didnt", &["didn't"]).as_deref(), Some("didn't"));
+        assert_eq!(one("informations", &["information's"]), None, "only contractions get an apostrophe");
+        assert_eq!(one("sudo", &["sudor"]), None);
+        assert_eq!(one("dont", &["don't"]).as_deref(), Some("don't"));
+        // Three unknown words in one sentence: not typos.
+        let mut e = engine(vec![]).with_speller(Box::new(Fixed(vec![("recieve", vec!["receive"]), ("hte", vec!["the"]), ("adn", vec!["and"])])));
+        assert!(e.fix("recieve hte adn", AppCategory::General).unwrap().edits.is_empty());
+        let mut e = engine(vec![]).with_speller(Box::new(Fixed(vec![("recieve", vec!["receive"]), ("hte", vec!["the"])])));
+        assert_eq!(e.fix("recieve hte", AppCategory::General).unwrap().corrected, "receive the");
     }
 
     #[test]

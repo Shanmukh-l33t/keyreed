@@ -31,6 +31,11 @@ static WORDS_KNOWN: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     set
 });
 
+/// Whether `word` (any case) is in the English word list the guards use.
+pub(crate) fn is_known_word(word: &str) -> bool {
+    WORDS_KNOWN.contains(word.to_lowercase().as_str())
+}
+
 /// One change to a sentence. `start` and `length` are byte offsets into the sentence given to the tagger.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawEdit {

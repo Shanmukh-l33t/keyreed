@@ -4,10 +4,13 @@
 //! are respected). Created on first use. COM is entered multithreaded, so one checker may be used from the worker thread
 //! that runs Quick Fix jobs without an apartment of its own.
 
-use windows::Win32::Foundation::S_OK;
 use windows::core::{w, HSTRING, PCWSTR, PWSTR};
+use windows::Win32::Foundation::S_OK;
 use windows::Win32::Globalization::{ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory, CORRECTIVE_ACTION_GET_SUGGESTIONS, CORRECTIVE_ACTION_REPLACE};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+
+/// Suggestions kept per word.
+const MAX_SUGGESTIONS: usize = 5;
 
 pub struct WindowsSpeller {
     /// `None` until first use; `Some(None)` when Windows has no checker for the language.
@@ -38,8 +41,9 @@ impl WindowsSpeller {
         self.checker.get_or_insert_with(create_checker).as_ref()
     }
 
-    /// Misspelled words in `text` as `(start, end, first suggestion)`, byte offsets. Words with no suggestion are skipped.
-    pub fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)> {
+    /// Misspelled words in `text` as `(start, end, suggestions)`, byte offsets, best suggestion first (at most five).
+    /// Words with no suggestion are skipped.
+    pub fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, Vec<String>)> {
         let Some(checker) = self.checker() else { return Vec::new() };
         // SAFETY: plain COM calls on interfaces this struct owns; every returned string is freed once.
         unsafe { check(checker, text).unwrap_or_default() }
@@ -58,7 +62,7 @@ fn create_checker() -> Option<ISpellChecker> {
     }
 }
 
-unsafe fn check(checker: &ISpellChecker, text: &str) -> windows::core::Result<Vec<(usize, usize, String)>> {
+unsafe fn check(checker: &ISpellChecker, text: &str) -> windows::core::Result<Vec<(usize, usize, Vec<String>)>> {
     let utf16: Vec<u16> = text.encode_utf16().collect();
     // Byte offset of every UTF-16 index (a surrogate pair's second unit maps to the same character).
     let mut byte_at = Vec::with_capacity(utf16.len() + 1);
@@ -80,29 +84,33 @@ unsafe fn check(checker: &ISpellChecker, text: &str) -> windows::core::Result<Ve
         }
         let word = String::from_utf16_lossy(&utf16[start..start + len]);
         let action = error.CorrectiveAction()?;
-        let suggestion = if action == CORRECTIVE_ACTION_REPLACE {
-            take_string(error.Replacement()?)
+        let found: Vec<String> = if action == CORRECTIVE_ACTION_REPLACE {
+            take_string(error.Replacement()?).into_iter().collect()
         } else if action == CORRECTIVE_ACTION_GET_SUGGESTIONS {
-            first_suggestion(checker, &word)
+            suggestions(checker, &word)
         } else {
-            None // CORRECTIVE_ACTION_DELETE (a doubled word) and anything else is left to the other layers
+            Vec::new() // CORRECTIVE_ACTION_DELETE (a doubled word) and anything else is left to the other layers
         };
-        if let Some(s) = suggestion.filter(|s| !s.is_empty() && *s != word) {
-            out.push((byte_at[start], byte_at[start + len], s));
+        let found: Vec<String> = found.into_iter().filter(|s| !s.is_empty() && *s != word).collect();
+        if !found.is_empty() {
+            out.push((byte_at[start], byte_at[start + len], found));
         }
     }
     Ok(out)
 }
 
-unsafe fn first_suggestion(checker: &ISpellChecker, word: &str) -> Option<String> {
-    let list = checker.Suggest(&HSTRING::from(word)).ok()?;
-    let mut item = [PWSTR::null()];
-    let mut fetched = 0u32;
-    if list.Next(&mut item, Some(&mut fetched)).is_ok() && fetched == 1 {
-        take_string(item[0])
-    } else {
-        None
+unsafe fn suggestions(checker: &ISpellChecker, word: &str) -> Vec<String> {
+    let Ok(list) = checker.Suggest(&HSTRING::from(word)) else { return Vec::new() };
+    let mut out = Vec::new();
+    while out.len() < MAX_SUGGESTIONS {
+        let mut item = [PWSTR::null()];
+        let mut fetched = 0u32;
+        if list.Next(&mut item, Some(&mut fetched)) != S_OK || fetched != 1 {
+            break;
+        }
+        out.extend(take_string(item[0]));
     }
+    out
 }
 
 /// Reads a COM-allocated string and frees it.
@@ -120,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_misspellings_with_byte_offsets() {
+    fn finds_misspellings_with_byte_offsets_and_several_suggestions() {
         let mut s = WindowsSpeller::new();
         if !s.available() {
             eprintln!("no Windows spell checker for en-US: test skipped");
@@ -128,9 +136,10 @@ mod tests {
         }
         let text = "I recieve the file caf\u{e9} and teh report.";
         let found = s.misspellings(text);
-        let words: Vec<(&str, &str)> = found.iter().map(|(a, b, fix)| (&text[*a..*b], fix.as_str())).collect();
+        let words: Vec<(&str, &str)> = found.iter().map(|(a, b, fix)| (&text[*a..*b], fix[0].as_str())).collect();
         assert!(words.contains(&("recieve", "receive")), "{words:?}");
         assert!(words.contains(&("teh", "the")), "{words:?}");
+        assert!(found.iter().all(|f| f.2.len() <= MAX_SUGGESTIONS));
         assert!(s.misspellings("This sentence is fine.").is_empty());
     }
 }

@@ -1037,7 +1037,7 @@ struct WindowsSpelling(vi_win32::spell::WindowsSpeller);
 
 #[cfg(windows)]
 impl vi_rewrite::quickfix::Speller for WindowsSpelling {
-    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, String)> {
+    fn misspellings(&mut self, text: &str) -> Vec<(usize, usize, Vec<String>)> {
         self.0.misspellings(text)
     }
 }
