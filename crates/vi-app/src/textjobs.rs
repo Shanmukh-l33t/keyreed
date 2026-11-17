@@ -7,8 +7,9 @@ use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use vi_core::textjob::{Instruction, JobFailure, TextJob, TextJobEvent, TextJobKind};
+use vi_core::textjob::{FixEdit, JobFailure, TextJob, TextJobEvent, TextJobKind};
 use vi_rewrite::compose;
+use vi_rewrite::quickfix::{Layer, QuickFixEngine};
 use vi_rewrite::stream::{stream_chat, StreamEnd};
 use vi_rewrite::RewriteEngine;
 
@@ -18,18 +19,27 @@ pub type SharedEngine = Arc<Mutex<RewriteEngine>>;
 /// when the user switches models).
 pub type JobRequest = (TextJob, SharedEngine);
 
-pub fn spawn_text_worker(events: Sender<TextJobEvent>) -> Result<Sender<JobRequest>> {
+/// Builds the Quick Fix engine on the worker thread at the first Quick Fix job (loading the grammar model takes a
+/// moment and its session stays on this thread).
+pub type QuickFixLoader = Box<dyn FnMut() -> Result<QuickFixEngine> + Send>;
+
+pub fn spawn_text_worker(events: Sender<TextJobEvent>, load_quick_fix: QuickFixLoader) -> Result<Sender<JobRequest>> {
     let (tx, rx) = crossbeam_channel::unbounded::<JobRequest>();
     std::thread::Builder::new()
         .name("keyreed-text-jobs".to_string())
-        .spawn(move || worker_loop(rx, events))
+        .spawn(move || worker_loop(rx, events, load_quick_fix))
         .context("failed to start the text-job worker")?;
     Ok(tx)
 }
 
-fn worker_loop(rx: Receiver<JobRequest>, events: Sender<TextJobEvent>) {
+fn worker_loop(rx: Receiver<JobRequest>, events: Sender<TextJobEvent>, mut load_quick_fix: QuickFixLoader) {
+    let mut quick_fix: Option<QuickFixEngine> = None;
     for (job, engine) in rx {
-        let ev = run_job(&job, &engine, &events);
+        let ev = if job.kind == TextJobKind::QuickFix {
+            run_quick_fix(&job, &mut quick_fix, &mut load_quick_fix)
+        } else {
+            run_job(&job, &engine, &events)
+        };
         if events.send(ev).is_err() {
             return;
         }
@@ -79,6 +89,48 @@ fn run_job(job: &TextJob, engine: &SharedEngine, events: &Sender<TextJobEvent>) 
     }
 }
 
+/// Quick Fix never takes the language-model lock: it runs on its own engine, so a busy dictation cannot hold it up.
+fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut QuickFixLoader) -> TextJobEvent {
+    let id = job.id;
+    if slot.is_none() {
+        match load() {
+            Ok(engine) => *slot = Some(engine),
+            Err(e) => {
+                log::warn!("quick fix engine failed to load: {e:#}");
+                return TextJobEvent::Failed { id, reason: JobFailure::NoGrammarModel };
+            }
+        }
+    }
+    let mut engine = slot.take().expect("loaded above").with_terms(&job.terms);
+    let res = engine.fix(&job.source, job.target.category);
+    *slot = Some(engine);
+    match res {
+        Ok(fix) => TextJobEvent::QuickFixDone {
+            id,
+            text: fix.corrected,
+            edits: fix
+                .edits
+                .into_iter()
+                .map(|e| FixEdit {
+                    start: e.start,
+                    end: e.start + e.length,
+                    replacement: e.replacement,
+                    label: match e.layer {
+                        Layer::Spelling => "Spelling",
+                        Layer::Rule => "Rule",
+                        Layer::Grammar => "Grammar",
+                    },
+                    silent: e.silent,
+                })
+                .collect(),
+        },
+        Err(e) => {
+            log::warn!("quick fix {id} failed: {e:#}");
+            TextJobEvent::Failed { id, reason: JobFailure::ModelFailed }
+        }
+    }
+}
+
 /// The selected text is untrusted input: it is delimited and the model is told not to follow it.
 /// The prompts live in `vi_rewrite::compose`.
 fn job_messages(job: &TextJob) -> serde_json::Value {
@@ -92,6 +144,7 @@ fn job_messages(job: &TextJob) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    use vi_core::textjob::Instruction;
     use std::time::Instant;
 
     fn job(id: u64, kind: TextJobKind) -> TextJob {
@@ -103,6 +156,7 @@ mod tests {
             rich: false,
             target: Default::default(),
             max_output_tokens: 64,
+            terms: Vec::new(),
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -110,20 +164,59 @@ mod tests {
     #[test]
     fn jobs_complete_while_dictation_holds_the_engine() {
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
-        let tx = spawn_text_worker(ev_tx).unwrap();
+        let tx = spawn_text_worker(ev_tx, Box::new(|| anyhow::bail!("no grammar model"))).unwrap();
         let engine: SharedEngine = Arc::new(Mutex::new(RewriteEngine::new(None)));
         // Dictation holds the language model; a Quick Fix job must not wait for it.
         let held = engine.lock();
         let t = Instant::now();
         tx.send((job(1, TextJobKind::QuickFix), engine.clone())).unwrap();
         let ev = ev_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(ev, TextJobEvent::Failed { id: 1, reason: JobFailure::Unavailable });
+        assert_eq!(ev, TextJobEvent::Failed { id: 1, reason: JobFailure::NoGrammarModel });
         assert!(t.elapsed() < Duration::from_millis(500));
         drop(held);
         // A writing job without a local model or cloud says so.
         tx.send((job(2, TextJobKind::Compose), engine)).unwrap();
         let events: Vec<_> = std::iter::from_fn(|| ev_rx.recv_timeout(Duration::from_secs(2)).ok()).take(2).collect();
         assert_eq!(events.last(), Some(&TextJobEvent::Failed { id: 2, reason: JobFailure::NoWritingModel }));
+    }
+
+    struct Tagger;
+    impl vi_rewrite::gector::SentenceTagger for Tagger {
+        fn tag_sentence(&mut self, s: &str) -> Result<Vec<vi_rewrite::gector::RawEdit>> {
+            Ok(match s.find("has") {
+                Some(i) => vec![vi_rewrite::gector::RawEdit { start: i, length: 3, replacement: "have".into(), confidence: 0.9 }],
+                None => Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn quick_fix_job_reports_its_edits_and_keeps_the_engine() {
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let loads = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = loads.clone();
+        let loader: QuickFixLoader = Box::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(QuickFixEngine::new(Box::new(Tagger)))
+        });
+        let tx = spawn_text_worker(ev_tx, loader).unwrap();
+        let engine: SharedEngine = Arc::new(Mutex::new(RewriteEngine::new(None)));
+        for id in 1..=2 {
+            let mut j = job(id, TextJobKind::QuickFix);
+            j.source = "I has a cat.".into();
+            tx.send((j, engine.clone())).unwrap();
+            match ev_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                TextJobEvent::QuickFixDone { id: got, text, edits } => {
+                    assert_eq!(got, id);
+                    assert_eq!(text, "I have a cat.");
+                    assert_eq!(edits.len(), 1);
+                    assert_eq!((edits[0].start, edits[0].end, edits[0].replacement.as_str()), (2, 5, "have"));
+                    assert!(!edits[0].silent, "grammar edits are review-only until the gate says otherwise");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1, "the engine loads once");
     }
 
     #[test]

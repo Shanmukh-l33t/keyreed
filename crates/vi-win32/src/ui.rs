@@ -1745,7 +1745,6 @@ pub mod win_gui {
         let idle = matches!(snap.state, EngineState::Idle | EngineState::ReadyToPaste);
         let ready = snap.active_model_ready() && snap.config.app_enabled;
         append(hmenu, MF_STRING | if idle && ready { 0 } else { MF_GRAYED }, IDM_START_DICTATION, "Start dictation");
-        append(hmenu, MF_STRING | if idle { 0 } else { MF_GRAYED }, IDM_OPEN_COMPOSER, "Open the Composer");
 
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         append(hmenu, MF_STRING, IDM_OPEN_SETTINGS, "Open KeyReed…");

@@ -57,14 +57,15 @@ impl Default for CloudSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PillClickAction {
-    #[default]
+    /// Not offered in 2.0 beta 1: the Composer is not wired to a writing model yet (the setting is kept for later).
     OpenComposer,
+    #[default]
     Dictate,
     Nothing,
 }
 
 impl PillClickAction {
-    pub const ALL: [PillClickAction; 3] = [PillClickAction::OpenComposer, PillClickAction::Dictate, PillClickAction::Nothing];
+    pub const ALL: [PillClickAction; 2] = [PillClickAction::Dictate, PillClickAction::Nothing];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -87,6 +88,13 @@ pub struct AppConfig {
     /// Fix the selected text in any application (plan F1). Proposed default, not yet checked against every app.
     #[serde(default = "default_quick_fix_hotkey")]
     pub quick_fix_hotkey: HotkeySpec,
+    /// Quick Fix shows every change in the Review panel before anything is replaced. Turning this off lets edits
+    /// the edit-class table marks silent be applied without asking.
+    #[serde(default = "default_true")]
+    pub quick_fix_always_review: bool,
+    /// The one-time explanation in the Review panel was dismissed.
+    #[serde(default)]
+    pub quick_fix_intro_seen: bool,
     /// Open the Composer (plan F2).
     #[serde(default = "default_composer_hotkey")]
     pub composer_hotkey: HotkeySpec,
@@ -138,6 +146,8 @@ impl Default for AppConfig {
             cancel_hotkey: HotkeySpec::cancel_escape(),
             mode_cycle_hotkey: HotkeySpec::ctrl_shift_space(),
             quick_fix_hotkey: default_quick_fix_hotkey(),
+            quick_fix_always_review: true,
+            quick_fix_intro_seen: false,
             composer_hotkey: default_composer_hotkey(),
             output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
@@ -148,7 +158,7 @@ impl Default for AppConfig {
             preferred_language: "en".to_string(),
             selected_microphone: None,
             show_floating_mic: true,
-            pill_click_action: PillClickAction::OpenComposer,
+            pill_click_action: PillClickAction::Dictate,
             audio_cues_enabled: true,
             notify_on_ready: true,
             idle_unload_seconds: 300,
@@ -161,6 +171,10 @@ impl Default for AppConfig {
             dictionary: PersonalDictionary::default(),
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_quick_fix_hotkey() -> HotkeySpec {
@@ -220,7 +234,7 @@ impl AppConfig {
     fn migrate(&mut self, user: &serde_json::Map<String, serde_json::Value>) {
         if !user.contains_key("pill_click_action") {
             if let Some(clickable) = user.get("floating_mic_clickable").and_then(|v| v.as_bool()) {
-                self.pill_click_action = if clickable { PillClickAction::OpenComposer } else { PillClickAction::Nothing };
+                self.pill_click_action = if clickable { PillClickAction::Dictate } else { PillClickAction::Nothing };
             }
         }
     }
@@ -320,15 +334,24 @@ mod tests {
     }
 
     #[test]
+    fn quick_fix_asks_before_replacing_by_default() {
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert!(c.quick_fix_always_review);
+        assert!(!c.quick_fix_intro_seen);
+        let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": false}"#);
+        assert!(!c.quick_fix_always_review);
+    }
+
+    #[test]
     fn floating_mic_clickable_migrates_to_pill_click_action() {
         let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": false}"#);
         assert_eq!(c.pill_click_action, PillClickAction::Nothing);
         let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": true}"#);
-        assert_eq!(c.pill_click_action, PillClickAction::OpenComposer);
+        assert_eq!(c.pill_click_action, PillClickAction::Dictate);
         let (c, _) = AppConfig::parse_lenient(r#"{"floating_mic_clickable": false, "pill_click_action": "dictate"}"#);
         assert_eq!(c.pill_click_action, PillClickAction::Dictate, "the new setting wins");
         let (c, _) = AppConfig::parse_lenient("{}");
-        assert_eq!(c.pill_click_action, PillClickAction::OpenComposer);
+        assert_eq!(c.pill_click_action, PillClickAction::Dictate);
         // A full old file (every other setting valid) takes the fast path and is migrated too.
         let mut old = serde_json::to_value(AppConfig::default()).unwrap();
         let o = old.as_object_mut().unwrap();

@@ -87,6 +87,7 @@ const D_HOLD: i32 = 302;
 const D_TOGGLE: i32 = 303;
 const D_PTT: i32 = 304;
 const D_QF_KEY: i32 = 305;
+const D_QF_REVIEW: i32 = 306;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
 const W_VOCAB: i32 = 411;
@@ -586,7 +587,8 @@ impl Builder {
 
     fn toggle_row(&mut self, id: i32, label: &str, desc: &str, on: bool, enabled: bool) {
         let w = 96;
-        let (y0, h) = self.row(label, desc, C::Text2, w);
+        let wrap = desc.chars().count() as i32 * 6 > CW - 2 * PAD - w - 20;
+        let (y0, h) = self.row_ex(label, desc, C::Text2, w, wrap);
         self.ctrl(id, Kind::Toggle { on }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &format!("{label}: {}", if on { "On" } else { "Off" }));
         self.last_ctrl().enabled = enabled;
     }
@@ -1157,7 +1159,7 @@ fn page_general(b: &mut Builder, m: &SharedUiModel) {
     let desc = match c.pill_click_action {
         vi_core::PillClickAction::OpenComposer => "Write or rewrite text. Start dictation with your shortcut or from the right-click menu.",
         vi_core::PillClickAction::Dictate => "Click once to start and again to finish.",
-        vi_core::PillClickAction::Nothing => "Use the right-click menu to dictate or open the Composer.",
+        vi_core::PillClickAction::Nothing => "Use the right-click menu or your shortcut to dictate.",
     };
     b.combo_row(G_PILL_CLICK, "When you click the listener", desc, C::Text2, items, sel, 220);
     b.button_row(G_PILL_RESET, "Listener position", "Drag it anywhere. Reset puts it back above the taskbar.", "Reset position", BtnStyle::Secondary);
@@ -1181,7 +1183,8 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
         .unwrap_or_else(|| "Your own shortcut. Click the field and press new keys to change it.".into());
     b.shortcut_row(D_HOTKEY, "Push-to-talk shortcut", &note, c, ShortcutRole::Dictation);
     b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
-    b.toggle_row(D_PTT, "Listen for the shortcuts", "Turn off to dictate only with the floating listener.", c.ptt_enabled, true);
+    b.toggle_row(D_QF_REVIEW, "Review Quick Fix changes first", "Shows every change before anything is replaced. Turning this off lets KeyReed replace spelling fixes it is sure about, with Undo.", c.quick_fix_always_review, true);
+    b.toggle_row(D_PTT, "Listen for the shortcuts", "When off, start dictation from the floating listener instead (its right-click menu, or a click if you set that in General).", c.ptt_enabled, true);
     b.end_group();
     b.section("How the shortcut works");
     activation_choices(b, m, D_HOLD, D_TOGGLE);
@@ -2384,6 +2387,10 @@ fn on_command(id: i32, code: u32) {
                 let spec = spec.clone();
                 commit(|c| c.ptt_hotkey = spec);
             }
+        }
+        (D_QF_REVIEW, true, _) => {
+            let v = !c.quick_fix_always_review;
+            commit(|c| c.quick_fix_always_review = v)
         }
         (D_PTT, true, _) => send(UiAction::TogglePttEnabled),
         (D_HOLD, true, _) | (S_HOLD, true, _) => commit(|c| c.activation_mode = ActivationMode::HoldToTalk),

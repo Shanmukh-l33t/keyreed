@@ -3,6 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 mod gallery;
+mod quickfix_flow;
 mod textjobs;
 
 use anyhow::{bail, Context, Result};
@@ -1899,7 +1900,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     let download_cancel_flag = Arc::new(AtomicBool::new(false));
     let download_active_flag = Arc::new(AtomicBool::new(false));
     let (job_ev_tx, job_ev_rx) = crossbeam_channel::unbounded::<vi_core::textjob::TextJobEvent>();
-    let job_tx = textjobs::spawn_text_worker(job_ev_tx)?;
+    let qf_cfg = initial_cfg.clone();
+    let job_tx = textjobs::spawn_text_worker(job_ev_tx, Box::new(move || quickfix_flow::load_engine(&qf_cfg)))?;
 
     std::thread::Builder::new()
         .name("keyreed-coordinator".to_string())
@@ -1928,6 +1930,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut last_completed_text = String::new();
             // The selection the open Composer works on (memory only; dropped when the Composer closes).
             let mut composer_target: Option<vi_win32::selection::Captured> = None;
+            let mut quick_fix = quickfix_flow::QuickFixFlow::default();
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
@@ -1962,9 +1965,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 physical_key_up_ticks = 0;
                                 pending_action = ptt.on_emergency_cancel("superseded_by_chord");
                             }
-                            // Handled from Quick Fix (P2.6) and the Composer (P3) on.
-                            Ok(HotkeyEvent::CorrectSelection)
-                            | Ok(HotkeyEvent::OpenComposer)
+                            Ok(HotkeyEvent::CorrectSelection) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                }
+                            }
+                            // The Composer chord and voice commands arrive with P3.4 and P3.7.
+                            Ok(HotkeyEvent::OpenComposer)
                             | Ok(HotkeyEvent::VoiceCommandDown)
                             | Ok(HotkeyEvent::VoiceCommandUp) => {}
                             Ok(HotkeyEvent::CycleMode) => {
@@ -2341,11 +2348,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     supervisor = InferenceSupervisor::new(&cfg);
                                 }
                             }
-                            // Wired to the Quick Fix coordinator in P2.6.
-                            Ok(UiAction::QuickFixUndo)
-                            | Ok(UiAction::QuickFixDeeper)
-                            | Ok(UiAction::ReviewDone { .. })
-                            | Ok(UiAction::QuickFixIntroSeen)
+                            Ok(UiAction::QuickFixUndo) => quick_fix.undo(&gui_for_worker),
+                            Ok(UiAction::ReviewDone { choice, text, accepted, .. }) => {
+                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker);
+                            }
+                            Ok(UiAction::QuickFixIntroSeen) => {
+                                cfg.quick_fix_intro_seen = true;
+                                let _ = cfg.save_atomic(&cfg_path);
+                            }
+                            // The deeper pass is not in this build: the pill shows no Deeper chip.
+                            Ok(UiAction::QuickFixDeeper)
                             // Composer actions: wired to the text-job worker and delivery in P3.3 and P3.4.
                             | Ok(UiAction::ComposerSubmit { .. })
                             | Ok(UiAction::ComposerFollowUp(_))
@@ -2367,9 +2379,11 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
                     }
-                    recv(job_ev_rx) -> _ev => {
-                        // Job producers and the pill/Composer consumers arrive with Quick Fix (P2.6).
-                        let _ = &job_tx;
+                    recv(job_ev_rx) -> ev => {
+                        // Composer events join in P3.4.
+                        if let Ok(ev) = ev {
+                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
+                        }
                     }
                     recv(ticker) -> _ => {
                         // Track last known external foreground window so floating control or tray interactions never lose target focus
@@ -2819,7 +2833,8 @@ mod slm_lock_tests {
         let (busy, text) = with_engine_or_rules(&lock, SLM_LOCK_WAIT, |eng, busy| (busy, run(eng)));
         assert!(busy);
         assert!(!text.is_empty());
-        assert!(t.elapsed() < Duration::from_millis(300), "{:?}", t.elapsed());
+        // Well under the 1.5 s hold: it did not wait for the lock (a loaded debug build can take a few hundred ms).
+        assert!(t.elapsed() < Duration::from_millis(1000), "{:?}", t.elapsed());
         holder.join().unwrap();
         // Free again: the shared engine is used.
         assert!(!with_engine_or_rules(&lock, SLM_LOCK_WAIT, |_, busy| busy));

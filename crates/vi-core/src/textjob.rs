@@ -35,6 +35,8 @@ pub struct TextJob {
     /// The window the job was triggered in.
     pub target: ForegroundContext,
     pub max_output_tokens: u32,
+    /// Personal-dictionary terms Quick Fix never changes.
+    pub terms: Vec<String>,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -47,6 +49,20 @@ pub enum JobFailure {
     Unavailable,
     /// The model or endpoint failed to answer.
     ModelFailed,
+    /// The grammar model for Quick Fix is not installed or did not load.
+    NoGrammarModel,
+}
+
+/// One Quick Fix change: a byte range of the job's `source` and its replacement. `label` is "Spelling",
+/// "Grammar" or "Rule" (what the Review panel shows); `silent` means the edit-class table allows applying it
+/// without review in this app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixEdit {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+    pub label: &'static str,
+    pub silent: bool,
 }
 
 /// Worker to UI events.
@@ -55,5 +71,7 @@ pub enum TextJobEvent {
     Stage { id: u64, stage: &'static str },
     Token { id: u64, text: String },
     Done { id: u64, text: String, cancelled: bool },
+    /// A Quick Fix finished: the corrected text and every change in it (empty when nothing needed fixing).
+    QuickFixDone { id: u64, text: String, edits: Vec<FixEdit> },
     Failed { id: u64, reason: JobFailure },
 }
