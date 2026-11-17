@@ -6,7 +6,7 @@
 //! |--------------|--------------------------------------------------|--------------------|
 //! | Idle         | KeyReed mark only                                | 36 x 36            |
 //! | Idle + hover | mark + writing mode + shortcut                   | text-sized         |
-//! | Listening    | mark + 11-bar waveform of *measured* mic levels  | 98 x 36            |
+//! | Listening    | mark + 11-bar waveform of *measured* mic levels  | 63 x 22 (60 % of 104 x 36) |
 //! | Processing   | mark + "Transcribing" (teal) with a moving sheen | text-sized         |
 //! | Done         | mark + check + "Inserted" / "Copied"             | text-sized         |
 //! | Error        | mark + alert + short plain-language reason       | text-sized         |
@@ -28,6 +28,8 @@ pub const PILL_HEIGHT: f32 = 36.0;
 pub const PILL_MARGIN: f32 = 4.0;
 /// Number of waveform bars while listening.
 pub const WAVE_BARS: usize = 11;
+/// While listening the pill draws at 60 percent of every metric, so the open mic covers less of the user's work.
+pub const LISTENING_SCALE: f32 = 0.60;
 
 /// Visual state of the listener. Mapped from `EngineState` by the window code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,11 @@ impl PillMetrics {
         self.cap_h + 2 * self.margin
     }
 
+    /// Metrics for one pill state: Listening draws at `LISTENING_SCALE`, every other state at `scale`.
+    pub fn for_pill(scale: f32, kind: PillKind) -> Self {
+        Self::for_scale(if kind == PillKind::Listening { scale * LISTENING_SCALE } else { scale })
+    }
+
     fn wave_width(&self) -> usize {
         (WAVE_BARS as f32 * self.bar_w + (WAVE_BARS as f32 - 1.0) * self.bar_gap).ceil() as usize
     }
@@ -203,7 +210,7 @@ impl PillMetrics {
 
 /// Width of the window (including shadow margin) required for `kind` with the given label widths.
 pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w: usize, tertiary_w: usize) -> usize {
-    let m = PillMetrics::for_scale(scale);
+    let m = PillMetrics::for_pill(scale, kind);
     let content = match kind {
         PillKind::Idle | PillKind::Disabled => return m.cap_h + 2 * m.margin,
         PillKind::Listening => m.wave_width(),
@@ -408,7 +415,7 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
     if width < 8 || height < 8 {
         return px;
     }
-    let m = PillMetrics::for_scale(f.scale);
+    let m = PillMetrics::for_pill(f.scale, f.kind);
     // The pop grows the capsule into its shadow margin (about 4 percent on every side at the peak).
     let margin = m.margin as f32 - f.pop.clamp(0.0, 1.0) * 0.04 * m.cap_h as f32;
     let cap_h = (height as f32 - 2.0 * margin).max(4.0);
@@ -880,7 +887,7 @@ mod tests {
 
     #[test]
     fn listening_footprint_is_at_least_25_percent_smaller_than_v03() {
-        let m = PillMetrics::for_scale(1.0);
+        let m = PillMetrics::for_pill(1.0, PillKind::Listening);
         let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0) - 2 * m.margin;
         let area = w * m.cap_h;
         assert!(w <= 140, "listening width {w}");
@@ -888,9 +895,49 @@ mod tests {
     }
 
     #[test]
+    fn listening_pill_draws_at_sixty_percent_and_other_kinds_do_not_move() {
+        // Window sizes before the change, then the listening sizes at the same DPI.
+        for (scale, old, now) in [(1.0f32, (112usize, 44usize), (67usize, 26usize)), (1.5, (168, 66), (102, 40))] {
+            let m = PillMetrics::for_pill(scale, PillKind::Listening);
+            assert_eq!((pill_window_width(scale, PillKind::Listening, 0, 0, 0), m.window_height()), now);
+            // 60 % exactly, up to the whole pixel that rounding the 1.5 dp bar pitch costs.
+            assert!((now.0 as f32 / old.0 as f32 - LISTENING_SCALE).abs() < 0.02, "width {now:?} of {old:?} at {scale}");
+            assert!((now.1 as f32 / old.1 as f32 - LISTENING_SCALE).abs() < 0.02, "height {now:?} of {old:?} at {scale}");
+        }
+        let m = PillMetrics::for_pill(1.0, PillKind::Listening);
+        assert_eq!((m.cap_h, m.margin, m.icon), (22, 2, 13));
+        // Every other state keeps the full-size metrics.
+        assert_eq!(PillMetrics::for_pill(1.0, PillKind::Done).cap_h, 36);
+        assert_eq!(pill_window_width(1.0, PillKind::Idle, 0, 0, 0), 44);
+        assert_eq!(pill_window_width(1.0, PillKind::Error, 40, 0, 0), 117);
+    }
+
+    /// The bars are 1.5 dp wide with a 1.5 dp gap at 60 %: each still draws its own ink, none merge.
+    #[test]
+    fn listening_bars_stay_separate_at_sixty_percent() {
+        for scale in [1.0f32, 1.5] {
+            let m = PillMetrics::for_pill(scale, PillKind::Listening);
+            let (w, h) = (pill_window_width(scale, PillKind::Listening, 0, 0, 0), m.window_height());
+            let mut f = frame(PillKind::Listening, &[1.0; WAVE_BARS], None);
+            f.scale = scale;
+            let buf = render_pill(w, h, &f);
+            // Each bar's slot must hold both ink and a gap, or the waveform has merged into a smear.
+            let green = |x: usize| (buf[(h / 2) * w + x] >> 8) & 0xFF;
+            let pitch = (m.bar_w + m.bar_gap).round() as usize;
+            for i in 0..WAVE_BARS {
+                let x0 = m.content_x + (i as f32 * (m.bar_w + m.bar_gap)).round() as usize;
+                let slot = x0..(x0 + pitch).min(w);
+                assert_eq!(slot.clone().count(), pitch, "bar {i} inside {w} x {h} at {scale}");
+                assert!(slot.clone().map(green).max().unwrap() >= 0xC8, "bar {i} has no ink at {scale}");
+                assert!(slot.map(green).min().unwrap() <= 0x40, "no gap after bar {i} at {scale}");
+            }
+        }
+    }
+
+    #[test]
     fn capsule_has_transparent_corners_and_opaque_body() {
         let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0);
-        let h = PillMetrics::for_scale(1.0).window_height();
+        let h = PillMetrics::for_pill(1.0, PillKind::Listening).window_height();
         let buf = render_pill(w, h, &frame(PillKind::Listening, &[0.5; 11], None));
         assert_eq!(buf[0], 0, "corner must be transparent");
         assert!((buf[(h / 2) * w + w / 2] >> 24) > 200, "body must be opaque");
@@ -899,7 +946,7 @@ mod tests {
     #[test]
     fn waveform_follows_measured_levels_not_a_canned_animation() {
         let w = pill_window_width(1.0, PillKind::Listening, 0, 0, 0);
-        let h = PillMetrics::for_scale(1.0).window_height();
+        let h = PillMetrics::for_pill(1.0, PillKind::Listening).window_height();
         let silent = render_pill(w, h, &frame(PillKind::Listening, &[0.0; 11], None));
         let loud = render_pill(w, h, &frame(PillKind::Listening, &[0.9; 11], None));
         assert_ne!(silent, loud);
