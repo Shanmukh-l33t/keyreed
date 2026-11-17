@@ -3,9 +3,11 @@
 
 #![cfg(windows)]
 
+use crate::learning::Learning;
 use crate::textjobs::{JobRequest, SharedEngine};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
+use vi_core::dictionary::PersonalDictionary;
 use vi_core::textjob::{FixEdit, JobFailure, TextJob, TextJobEvent, TextJobKind};
 use vi_core::{AppConfig, ForegroundContext};
 use vi_rewrite::{gector::Gector, quickfix::QuickFixEngine};
@@ -28,6 +30,9 @@ struct Pending {
     id: u64,
     ctx: ForegroundContext,
     captured: Captured,
+    /// The learning switch and the dictionary as they were when the fix started.
+    learn: bool,
+    dictionary: PersonalDictionary,
 }
 
 #[derive(Default)]
@@ -71,18 +76,18 @@ impl QuickFixFlow {
         if jobs.send((job, engine.clone())).is_err() {
             return refuse(gui, "Quick Fix isn't available right now.");
         }
-        self.pending = Some(Pending { id, ctx, captured });
+        self.pending = Some(Pending { id, ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
     }
 
     /// A text-job event; anything that is not this flow's job is ignored.
-    pub fn on_job_event(&mut self, ev: TextJobEvent, cfg: &AppConfig, gui: &WinGuiHandle) {
+    pub fn on_job_event(&mut self, ev: TextJobEvent, cfg: &AppConfig, gui: &WinGuiHandle, learning: &Learning) {
         match ev {
             TextJobEvent::QuickFixDone { id, text, edits } if self.is_pending(id) => {
                 let p = self.pending.take().expect("checked");
                 if edits.is_empty() {
                     gui.quick_fix(QuickFixStage::LooksGood);
                 } else if !cfg.quick_fix_always_review && !p.captured.structured && edits.iter().all(|e| e.silent) {
-                    self.apply(gui, &p, &text, edits.len() as u32);
+                    self.apply(gui, &p, &text, edits.len() as u32, learning);
                 } else {
                     gui.quick_fix(QuickFixStage::Notice(format!("{} to review", plural(edits.len()))));
                     let request = review_request(&p.captured.text, &edits, p.captured.structured);
@@ -106,10 +111,10 @@ impl QuickFixFlow {
     }
 
     /// The Review panel closed. `text` is the original with the accepted changes applied.
-    pub fn on_review_done(&mut self, choice: ReviewChoice, text: &str, accepted: u32, gui: &WinGuiHandle) {
+    pub fn on_review_done(&mut self, choice: ReviewChoice, text: &str, accepted: u32, gui: &WinGuiHandle, learning: &Learning) {
         let Some(p) = self.pending.take() else { return };
         match choice {
-            ReviewChoice::Replace if text != p.captured.text => self.apply(gui, &p, text, accepted),
+            ReviewChoice::Replace if text != p.captured.text => self.apply(gui, &p, text, accepted, learning),
             ReviewChoice::Copy => match vi_win32::clipboard::write_clipboard_unicode(text, true) {
                 Ok(()) => gui.quick_fix(QuickFixStage::Notice("Copied".into())),
                 Err(_) => refuse(gui, "The clipboard is busy. Nothing was changed."),
@@ -118,10 +123,12 @@ impl QuickFixFlow {
         }
     }
 
-    fn apply(&mut self, gui: &WinGuiHandle, p: &Pending, text: &str, changes: u32) {
+    fn apply(&mut self, gui: &WinGuiHandle, p: &Pending, text: &str, changes: u32, learning: &Learning) {
         match selection::replace(&p.captured, text, &p.ctx) {
             Ok(Replaced::Pasted) => {
                 self.undo = Some((p.ctx.hwnd, changes));
+                // Only a pasted replacement is worth watching; the other outcomes put nothing in the field.
+                learning.record_insertion(text, None, None, &p.ctx, p.learn, &p.dictionary);
                 gui.quick_fix(QuickFixStage::Fixed { changes, can_deepen: false });
             }
             Ok(_) => gui.quick_fix(QuickFixStage::Notice("Copied · press Ctrl+V".into())),

@@ -26,6 +26,8 @@ pub enum UiAction {
     QuickFixUndo,
     /// Ask for the deeper pass on the last Quick Fix (pill chip).
     QuickFixDeeper,
+    /// Take back the word the pill just announced as learned (pill chip, plan F3).
+    LearningUndo,
     /// The Review panel was closed: what the user chose, the text with the accepted changes applied, and how many
     /// changes were accepted and rejected (for the acceptance counters). Never logged.
     ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
@@ -282,6 +284,8 @@ pub enum QuickFixStage {
     Refused(String),
     /// The fix was undone: the tick unwinds and the count rolls back down.
     Undone { changes: u32 },
+    /// A correction was learned: "Learned: Kubernetes" with an Undo chip (plan F3). Shares the Fixed layout.
+    Learned(String),
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +303,7 @@ impl QuickFixPill {
     pub fn visible_ms(&self) -> Option<u128> {
         match self.stage {
             QuickFixStage::Working => None,
-            QuickFixStage::Fixed { .. } => Some(6000),
+            QuickFixStage::Fixed { .. } | QuickFixStage::Learned(_) => Some(6000),
             QuickFixStage::Undone { .. } => Some(1800),
             _ => Some(1800),
         }
@@ -665,6 +669,8 @@ mod tests {
         assert!(!fixed.is_active());
         assert_eq!(fixed_label(1), "Fixed · 1 change");
         assert_eq!(fixed_label(4), "Fixed · 4 changes");
+        // A learned word keeps its Undo chip up as long as a fix does.
+        assert_eq!(QuickFixPill::new(QuickFixStage::Learned("Kubernetes".into())).visible_ms(), fixed.visible_ms());
     }
 
     #[test]
@@ -1011,8 +1017,8 @@ pub mod win_gui {
         timer_on: bool,
         /// Interval of the running animation timer (16 ms while Listening or Quick Fix moves, 33 ms otherwise).
         timer_ms: u32,
-        /// Action chips of the Fixed pill: window-relative x range and whether it is Deeper (else Undo).
-        chips: Vec<(f32, f32, bool)>,
+        /// Action chips: window-relative x range and what a click there does.
+        chips: Vec<(f32, f32, ChipAction)>,
         visible: bool,
         frames_painted: u64,
     }
@@ -1074,6 +1080,14 @@ pub mod win_gui {
         };
         let h = PillMetrics::for_scale(scale).window_height() as i32;
         ((wa.left + wa.right) / 2, wa.bottom - h - (14.0 * scale).round() as i32)
+    }
+
+    /// What a click on one of the pill's chips does.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ChipAction {
+        Undo,
+        Deeper,
+        LearningUndo,
     }
 
     /// What the listener should show for the current model.
@@ -1141,6 +1155,8 @@ pub mod win_gui {
         tertiary: String,
         /// The label at its final count, so the window keeps one width while the number rolls.
         sizing_label: String,
+        /// What the first chip does: undo the fix, or take back the word just learned.
+        undo: ChipAction,
         pop: f32,
         tick: f32,
         /// Logical-pixel offsets of the whole window (shake, nod).
@@ -1161,6 +1177,7 @@ pub mod win_gui {
             view: PillView { kind, label: label.to_string(), secondary: String::new() },
             tertiary: String::new(),
             sizing_label: String::new(),
+            undo: ChipAction::Undo,
             pop: 0.0,
             tick: 1.0,
             dx: 0.0,
@@ -1175,6 +1192,7 @@ pub mod win_gui {
             },
             tertiary: if chips && deeper { "Deeper".into() } else { String::new() },
             sizing_label: fixed_label(total),
+            undo: ChipAction::Undo,
             pop: motion::pop(ms),
             tick,
             dx: 0.0,
@@ -1195,6 +1213,17 @@ pub mod win_gui {
                 dy: motion::nod(ms),
                 moving,
                 ..plain(PillKind::Done, "Looks good")
+            },
+            QuickFixStage::Learned(word) => QuickFixView {
+                view: PillView { kind: PillKind::Fixed, label: format!("Learned: {word}"), secondary: "Undo".into() },
+                undo: ChipAction::LearningUndo,
+                sizing_label: format!("Learned: {word}"),
+                pop: motion::pop(ms),
+                tick: motion::tick(ms),
+                dx: 0.0,
+                dy: 0.0,
+                moving,
+                ..plain(PillKind::Fixed, "")
             },
             QuickFixStage::Notice(text) => plain(PillKind::Notice, text),
             QuickFixStage::Refused(text) => QuickFixView { dx: motion::shake(ms), moving, ..plain(PillKind::Error, text) },
@@ -1401,11 +1430,11 @@ pub mod win_gui {
             let sec = (sw > 0).then_some(TextMask { width: sw, height: sh, coverage: &scov });
             let ter = (tw > 0).then_some(TextMask { width: tw, height: th, coverage: &tcov });
             pill.chips = if view.kind == PillKind::Fixed {
-                let acts = [(sw > 0).then_some(false), (tw > 0).then_some(true)];
+                let undo = qf.as_ref().map_or(ChipAction::Undo, |q| q.undo);
                 fixed_chips(scale, lw, [sw, tw])
                     .into_iter()
-                    .zip(acts.into_iter().flatten())
-                    .map(|((x0, x1), deeper)| (x0, x1, deeper))
+                    .enumerate()
+                    .map(|(i, (x0, x1))| (x0, x1, if i == 1 { ChipAction::Deeper } else { undo }))
                     .collect()
             } else {
                 Vec::new()
@@ -1708,8 +1737,12 @@ pub mod win_gui {
                     snap_to_edges(hwnd);
                     save_pill_anchor(hwnd);
                     pill_refresh(hwnd, false);
-                } else if let Some(deeper) = chip {
-                    send(if deeper { UiAction::QuickFixDeeper } else { UiAction::QuickFixUndo });
+                } else if let Some(action) = chip {
+                    send(match action {
+                        ChipAction::Deeper => UiAction::QuickFixDeeper,
+                        ChipAction::LearningUndo => UiAction::LearningUndo,
+                        ChipAction::Undo => UiAction::QuickFixUndo,
+                    });
                 } else if on_fixed {
                     // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {

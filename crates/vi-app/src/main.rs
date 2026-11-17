@@ -3,6 +3,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 mod gallery;
+mod learning;
 mod quickfix_flow;
 mod textjobs;
 
@@ -35,9 +36,11 @@ use vi_win32::{
     ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
 };
 #[cfg(windows)]
+use vi_core::editwatch::UndoToken;
+#[cfg(windows)]
 use vi_win32::ui::{
     classify_mic, delivery_reason_sentence, friendly_error, DownloadProgress, DownloadStage, MicTestStatus,
-    ReadyOutcome,
+    QuickFixStage, ReadyOutcome,
 };
 use zeroize::Zeroize;
 
@@ -1933,6 +1936,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     let (job_ev_tx, job_ev_rx) = crossbeam_channel::unbounded::<vi_core::textjob::TextJobEvent>();
     let qf_cfg = initial_cfg.clone();
     let job_tx = textjobs::spawn_text_worker(job_ev_tx, Box::new(move || quickfix_flow::load_engine(&qf_cfg)))?;
+    let learning = learning::Learning::spawn();
+    let learning_events = learning.events().clone();
 
     std::thread::Builder::new()
         .name("keyreed-coordinator".to_string())
@@ -1962,6 +1967,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             // The selection the open Composer works on (memory only; dropped when the Composer closes).
             let mut composer_target: Option<vi_win32::selection::Captured> = None;
             let mut quick_fix = quickfix_flow::QuickFixFlow::default();
+            // The word the pill just announced, so its Undo chip can take it back.
+            let mut learned_undo: Option<UndoToken> = None;
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
@@ -2382,8 +2389,15 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 }
                             }
                             Ok(UiAction::QuickFixUndo) => quick_fix.undo(&gui_for_worker),
+                            Ok(UiAction::LearningUndo) => {
+                                if let Some(token) = learned_undo.take() {
+                                    learning::undo_learning(&mut cfg, &token);
+                                    let _ = cfg.save_atomic(&cfg_path);
+                                    gui_for_worker.quick_fix(QuickFixStage::Notice("Unlearned".into()));
+                                }
+                            }
                             Ok(UiAction::ReviewDone { choice, text, accepted, .. }) => {
-                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker);
+                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker, &learning);
                             }
                             Ok(UiAction::QuickFixIntroSeen) => {
                                 cfg.quick_fix_intro_seen = true;
@@ -2412,10 +2426,20 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
                     }
+                    recv(learning_events) -> ev => {
+                        if let Ok(learning::LearningEvent::Learned { word, token, dictionary }) = ev {
+                            // The worker hands back its dictionary, so the config and style files match what it kept.
+                            cfg.dictionary = dictionary;
+                            if cfg.save_atomic(&cfg_path).is_ok() {
+                                learned_undo = Some(token);
+                                gui_for_worker.quick_fix(QuickFixStage::Learned(word));
+                            }
+                        }
+                    }
                     recv(job_ev_rx) -> ev => {
                         // Composer events join in P3.4.
                         if let Ok(ev) = ev {
-                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
+                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker, &learning);
                         }
                     }
                     recv(ticker) -> _ => {
@@ -2597,6 +2621,17 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                             duration_ms: res.metrics.audio_duration_ms,
                                         });
                                         let _ = history.save_atomic(&hist_path);
+                                    }
+
+                                    if learning::delivered_by_typing(res.delivered_via) {
+                                        learning.record_insertion(
+                                            &res.final_text,
+                                            None,
+                                            None,
+                                            &captured_fg_ctx,
+                                            cfg.learn_from_edits,
+                                            &cfg.dictionary,
+                                        );
                                     }
 
                                     let preview: String = res.final_text.chars().take(72).collect();
