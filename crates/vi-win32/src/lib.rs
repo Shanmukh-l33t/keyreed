@@ -7,6 +7,8 @@ pub mod icon_data;
 pub mod overlay;
 pub mod security;
 #[cfg(windows)]
+pub mod selection;
+#[cfg(windows)]
 pub mod settings;
 pub mod typing;
 pub mod ui;
