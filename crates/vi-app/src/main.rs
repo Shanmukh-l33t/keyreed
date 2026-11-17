@@ -2187,7 +2187,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Ok(HotkeyEvent::CorrectSelection) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
-                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite, &last_external_fg_ctx);
                                 }
                             }
                             Ok(HotkeyEvent::OpenComposer) => {
@@ -2204,7 +2204,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             // Without a selection nothing records and nothing opens.
                             Ok(HotkeyEvent::VoiceCommandDown) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
-                                    let armed = quick_fix.arm_voice(&cfg, &gui_for_worker);
+                                    let armed = quick_fix.arm_voice(&cfg, &gui_for_worker, &last_external_fg_ctx);
                                     if voice::may_record(CaptureTarget::VoiceCommand, true, armed) {
                                         capture_target = CaptureTarget::VoiceCommand;
                                         voice_pressed_ms = Some(now_ms());

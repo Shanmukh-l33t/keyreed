@@ -1342,7 +1342,7 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
     b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
     b.shortcut_row(D_VOICE_KEY, "Voice command shortcut", "Tap it for the Composer on the text you have selected, or hold it and say what to do with it.", c, ShortcutRole::VoiceCommand);
     b.shortcut_row(D_COMPOSER_KEY, "Composer shortcut", "Opens the bar to write, or to rewrite the text you have selected.", c, ShortcutRole::Composer);
-    b.toggle_row(D_QF_REVIEW, "Review Quick Fix changes first", "Shows every change before anything is replaced. Turning this off lets KeyReed replace spelling fixes it is sure about, with Undo.", c.quick_fix_always_review, true);
+    b.toggle_row(D_QF_REVIEW, "Review every Quick Fix change", "Off by default: a fix KeyReed is sure about replaces the text straight away, with Undo on the listener. Turn it on to see every change first; formatting and writing-model fixes are always shown.", c.quick_fix_always_review, true);
     b.toggle_row(D_PTT, "Listen for the shortcuts", "When off, start dictation from the floating listener instead (its right-click menu, or a click if you set that in General).", c.ptt_enabled, true);
     b.end_group();
     b.section("Mouse");

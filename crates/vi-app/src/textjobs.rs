@@ -173,9 +173,10 @@ fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut Qu
 
 /// Quick Fix on the local writing model, for a machine without the grammar model. The Fix preset's instruction is
 /// the best-behaved one this small model gets: on ten varied sentences the stricter "keep every word" wordings
-/// corrected about half as much, while "change as little as possible" corrected 13 of 16 planted errors. The answer
-/// is word-diffed against the selection so the Review panel, Undo and the habit filter work unchanged. Nothing here
-/// is ever applied silently: the small model can be wrong.
+/// corrected about half as much, while "change as little as possible" corrected 13 of 16 planted errors. When that
+/// pass changes nothing on a text with an obvious error, one strict proofreader pass follows. The answer is
+/// word-diffed against the selection so the Review panel, Undo and the habit filter work unchanged. Nothing here is
+/// ever applied silently: the small model can be wrong.
 fn writing_model_fix(job: &TextJob, engine: &SharedEngine) -> TextJobEvent {
     let id = job.id;
     let failed = |reason| TextJobEvent::Failed { id, reason };
@@ -191,11 +192,7 @@ fn writing_model_fix(job: &TextJob, engine: &SharedEngine) -> TextJobEvent {
         }
         _ => return failed(JobFailure::NoGrammarModel),
     };
-    let mut cj = compose::ComposeJob::new(Instruction::Fix, &job.source);
-    cj.temperature = 0.0;
-    // shortcut: the model's default 2048-token context; a selection this size always fits it.
-    let answer = compose::run(&url, Some(&key), &cj, 2048, &job.cancel, |_| {});
-    let answer = match answer {
+    let answer = match writing_model_answer(&url, Some(&key), &job.source, &job.cancel) {
         Ok(answer) => answer,
         Err(e) => {
             log::warn!("quick fix {id}: the writing model failed: {e:#}");
@@ -206,6 +203,46 @@ fn writing_model_fix(job: &TextJob, engine: &SharedEngine) -> TextJobEvent {
         Some(edits) => TextJobEvent::QuickFixDone { id, text: answer.text, edits },
         None => failed(JobFailure::ModelFailed),
     }
+}
+
+/// The writing model's correction of `source`: the strict Fix pass at temperature 0, and one stricter
+/// proofreader pass only when that changed nothing while the text still has an obvious error.
+fn writing_model_answer(
+    url: &str,
+    key: Option<&str>,
+    source: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<compose::ComposeResult> {
+    let mut fix = compose::ComposeJob::new(Instruction::Fix, source);
+    fix.temperature = 0.0;
+    // shortcut: the model's default 2048-token context; a selection this size always fits it.
+    let first = compose::run(url, key, &fix, 2048, cancel, |_| {})?;
+    if !fallback_edits(source, &first).is_some_and(|e| e.is_empty()) || !obvious_error(source) {
+        return Ok(first);
+    }
+    let mut second = compose::ComposeJob::deeper(source);
+    second.temperature = 0.0;
+    // A failed second pass is not a failure: the first answer (nothing to change) stands.
+    Ok(compose::run(url, key, &second, 2048, cancel, |_| {}).unwrap_or(first))
+}
+
+/// Misspellings a spell checker flags but a 0.8B model sometimes leaves alone. With a doubled word these are
+/// what earn the second pass; text with nothing obvious is never retried.
+const COMMON_MISSPELLINGS: &[&str] = &[
+    "teh", "adn", "recieve", "recieved", "seperate", "definately", "occured", "untill", "wich", "becuase",
+    "beleive", "thier", "alot", "goverment", "accomodate", "adress", "arguement", "begining", "calender",
+    "comming", "existance", "foriegn", "freind", "immediatly", "neccessary", "occassion", "posession",
+    "publically", "reccommend", "refered", "sucessful", "tommorow", "truely", "wierd", "acheive", "dont",
+    "doesnt", "cant", "wont", "isnt", "didnt", "couldnt", "wouldnt", "shouldnt", "havent", "hasnt", "wasnt",
+    "werent", "youre", "theyre", "thats", "ive",
+];
+
+/// Whether a second pass is worth a turn: a common misspelling or a doubled word ("the the").
+fn obvious_error(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect();
+    let doubled = words.windows(2).any(|w| w[0] == w[1] && w[0].len() > 1);
+    doubled || words.iter().any(|w| COMMON_MISSPELLINGS.contains(w))
 }
 
 /// The reviewable edits of a writing-model answer, or `None` when it is not offered: empty, cut off, missing a
@@ -365,12 +402,35 @@ mod tests {
     }
 
     #[test]
+    fn a_second_pass_is_only_worth_it_on_an_obvious_error() {
+        assert!(obvious_error("We need the the new plan."));
+        assert!(obvious_error("I recieve it yesterday."));
+        assert!(obvious_error("I dont think so."));
+        // Nothing a doubled-word test or the misspelling list catches: the first pass stands.
+        assert!(!obvious_error("The cat sat quietly on the mat."));
+        assert!(!obvious_error("I am looking forward to meet you."));
+    }
+
+    #[test]
     fn without_any_model_the_refusal_names_both_options() {
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
         let tx = spawn_text_worker(ev_tx, Box::new(|| anyhow::bail!("no grammar model"))).unwrap();
         let engine: SharedEngine = Arc::new(Mutex::new(RewriteEngine::new(None)));
         tx.send((job(1, TextJobKind::QuickFix), engine)).unwrap();
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(2)).unwrap(), TextJobEvent::Failed { id: 1, reason: JobFailure::NoGrammarModel });
+    }
+
+    /// Whether `needle` appears in `haystack` as whole words, case-sensitively: "go" must not match "goes",
+    /// and "sunday" must not match "Sunday".
+    fn has_words(haystack: &str, needle: &str) -> bool {
+        let words = |s: &str| -> Vec<String> {
+            s.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let (h, n) = (words(haystack), words(needle));
+        !n.is_empty() && h.windows(n.len()).any(|w| w == n.as_slice())
     }
 
     fn answer(text: &str) -> compose::ComposeResult {
@@ -405,8 +465,8 @@ mod tests {
     }
 
     /// End-to-end quality of the writing-model fallback against a live llama-server, with the model that serves
-    /// Compose (thinking off). Start one, then run:
-    /// `KEYREED_QF_SERVER=http://127.0.0.1:8092/v1/chat/completions cargo test -p vi-app --bin keyreed --
+    /// Compose (thinking off), through the same `writing_model_answer` the app runs. Start one, then run:
+    /// `KEYREED_QF_SERVER=http://127.0.0.1:8093/v1/chat/completions cargo test -p vi-app --bin keyreed --
     ///  --ignored --nocapture writing_model_quality`.
     #[test]
     #[ignore = "needs a live llama-server; a measurement, not a gate"]
@@ -420,7 +480,7 @@ mod tests {
         }
         let cases = [
             Case { text: "This are a test of the grammer checker.", fixes: &[("This are", "This is"), ("grammer", "grammar")], keep: &["test"] },
-            Case { text: "I recieve it yesterday and it dont work good.", fixes: &[("recieve", "receive"), ("dont", "doesn't")], keep: &["yesterday"] },
+            Case { text: "I recieve it yesterday and it dont work good.", fixes: &[("recieve", "received"), ("dont", "doesn't")], keep: &["yesterday"] },
             Case { text: "Their going to the market on sunday.", fixes: &[("Their going", "They're going"), ("sunday", "Sunday")], keep: &["market"] },
             Case { text: "She dont like the new desgin of the app.", fixes: &[("dont", "doesn't"), ("desgin", "design")], keep: &["app"] },
             Case { text: "We was waiting since two hours.", fixes: &[("We was", "We were")], keep: &["two hours"] },
@@ -429,21 +489,25 @@ mod tests {
             Case { text: "I has already send the file to the team yesterday.", fixes: &[("I has", "I have"), ("send", "sent")], keep: &["file"] },
             Case { text: "He go to office everyday by bus.", fixes: &[("He go", "He goes"), ("everyday", "every day")], keep: &["bus"] },
             Case { text: "Its a good idea but i dont think its ready.", fixes: &[("Its", "It's"), ("i dont", "I don't")], keep: &["idea"] },
+            Case { text: "The report was writen by the team and they was happy with it.", fixes: &[("writen", "written"), ("they was", "they were")], keep: &["team"] },
+            Case { text: "We need to discuss about the new plan tommorow.", fixes: &[("discuss about", "discuss"), ("tommorow", "tomorrow")], keep: &["plan"] },
+            Case { text: "He is more taller than his brother.", fixes: &[("more taller", "taller")], keep: &["brother"] },
+            Case { text: "I am looking forward to meet you next week.", fixes: &[("to meet you", "to meeting you")], keep: &["week"] },
+            Case { text: "Each of the students have submitted there assignment.", fixes: &[("have submitted", "has submitted"), ("there", "their")], keep: &["students"] },
         ];
         let url = std::env::var("KEYREED_QF_SERVER").expect("KEYREED_QF_SERVER is the llama-server chat URL");
         let (mut fixed, mut want, mut kept, mut keep_total, mut offered, mut unexpected, mut ms) = (0, 0, 0, 0, 0, 0, 0);
         let total = cases.len();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
         for c in cases {
-            let mut cj = compose::ComposeJob::new(Instruction::Fix, c.text);
-            cj.temperature = 0.0;
             let t = Instant::now();
-            let answer = compose::run(&url, None, &cj, 2048, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("server");
+            let answer = writing_model_answer(&url, None, c.text, &cancel).expect("server");
             let took = t.elapsed().as_millis() as u64;
             ms += took;
             let offered_edits = fallback_edits(c.text, &answer);
             let got = offered_edits.clone().unwrap_or_default();
             offered += usize::from(offered_edits.is_some());
-            let f = c.fixes.iter().filter(|(wrong, right)| !answer.text.contains(wrong) && answer.text.contains(right)).count();
+            let f = c.fixes.iter().filter(|(wrong, right)| !has_words(&answer.text, wrong) && has_words(&answer.text, right)).count();
             let k = c.keep.iter().filter(|w| answer.text.contains(*w)).count();
             // An edit that does not touch one of the expected mistakes changed something that was right.
             let extra = got.iter().filter(|e| {
@@ -461,7 +525,10 @@ mod tests {
                 f, c.fixes.len(), k, c.keep.len(), got.len(), took, c.text, answer.text
             );
         }
-        println!("total: fixes {fixed}/{want}, correct text kept {kept}/{keep_total}, offered {offered}/{total}, edits touching nothing expected {unexpected}, {ms} ms for all");
+        let rate = 100.0 * fixed as f32 / want.max(1) as f32;
+        println!(
+            "total: fixes {fixed}/{want} ({rate:.0}%), correct text kept {kept}/{keep_total}, offered {offered}/{total}, edits touching nothing expected {unexpected}, {ms} ms for all"
+        );
         assert!(offered > 0, "the server answered none of the selections");
     }
 }

@@ -126,9 +126,10 @@ pub struct AppConfig {
     /// Fix the selected text in any application (plan F1). Proposed default, not yet checked against every app.
     #[serde(default = "default_quick_fix_hotkey")]
     pub quick_fix_hotkey: HotkeySpec,
-    /// Quick Fix shows every change in the Review panel before anything is replaced. Turning this off lets edits
-    /// the edit-class table marks silent be applied without asking.
-    #[serde(default = "default_true")]
+    /// Quick Fix shows every change in the Review panel before anything is replaced. Off by default: a fix the
+    /// edit-class table marks silent is applied straight away, with Undo. Structure, non-silent edits and the
+    /// writing-model fallback always go to Review whatever this says.
+    #[serde(default)]
     pub quick_fix_always_review: bool,
     /// The one-time explanation in the Review panel was dismissed.
     #[serde(default)]
@@ -204,7 +205,7 @@ impl Default for AppConfig {
             cancel_hotkey: HotkeySpec::cancel_escape(),
             mode_cycle_hotkey: HotkeySpec::ctrl_shift_space(),
             quick_fix_hotkey: default_quick_fix_hotkey(),
-            quick_fix_always_review: true,
+            quick_fix_always_review: false,
             quick_fix_intro_seen: false,
             composer_hotkey: default_composer_hotkey(),
             voice_command_hotkey: default_voice_command_hotkey(),
@@ -424,12 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn quick_fix_asks_before_replacing_by_default() {
+    fn quick_fix_replaces_without_asking_by_default() {
         let (c, _) = AppConfig::parse_lenient("{}");
-        assert!(c.quick_fix_always_review);
-        assert!(!c.quick_fix_intro_seen);
-        let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": false}"#);
         assert!(!c.quick_fix_always_review);
+        assert!(!c.quick_fix_intro_seen);
+        // An older config that never had the key keeps working, and the switch still turns review on.
+        let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": true}"#);
+        assert!(c.quick_fix_always_review);
     }
 
     #[test]

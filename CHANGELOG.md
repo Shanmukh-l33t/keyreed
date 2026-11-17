@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Quick Fix works on the second press.** The Review panel takes the foreground when it opens, so a chord pressed again straight after a fix was refused as KeyReed's own window or read a stale selection. A chord that lands on KeyReed's own window now acts on the last external window the app saw, and the target is put back in front before its selection is copied. A press while a change is still on screen says so instead of doing nothing.
+- **Quick Fix applies instead of asking.** The Review panel is off by default (`quick_fix_always_review`): a fix the edit-class table marks silent replaces the text straight away, with the Undo chip. Formatting in the selection, review-only edit classes and every writing-model fix still open the Review panel. The Settings switch asks for review of every change.
+- **Quick Fix without the grammar model.** A missing grammar model goes to the writing model instead of reporting a load failure, and the error names both models only when neither is installed. The fallback keeps the strict Fix prompt at temperature 0 and one proofreader pass runs only when that changed nothing on a text with an obvious error (a doubled word or a common misspelling). Measured on 15 sentences with planted errors against Qwen3.5 0.8B: see the ignored `writing_model_quality_against_a_live_server` test.
+
 ## 2.1.0-beta.1 (2026-11-17)
 
 Hex-informed round, and the first single build that also carries the 2.0 work below. Built on Linux for Windows x64 and published without being run, tested or benchmarked, so treat it as an evaluation build. The installer and portable zip are unsigned. Research notes are in `docs/research/`.
@@ -15,7 +21,7 @@ Hex-informed round, and the first single build that also carries the 2.0 work be
 
 ### The 2.0 work, in the same build
 
-- **Quick Fix (Ctrl + Win + G), end to end.** Select text in another application, press the shortcut, and KeyReed shows every proposed change in a Review panel. Spelling uses the Windows spell checker and grammar uses the Apache-2.0 `gector-bert-en` int8 tagger (73 MB download, runs locally through the ONNX Runtime that ships with the app). Enter replaces, Esc dismisses, Undo on the pill restores the original, and Deeper asks the local writing model for a second look. Review is the default (`quick_fix_always_review`); a Settings switch turns on silent replace.
+- **Quick Fix (Ctrl + Win + G), end to end.** Select text in another application, press the shortcut, and KeyReed shows every proposed change in a Review panel. Spelling uses the Windows spell checker and grammar uses the Apache-2.0 `gector-bert-en` int8 tagger (73 MB download, runs locally through the ONNX Runtime that ships with the app). Enter replaces, Esc dismisses, Undo on the pill restores the original, and Deeper asks the local writing model for a second look. A fix KeyReed is sure about replaces the text straight away, with Undo; `quick_fix_always_review` is off by default and a Settings switch turns the Review panel on for every change. Selections holding formatting, edits the edit-class table marks review-only, and every writing-model fix always open the Review panel.
 - **The Composer (Ctrl + Win + K, or Open the Composer in the tray menu).** Fix, Improve, Shorter, Change tone, Summarise and a typed instruction; the answer streams, Esc cancels, and a result can replace the selection, be inserted, be copied or be regenerated. It answers from the local writing model (Qwen3.5 0.8B); with none installed it says so and sends nothing. Clicking the listener still starts dictation by default.
 - **Style store and edit watcher.** `vi-core` carries both with their tests: the learned-habits store in `style.json`, and the reader that only looks at the text box KeyReed just typed into, up to a minute. Neither is connected to a Settings page or to the running app yet, so nothing is learned from your edits in this build.
 
@@ -49,7 +55,7 @@ Beta. First public build of the 2.0 line. Quick Fix is the new feature; the dict
 
 ### What works
 
-- **Quick Fix (Ctrl + Win + G).** Select text in another application, press the shortcut, and KeyReed shows the proposed corrections in a Review panel. Nothing is replaced until you confirm (`quick_fix_always_review` is on by default; a Settings switch turns on silent replace). Spelling uses the Windows spell checker; grammar uses the Apache-2.0 `gector-bert-en` model (int8, 73 MB download, runs locally through the ONNX Runtime that ships with the app). Undo restores the original text.
+- **Quick Fix (Ctrl + Win + G).** Select text in another application, press the shortcut, and KeyReed shows the proposed corrections in a Review panel. Sure spelling and grammar fixes replace the text straight away with Undo; formatting, review-only edits and writing-model fixes always open the Review panel (`quick_fix_always_review`, off by default, asks for review of every change). Spelling uses the Windows spell checker; grammar uses the Apache-2.0 `gector-bert-en` model (int8, 73 MB download, runs locally through the ONNX Runtime that ships with the app). Undo restores the original text.
 - **Safer text handling.** Selection capture and replacement restore your clipboard; a busy language model never blocks dictation (it falls back to basic cleanup); streaming client with limits; the shortcut table supports several chords.
 - **Shortcut capture.** Press the keys you want in Settings instead of picking a preset; conflicting or reserved chords are refused.
 - **New pill states and Review panel** with short motion that respects reduced-motion.
