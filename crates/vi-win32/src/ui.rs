@@ -22,6 +22,8 @@ pub enum UiAction {
     OpenComposer,
     /// "Start dictation" from the pill's right-click menu.
     StartDictation,
+    /// "Cancel recording": the way out when a recording will not stop (tray and pill right-click).
+    CancelRecording,
     /// Undo the last Quick Fix (pill chip).
     QuickFixUndo,
     /// Ask for the deeper pass on the last Quick Fix (pill chip).
@@ -741,6 +743,7 @@ pub mod win_gui {
     const IDM_SETUP_MODEL: usize = 1015;
     const IDM_START_DICTATION: usize = 1016;
     const IDM_OPEN_COMPOSER: usize = 1017;
+    const IDM_CANCEL_RECORDING: usize = 1018;
     const IDM_MODE_BASE: usize = 1100;
 
     const IDT_PILL_ANIM: usize = 7002;
@@ -1923,6 +1926,10 @@ pub mod win_gui {
         let idle = matches!(snap.state, EngineState::Idle | EngineState::ReadyToPaste);
         let ready = snap.active_model_ready() && snap.config.app_enabled;
         append(hmenu, MF_STRING | if idle && ready { 0 } else { MF_GRAYED }, IDM_START_DICTATION, "Start dictation");
+        // Only while a session is running: the visible way out of a recording that will not stop.
+        if matches!(snap.state, EngineState::Listening | EngineState::Processing | EngineState::Correcting) {
+            append(hmenu, MF_STRING, IDM_CANCEL_RECORDING, "Cancel recording");
+        }
 
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         append(hmenu, MF_STRING, IDM_OPEN_SETTINGS, "Open KeyReed…");
@@ -2025,6 +2032,7 @@ pub mod win_gui {
                     IDM_OUT_ASK => send(UiAction::SetOutputMode(OutputMode::AskBeforeInserting)),
                     IDM_COPY_LAST => send(UiAction::CopyLastDictation),
                     IDM_START_DICTATION => send(UiAction::StartDictation),
+                    IDM_CANCEL_RECORDING => send(UiAction::CancelRecording),
                     IDM_OPEN_COMPOSER => send(UiAction::OpenComposer),
                     IDM_AUTO_CTX => send(UiAction::ToggleAutoContext),
                     IDM_SHOW_PILL => send(UiAction::ToggleFloatingMicVisible),

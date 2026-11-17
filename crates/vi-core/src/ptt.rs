@@ -154,6 +154,10 @@ impl PttController {
                     self.state = EngineState::Listening;
                     PttAction::StartRecording
                 } else {
+                    // A press over a session the pill, the tray or a voice hold started adopts it, so this
+                    // hold's release ends it instead of being dropped as a stale key-up (which left the app
+                    // recording with no way out but Escape).
+                    self.recording_epoch = Some(epoch);
                     PttAction::None
                 }
             }
@@ -372,6 +376,28 @@ mod tests {
         assert_eq!(ptt.on_shortcut_up(1_200), PttAction::None);
         assert_eq!(ptt.state(), &EngineState::Listening);
         assert_eq!(ptt.on_floating_mic_click(2_000), PttAction::StopAndProcess);
+    }
+
+    /// A session the pill, the tray or a voice hold started must still end on this hold's release:
+    /// the press adopts it instead of bumping the epoch it does not carry (else every release is dropped).
+    #[test]
+    fn dictation_key_ends_a_session_it_did_not_start() {
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+        assert_eq!(ptt.on_floating_mic_click(1_000), PttAction::StartRecording);
+        assert_eq!(ptt.on_shortcut_down(2_000), PttAction::None);
+        assert_eq!(ptt.on_shortcut_up(2_400), PttAction::StopAndProcess);
+        assert_eq!(ptt.state(), &EngineState::Processing);
+    }
+
+    /// After a lost key-up the hold stays latched, so the next press does nothing: its release must
+    /// still end the running recording rather than being dropped as stale.
+    #[test]
+    fn a_release_after_a_lost_key_up_still_ends_the_recording() {
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+        assert_eq!(ptt.on_shortcut_down(1_000), PttAction::StartRecording);
+        assert_eq!(ptt.on_shortcut_down(3_000), PttAction::None);
+        assert_eq!(ptt.on_shortcut_up(3_400), PttAction::StopAndProcess);
+        assert_eq!(ptt.state(), &EngineState::Processing);
     }
 
     #[test]

@@ -956,6 +956,31 @@ mod tests {
         assert!(!cfg.ptt_modifier_only());
     }
 
+    /// The owner's setup end to end, matcher and controller: hold Right Ctrl, speak, let go.
+    /// A recording the pill started must also end on that release instead of recording until the cap.
+    #[test]
+    fn right_ctrl_drives_the_controller_and_ends_a_pill_session() {
+        use vi_core::ptt::{PttAction, PttController};
+        use vi_core::types::ActivationMode;
+        let cfg = key_cfg(HotkeySpec::right_ctrl());
+        let mut m = ModifierState::default();
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+
+        // A pill click starts the session; the dictation key then has to end it.
+        assert_eq!(ptt.on_floating_mic_click(0), PttAction::StartRecording);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        assert_eq!(ptt.on_shortcut_down(1_000), PttAction::None);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, false)]), [HotkeyEvent::PttUp]);
+        assert_eq!(ptt.on_shortcut_up(1_500), PttAction::StopAndProcess);
+        ptt.transition_to_idle();
+
+        // And the plain hold still starts and stops one recording.
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        assert_eq!(ptt.on_shortcut_down(2_000), PttAction::StartRecording);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, false)]), [HotkeyEvent::PttUp]);
+        assert_eq!(ptt.on_shortcut_up(2_500), PttAction::StopAndProcess);
+    }
+
     #[test]
     fn resync_clears_stale_modifiers_and_trigger_latches() {
         let mut m = ModifierState::default();
