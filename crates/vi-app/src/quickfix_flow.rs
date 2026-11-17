@@ -250,7 +250,9 @@ fn failure_sentence(id: u64, reason: JobFailure) -> &'static str {
         };
     }
     match reason {
-        JobFailure::NoGrammarModel => "The grammar model isn't installed.",
+        // Quick Fix needs one of the two models: name both, so the way out of the refusal is clear.
+        JobFailure::NoGrammarModel => "Quick Fix needs the grammar model or a writing model, and neither is available.",
+        JobFailure::SelectionTooLong => "That selection is too long for the writing model. Select less text, or install the grammar model.",
         _ => "Quick Fix couldn't finish. Nothing was changed.",
     }
 }
@@ -342,7 +344,10 @@ mod tests {
         );
         assert!(failure_sentence(VOICE_ID_BASE + 1, JobFailure::ModelFailed).contains("voice command"));
         assert!(failure_sentence(1, JobFailure::ModelFailed).contains("Quick Fix"));
-        assert!(failure_sentence(1, JobFailure::NoGrammarModel).contains("grammar model"));
+        // No model at all: the one sentence names both models, so the way out is clear.
+        let none = failure_sentence(1, JobFailure::NoGrammarModel);
+        assert!(none.contains("grammar model") && none.contains("writing model"), "{none}");
+        assert!(failure_sentence(1, JobFailure::SelectionTooLong).contains("Select less text"));
     }
 
     #[test]

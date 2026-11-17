@@ -240,6 +240,7 @@ fn failure_sentence(reason: JobFailure) -> &'static str {
         JobFailure::NoWritingModel => "No writing model is installed and cloud text jobs are off.",
         JobFailure::NoGrammarModel => "The grammar model isn't installed.",
         JobFailure::Unavailable => "This kind of request isn't available in this build.",
+        JobFailure::SelectionTooLong => "That text is too long for the model. Select less of it.",
         JobFailure::ModelFailed => "The model didn't answer. Try again.",
     }
 }
