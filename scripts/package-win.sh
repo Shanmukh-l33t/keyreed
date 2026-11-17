@@ -122,8 +122,9 @@ done
 
 # 4b) grammar model for Quick Fix (Apache-2.0, proofbird/gector-bert-en, int8): the model files with their LICENSE and
 # NOTICE, in the full bundles only. The folder name is the one the app looks for under models/.
-GRAMMAR_DIR="gector-bert-en"
-GRAMMAR_FILES=(model.onnx tokenizer.json config.json verb-form-vocab.txt gector-guards.json language-rules.json gector-meta.json LICENSE NOTICE)
+# Every file crates/vi-asr/src/integrity.rs pins for this model id (the installer path verifies exactly these).
+GRAMMAR_DIR="gector-bert-en-int8"
+GRAMMAR_FILES=(model.onnx tokenizer.json tokenizer_config.json vocab.txt config.json verb-form-vocab.txt gector-guards.json language-rules.json gector-meta.json LICENSE NOTICE)
 if [[ "$MODE" != "slim" ]]; then
   GRAMMAR_SRC="${KEYREED_GRAMMAR_SRC:-$VENDOR/models/gector-bert-en-int8}"
   mkdir -p "$DIST/models/$GRAMMAR_DIR"

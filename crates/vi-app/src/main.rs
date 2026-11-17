@@ -1045,7 +1045,7 @@ impl vi_rewrite::quickfix::Speller for WindowsSpelling {
 /// `--eval-quickfix-jsonl <in> <out>` writes `{id, output, edits}` lines (the form `bench/score_quickfix.py` reads);
 /// `--eval-typed-jsonl <in> [<out>]` writes the one JSON document `bench/score_typed.py` reads (stdout without `<out>`).
 /// Inputs are gate cases (`id`, `input`, `app_context` or `context`). Offsets in the output are in characters. The model folder is
-/// `--grammar-model`, else `KEYREED_GRAMMAR_MODEL`, else `<models>/gector-bert-en`; `--threads N` sets the intra-op threads;
+/// `--grammar-model`, else `KEYREED_GRAMMAR_MODEL`, else `<models>/gector-bert-en-int8`; `--threads N` sets the intra-op threads;
 /// `--spell` adds the Windows spell checker; `--gate-candidates` reports every edit class, including those the shipped table switches off.
 fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
     use vi_rewrite::quickfix::{Layer, QuickFixEngine};
@@ -1061,7 +1061,7 @@ fn run_eval_quickfix(args: &[String], typed_format: bool) -> Result<()> {
     let model_dir = value_of("--grammar-model")
         .or_else(|| env::var("KEYREED_GRAMMAR_MODEL").ok())
         .map(PathBuf::from)
-        .unwrap_or_else(|| paths.models_dir.join("gector-bert-en"));
+        .unwrap_or_else(|| paths.models_dir.join("gector-bert-en-int8"));
     let threads = value_of("--threads").and_then(|t| t.parse().ok()).unwrap_or(0);
     let gector = vi_rewrite::gector::Gector::load(&paths.sherpa_lib_dir.join("onnxruntime.dll"), &model_dir, threads)
         .with_context(|| format!("load the grammar model from {}", model_dir.display()))?;

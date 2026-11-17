@@ -12,7 +12,8 @@
 # Environment (all optional):
 #   KEYREED_TOOLCHAIN      llvm-mingw + nsis folder (default ~/.local/toolchain); build-release.sh and build-installer.sh need it
 #   KEYREED_RUNTIME_ROOT   a packaged runtime to take llama and sherpa-onnx DLLs and models from (package-win.sh)
-#   KEYREED_GRAMMAR_SRC    the grammar model folder (model.onnx, tokenizer.json, ..., LICENSE, NOTICE)
+#   KEYREED_GRAMMAR_SRC    the grammar model folder for the bundles (model.onnx, tokenizer.json, ..., LICENSE, NOTICE)
+#   KEYREED_GRAMMAR_ARCHIVE  the pinned gector-bert-en-int8.tar.bz2 to upload (default dist/gector-bert-en-int8.tar.bz2)
 #   CARGO_TARGET_DIR       build output folder (the packager and the rehearsal look in it)
 #
 # Version strings it sets (the places release 0.5.1 changed, commit 5718940, plus the ones that commit missed):
@@ -52,7 +53,10 @@ OUT="dist/release-$VERSION"
 SETUP="KeyReed-Setup-x64.exe"
 PORTABLE="keyreed-$VERSION-windows-x86_64-portable.zip"
 FULL="keyreed-$VERSION-windows-x64-full-offline.zip"
-GRAMMAR_ZIP="keyreed-$VERSION-grammar-model-gector-bert-en.zip"
+# The grammar model asset is the archive the app downloads: its name, URL and SHA-256 are pinned in
+# crates/vi-asr/src/catalog.rs (GRAMMAR_CATALOG), so it is uploaded as it is and never rebuilt here.
+GRAMMAR_ZIP="gector-bert-en-int8.tar.bz2"
+GRAMMAR_ARCHIVE="${KEYREED_GRAMMAR_ARCHIVE:-dist/$GRAMMAR_ZIP}"
 TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 
 step "plan"
@@ -87,13 +91,24 @@ else
   step "2/6 build skipped (--skip-build)"
 fi
 for f in dist/keyreed-win-x64-slim/keyreed.exe dist/keyreed-win-x64/keyreed.exe "dist/$SETUP" dist/KeyReed-Setup-TEST.exe; do [[ -f "$f" ]] || die "$f is missing"; done
-[[ -f dist/keyreed-win-x64/models/gector-bert-en/model.onnx && -f dist/keyreed-win-x64/models/gector-bert-en/LICENSE && -f dist/keyreed-win-x64/models/gector-bert-en/NOTICE ]] \
-  || die "the full bundle has no grammar model with LICENSE and NOTICE (set KEYREED_GRAMMAR_SRC and rerun package-win.sh default)"
+for f in model.onnx LICENSE NOTICE; do
+  [[ -f "dist/keyreed-win-x64/models/gector-bert-en-int8/$f" ]] || die "the full bundle has no grammar model $f (set KEYREED_GRAMMAR_SRC and rerun package-win.sh default)"
+done
+# The archive the app downloads must be the one catalog.rs pins, and it must be published under the tag in the pinned URL.
+[[ -f "$GRAMMAR_ARCHIVE" ]] || die "$GRAMMAR_ARCHIVE is missing (set KEYREED_GRAMMAR_ARCHIVE)"
+PIN_SHA="$(grep -A8 'id: "gector-bert-en-int8"' crates/vi-asr/src/catalog.rs | sed -n 's/.*expected_sha256: "\([0-9a-f]*\)".*/\1/p')"
+PIN_URL="$(grep -A8 'id: "gector-bert-en-int8"' crates/vi-asr/src/catalog.rs | sed -n 's/.*download_url: "\([^"]*\)".*/\1/p')"
+ARCHIVE_SHA="$(sha256sum "$GRAMMAR_ARCHIVE" | cut -d' ' -f1)"
+[[ -n "$PIN_SHA" && "$PIN_SHA" == "$ARCHIVE_SHA" ]] || die "$GRAMMAR_ARCHIVE has SHA-256 $ARCHIVE_SHA but catalog.rs pins '$PIN_SHA'"
+if [[ "$PIN_URL" != "$REPO/releases/download/$TAG/$GRAMMAR_ZIP" ]]; then
+  echo "WARNING: catalog.rs downloads the grammar model from $PIN_URL, not from this release ($TAG)."
+  echo "         Either keep that older release alive, or change GRAMMAR_CATALOG's download_url to this tag before tagging."
+fi
 
 # ---------------------------------------------------------------------------------------------------------------
 step "3/6 archives, sizes, SHA-256"
 mkdir -p "$OUT"
-"$PY" - "$VERSION" "$OUT" "$PORTABLE" "$FULL" "$GRAMMAR_ZIP" <<'PYEOF'
+GRAMMAR_ARCHIVE="$GRAMMAR_ARCHIVE" "$PY" - "$VERSION" "$OUT" "$PORTABLE" "$FULL" "$GRAMMAR_ZIP" <<'PYEOF'
 import hashlib, json, os, shutil, sys, zipfile
 
 version, out, portable, full, grammar = sys.argv[1:6]
@@ -109,8 +124,8 @@ def zip_dir(src, top, name):
 
 zip_dir("dist/keyreed-win-x64-slim", f"keyreed-{version}-portable", portable)
 zip_dir("dist/keyreed-win-x64", f"keyreed-{version}-full-offline", full)
-zip_dir("dist/keyreed-win-x64/models/gector-bert-en", "gector-bert-en", grammar)
 shutil.copyfile("dist/KeyReed-Setup-x64.exe", os.path.join(out, "KeyReed-Setup-x64.exe"))
+shutil.copyfile(os.environ["GRAMMAR_ARCHIVE"], os.path.join(out, grammar))
 
 info = {}
 lines = []
@@ -171,12 +186,12 @@ edit("docs/installation.md", [
 doc = open("docs/installation.md", encoding="utf-8", newline="").read()
 nl = "\r\n" if "\r\n" in doc else "\n"
 doc = doc.replace("\r\n", "\n")
-row = f"| `{grammar}` | You want the grammar model for Quick Fix as a separate file. | `{sz[grammar]}` archive of the Apache-2.0 `gector-bert-en` model (int8) with its LICENSE and NOTICE. Settings downloads it for you; use this to install it by hand. |"
-doc, n = re.subn(r"^\| `keyreed-[^`]*-grammar-model-gector-bert-en.zip` \|.*$", row, doc, flags=re.M)
+row = f"| `{grammar}` | Settings downloads it for you (Quick Fix grammar model). | `{sz[grammar]}` archive of the Apache-2.0 `gector-bert-en` model (int8) with its LICENSE and NOTICE, pinned by SHA-256 in the app. |"
+doc, n = re.subn(r"^\| `gector-bert-en-int8.tar.bz2` \|.*$", row, doc, flags=re.M)
 if n == 0:
     doc = re.sub(r"(^\| `keyreed-[^`]*-windows-x64-full-offline.zip` \|.*$)", lambda m: m.group(1) + "\n" + row, doc, count=1, flags=re.M)
 line = f"{sh[grammar]}  {grammar}"
-doc, n = re.subn(r"^[0-9a-f]{64}  keyreed-[^ ]*-grammar-model-gector-bert-en.zip$", line, doc, flags=re.M)
+doc, n = re.subn(r"^[0-9a-f]{64}  gector-bert-en-int8.tar.bz2$", line, doc, flags=re.M)
 if n == 0:
     doc = re.sub(r"(^[0-9a-f]{64}  keyreed-[^ ]*-windows-x64-full-offline.zip$)", lambda m: m.group(1) + "\n" + line, doc, count=1, flags=re.M)
 open("docs/installation.md", "w", encoding="utf-8", newline="").write(doc.replace("\n", nl))
