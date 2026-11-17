@@ -1,8 +1,10 @@
+pub mod analysers;
 pub mod brand;
 pub mod config;
 pub mod dictionary;
 pub mod history;
 pub mod ptt;
+pub mod style;
 pub mod textjob;
 pub mod types;
 
