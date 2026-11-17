@@ -7,7 +7,7 @@ use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use vi_core::textjob::{FixEdit, JobFailure, TextJob, TextJobEvent, TextJobKind};
+use vi_core::textjob::{FixEdit, Instruction, JobFailure, TextJob, TextJobEvent, TextJobKind};
 use vi_rewrite::compose;
 use vi_rewrite::quickfix::{Layer, QuickFixEngine};
 use vi_rewrite::stream::{stream_chat, StreamEnd};
@@ -23,6 +23,36 @@ pub type JobRequest = (TextJob, SharedEngine);
 /// moment and its session stays on this thread).
 pub type QuickFixLoader = Box<dyn FnMut() -> Result<QuickFixEngine> + Send>;
 
+/// Longest selection the writing-model fallback takes: about six seconds of local generation.
+const MAX_FALLBACK_CHARS: usize = 1_200;
+/// A fix that changes a larger share of the words than this read the text as a draft, and is not offered.
+const MAX_CHANGED: f32 = 0.4;
+
+/// Which engine a Quick Fix runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Path {
+    /// The grammar model is installed and loaded.
+    Grammar,
+    /// No grammar model: the local writing model corrects, and every change is reviewed.
+    WritingModel,
+    /// No grammar model, and the selection is longer than the writing model is given.
+    TooLong,
+    /// Neither model is available.
+    NoModel,
+}
+
+fn quick_fix_path(grammar: bool, writing: bool, chars: usize) -> Path {
+    if grammar {
+        Path::Grammar
+    } else if !writing {
+        Path::NoModel
+    } else if chars > MAX_FALLBACK_CHARS {
+        Path::TooLong
+    } else {
+        Path::WritingModel
+    }
+}
+
 pub fn spawn_text_worker(events: Sender<TextJobEvent>, load_quick_fix: QuickFixLoader) -> Result<Sender<JobRequest>> {
     let (tx, rx) = crossbeam_channel::unbounded::<JobRequest>();
     std::thread::Builder::new()
@@ -36,7 +66,7 @@ fn worker_loop(rx: Receiver<JobRequest>, events: Sender<TextJobEvent>, mut load_
     let mut quick_fix: Option<QuickFixEngine> = None;
     for (job, engine) in rx {
         let ev = if job.kind == TextJobKind::QuickFix {
-            run_quick_fix(&job, &mut quick_fix, &mut load_quick_fix)
+            run_quick_fix(&job, &mut quick_fix, &mut load_quick_fix, &engine)
         } else {
             run_job(&job, &engine, &events)
         };
@@ -97,15 +127,17 @@ fn run_job(job: &TextJob, engine: &SharedEngine, events: &Sender<TextJobEvent>) 
     }
 }
 
-/// Quick Fix never takes the language-model lock: it runs on its own engine, so a busy dictation cannot hold it up.
-fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut QuickFixLoader) -> TextJobEvent {
+/// With the grammar model, Quick Fix never takes the language-model lock: it runs on its own engine, so a busy
+/// dictation cannot hold it up. Without one, the writing model does the work and holds the lock like any text job.
+fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut QuickFixLoader, engine: &SharedEngine) -> TextJobEvent {
     let id = job.id;
     if slot.is_none() {
         match load() {
-            Ok(engine) => *slot = Some(engine),
+            Ok(loaded) => *slot = Some(loaded),
             Err(e) => {
+                // No grammar model: the local writing model corrects instead, every change for review.
                 log::warn!("quick fix engine failed to load: {e:#}");
-                return TextJobEvent::Failed { id, reason: JobFailure::NoGrammarModel };
+                return writing_model_fix(job, engine);
             }
         }
     }
@@ -139,6 +171,69 @@ fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut Qu
     }
 }
 
+/// Quick Fix on the local writing model, for a machine without the grammar model. The Fix preset's instruction is
+/// the best-behaved one this small model gets: on ten varied sentences the stricter "keep every word" wordings
+/// corrected about half as much, while "change as little as possible" corrected 13 of 16 planted errors. The answer
+/// is word-diffed against the selection so the Review panel, Undo and the habit filter work unchanged. Nothing here
+/// is ever applied silently: the small model can be wrong.
+fn writing_model_fix(job: &TextJob, engine: &SharedEngine) -> TextJobEvent {
+    let id = job.id;
+    let failed = |reason| TextJobEvent::Failed { id, reason };
+    // The local model's lock is held for the whole job, so dictation falls back to rules meanwhile.
+    let mut held = engine.lock();
+    let endpoint = held.chat_endpoint();
+    let (url, key) = match (quick_fix_path(false, endpoint.is_some(), job.source.chars().count()), endpoint) {
+        (Path::WritingModel, Some(Ok(pair))) => pair,
+        (Path::TooLong, _) => return failed(JobFailure::SelectionTooLong),
+        (_, Some(Err(e))) => {
+            log::warn!("quick fix {id}: the local model failed to start: {e:#}");
+            return failed(JobFailure::ModelFailed);
+        }
+        _ => return failed(JobFailure::NoGrammarModel),
+    };
+    let mut cj = compose::ComposeJob::new(Instruction::Fix, &job.source);
+    cj.temperature = 0.0;
+    // shortcut: the model's default 2048-token context; a selection this size always fits it.
+    let answer = compose::run(&url, Some(&key), &cj, 2048, &job.cancel, |_| {});
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(e) => {
+            log::warn!("quick fix {id}: the writing model failed: {e:#}");
+            return failed(JobFailure::ModelFailed);
+        }
+    };
+    match fallback_edits(&job.source, &answer) {
+        Some(edits) => TextJobEvent::QuickFixDone { id, text: answer.text, edits },
+        None => failed(JobFailure::ModelFailed),
+    }
+}
+
+/// The reviewable edits of a writing-model answer, or `None` when it is not offered: empty, cut off, missing a
+/// protected token (a URL, a number, an identifier), or changing so much that it rewrote the text.
+fn fallback_edits(source: &str, answer: &compose::ComposeResult) -> Option<Vec<FixEdit>> {
+    let text = answer.text.trim();
+    if answer.cancelled() || answer.truncated || text.is_empty() {
+        return None;
+    }
+    if !compose::protected_tokens_missing(source, text).is_empty() {
+        return None;
+    }
+    let from = source.trim().chars().count();
+    let ratio = text.chars().count() as f32 / from.max(1) as f32;
+    if from == 0 || !(0.7..=1.4).contains(&ratio) {
+        return None;
+    }
+    let edits: Vec<FixEdit> = compose::word_edits(source, text)
+        .into_iter()
+        .map(|(start, end, replacement)| FixEdit { start, end, replacement, label: "Grammar (AI)", silent: false })
+        .collect();
+    // A fix changes a few words. On a short selection the share is noise, so the rule only bites from
+    // six words up; a longer text with most of its words changed was rewritten, not corrected.
+    let words = source.split_whitespace().count();
+    let changed: usize = edits.iter().map(|e| source[e.start..e.end].split_whitespace().count()).sum();
+    (words < 6 || changed as f32 <= words as f32 * MAX_CHANGED).then_some(edits)
+}
+
 /// The selected text is untrusted input: it is delimited and the model is told not to follow it.
 /// The prompts live in `vi_rewrite::compose`.
 fn job_messages(job: &TextJob) -> serde_json::Value {
@@ -154,7 +249,6 @@ fn job_messages(job: &TextJob) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use vi_core::textjob::Instruction;
     use std::time::Instant;
 
     fn job(id: u64, kind: TextJobKind) -> TextJob {
@@ -176,14 +270,16 @@ mod tests {
     #[test]
     fn jobs_complete_while_dictation_holds_the_engine() {
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
-        let tx = spawn_text_worker(ev_tx, Box::new(|| anyhow::bail!("no grammar model"))).unwrap();
+        let tx = spawn_text_worker(ev_tx, Box::new(|| Ok(QuickFixEngine::new(Box::new(Tagger))))).unwrap();
         let engine: SharedEngine = Arc::new(Mutex::new(RewriteEngine::new(None)));
-        // Dictation holds the language model; a Quick Fix job must not wait for it.
+        // Dictation holds the language model; a Quick Fix on the grammar model must not wait for it.
         let held = engine.lock();
         let t = Instant::now();
-        tx.send((job(1, TextJobKind::QuickFix), engine.clone())).unwrap();
+        let mut j = job(1, TextJobKind::QuickFix);
+        j.source = "I has a cat.".into();
+        tx.send((j, engine.clone())).unwrap();
         let ev = ev_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(ev, TextJobEvent::Failed { id: 1, reason: JobFailure::NoGrammarModel });
+        assert!(matches!(ev, TextJobEvent::QuickFixDone { id: 1, .. }), "{ev:?}");
         assert!(t.elapsed() < Duration::from_millis(500));
         drop(held);
         // A writing job without a local model or cloud says so.
@@ -256,5 +352,116 @@ mod tests {
         j.style_block = vi_core::habits::style_block(&vi_core::style::StyleStore::default(), vi_core::habits::Dialect::Auto, vi_core::style::Scope::Email);
         assert!(j.style_block.is_none());
         assert!(!job_messages(&j)[0]["content"].as_str().unwrap().contains("habits"));
+    }
+
+    #[test]
+    fn the_route_is_the_grammar_model_then_the_writing_model_then_a_refusal() {
+        assert_eq!(quick_fix_path(true, true, 50), Path::Grammar);
+        assert_eq!(quick_fix_path(true, false, MAX_FALLBACK_CHARS * 2), Path::Grammar, "the grammar model takes any length");
+        assert_eq!(quick_fix_path(false, true, 50), Path::WritingModel);
+        assert_eq!(quick_fix_path(false, true, MAX_FALLBACK_CHARS), Path::WritingModel);
+        assert_eq!(quick_fix_path(false, true, MAX_FALLBACK_CHARS + 1), Path::TooLong);
+        assert_eq!(quick_fix_path(false, false, 50), Path::NoModel);
+    }
+
+    #[test]
+    fn without_any_model_the_refusal_names_both_options() {
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let tx = spawn_text_worker(ev_tx, Box::new(|| anyhow::bail!("no grammar model"))).unwrap();
+        let engine: SharedEngine = Arc::new(Mutex::new(RewriteEngine::new(None)));
+        tx.send((job(1, TextJobKind::QuickFix), engine)).unwrap();
+        assert_eq!(ev_rx.recv_timeout(Duration::from_secs(2)).unwrap(), TextJobEvent::Failed { id: 1, reason: JobFailure::NoGrammarModel });
+    }
+
+    fn answer(text: &str) -> compose::ComposeResult {
+        compose::ComposeResult { text: text.into(), end: vi_rewrite::stream::StreamEnd::Finished, truncated: false, missing_protected: Vec::new() }
+    }
+
+    #[test]
+    fn a_writing_model_answer_becomes_word_edits_for_review() {
+        let src = "This are a test of the grammer checker.";
+        let edits = fallback_edits(src, &answer("This is a test of the grammar checker.")).unwrap();
+        assert_eq!(edits.len(), 2);
+        assert_eq!((edits[0].start, edits[0].end, edits[0].replacement.as_str()), (5, 8, "is"));
+        assert!(edits.iter().all(|e| e.label == "Grammar (AI)" && !e.silent), "a small model's edits are always reviewed");
+        // An unchanged answer is no edits at all, so the pill says "Looks good" and nothing is changed.
+        assert_eq!(fallback_edits(src, &answer(src)).map(|e| e.len()), Some(0));
+    }
+
+    #[test]
+    fn a_writing_model_answer_is_refused_when_empty_lossy_or_a_rewrite() {
+        let src = "Mail me at ravi@example.com about v2.0 today.";
+        assert!(fallback_edits(src, &answer("   ")).is_none(), "empty");
+        assert!(fallback_edits(src, &answer("Mail me about the project today.")).is_none(), "a protected token is gone");
+        assert!(fallback_edits(src, &answer(&format!("{src} And more words nobody wrote."))).is_none(), "it grew the text");
+        let mut cut = answer("Mail me at ravi@example.com about");
+        cut.truncated = true;
+        assert!(fallback_edits(src, &cut).is_none(), "cut off");
+        // Same length, but nearly every word changed: a rewrite, not a correction.
+        let src = "The cat sat quietly on the mat.";
+        assert!(fallback_edits(src, &answer("A dog lay silently on the rug.")).is_none());
+        // A plainly short fix on the same text still goes through.
+        assert_eq!(fallback_edits(src, &answer("The cat sat quietly on the mat!")).map(|e| e.len()), Some(1));
+    }
+
+    /// End-to-end quality of the writing-model fallback against a live llama-server, with the model that serves
+    /// Compose (thinking off). Start one, then run:
+    /// `KEYREED_QF_SERVER=http://127.0.0.1:8092/v1/chat/completions cargo test -p vi-app --bin keyreed --
+    ///  --ignored --nocapture writing_model_quality`.
+    #[test]
+    #[ignore = "needs a live llama-server; a measurement, not a gate"]
+    fn writing_model_quality_against_a_live_server() {
+        struct Case {
+            text: &'static str,
+            /// (wrong, right): what the selection holds and what a fix must make of it.
+            fixes: &'static [(&'static str, &'static str)],
+            /// Correct text (a name, a time, a URL) that a fix must not touch.
+            keep: &'static [&'static str],
+        }
+        let cases = [
+            Case { text: "This are a test of the grammer checker.", fixes: &[("This are", "This is"), ("grammer", "grammar")], keep: &["test"] },
+            Case { text: "I recieve it yesterday and it dont work good.", fixes: &[("recieve", "receive"), ("dont", "doesn't")], keep: &["yesterday"] },
+            Case { text: "Their going to the market on sunday.", fixes: &[("Their going", "They're going"), ("sunday", "Sunday")], keep: &["market"] },
+            Case { text: "She dont like the new desgin of the app.", fixes: &[("dont", "doesn't"), ("desgin", "design")], keep: &["app"] },
+            Case { text: "We was waiting since two hours.", fixes: &[("We was", "We were")], keep: &["two hours"] },
+            Case { text: "Please send the report to Karthik at karthik@example.com by 5 pm.", fixes: &[], keep: &["Karthik", "karthik@example.com", "5 pm"] },
+            Case { text: "The meeting is at 10:30, dont be late.", fixes: &[("dont", "don't")], keep: &["10:30"] },
+            Case { text: "I has already send the file to the team yesterday.", fixes: &[("I has", "I have"), ("send", "sent")], keep: &["file"] },
+            Case { text: "He go to office everyday by bus.", fixes: &[("He go", "He goes"), ("everyday", "every day")], keep: &["bus"] },
+            Case { text: "Its a good idea but i dont think its ready.", fixes: &[("Its", "It's"), ("i dont", "I don't")], keep: &["idea"] },
+        ];
+        let url = std::env::var("KEYREED_QF_SERVER").expect("KEYREED_QF_SERVER is the llama-server chat URL");
+        let (mut fixed, mut want, mut kept, mut keep_total, mut offered, mut unexpected, mut ms) = (0, 0, 0, 0, 0, 0, 0);
+        let total = cases.len();
+        for c in cases {
+            let mut cj = compose::ComposeJob::new(Instruction::Fix, c.text);
+            cj.temperature = 0.0;
+            let t = Instant::now();
+            let answer = compose::run(&url, None, &cj, 2048, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("server");
+            let took = t.elapsed().as_millis() as u64;
+            ms += took;
+            let offered_edits = fallback_edits(c.text, &answer);
+            let got = offered_edits.clone().unwrap_or_default();
+            offered += usize::from(offered_edits.is_some());
+            let f = c.fixes.iter().filter(|(wrong, right)| !answer.text.contains(wrong) && answer.text.contains(right)).count();
+            let k = c.keep.iter().filter(|w| answer.text.contains(*w)).count();
+            // An edit that does not touch one of the expected mistakes changed something that was right.
+            let extra = got.iter().filter(|e| {
+                let shown = c.text.get(e.start..e.end).unwrap_or("");
+                !c.fixes.iter().any(|(wrong, _)| shown.is_empty() || wrong.contains(shown) || shown.contains(wrong))
+            }).count();
+            fixed += f;
+            want += c.fixes.len();
+            kept += k;
+            keep_total += c.keep.len();
+            unexpected += extra;
+            println!(
+                "{:8} fixed {}/{}  kept {}/{}  edits {}  {:>4} ms  {:?} -> {:?}",
+                if offered_edits.is_some() { "offer" } else { "REFUSED" },
+                f, c.fixes.len(), k, c.keep.len(), got.len(), took, c.text, answer.text
+            );
+        }
+        println!("total: fixes {fixed}/{want}, correct text kept {kept}/{keep_total}, offered {offered}/{total}, edits touching nothing expected {unexpected}, {ms} ms for all");
+        assert!(offered > 0, "the server answered none of the selections");
     }
 }

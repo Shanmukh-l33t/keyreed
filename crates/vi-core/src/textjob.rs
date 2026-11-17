@@ -74,6 +74,8 @@ pub enum JobFailure {
     ModelFailed,
     /// The grammar model for Quick Fix is not installed or did not load.
     NoGrammarModel,
+    /// The selection is longer than the writing-model fallback is given.
+    SelectionTooLong,
 }
 
 /// One Quick Fix change: a byte range of the job's `source` and its replacement. `label` is "Spelling",
