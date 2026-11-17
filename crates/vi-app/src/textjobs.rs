@@ -136,6 +136,8 @@ fn run_quick_fix(job: &TextJob, slot: &mut Option<QuickFixEngine>, load: &mut Qu
 fn job_messages(job: &TextJob) -> serde_json::Value {
     let mut cj = compose::ComposeJob::new(job.instruction.clone(), &job.source);
     cj.deeper = job.kind == TextJobKind::DeepFix;
+    // The learned habits ride along as an optional block; `messages` caps it and the deeper pass ignores it.
+    cj.style_block = job.style_block.clone();
     // An empty custom instruction cannot be sent; the model gets the bare text instead.
     compose::messages(&cj).unwrap_or_else(|_| serde_json::json!([{ "role": "user", "content": job.source }]))
 }
@@ -157,6 +159,7 @@ mod tests {
             target: Default::default(),
             max_output_tokens: 64,
             terms: Vec::new(),
+            style_block: None,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -230,5 +233,19 @@ mod tests {
         j.source.clear();
         j.instruction = Instruction::Custom("Write a haiku".into());
         assert_eq!(job_messages(&j)[1]["content"], "Write a haiku");
+    }
+
+    #[test]
+    fn the_learned_style_block_reaches_the_request() {
+        let mut store = vi_core::style::StyleStore::default();
+        assert!(store.set_locked("dialect", vi_core::style::Scope::Everywhere, "british", 1));
+        let block = vi_core::habits::style_block(&store, vi_core::habits::Dialect::Auto, vi_core::style::Scope::Email);
+        let mut j = job(4, TextJobKind::Compose);
+        j.style_block = block.clone();
+        assert!(job_messages(&j)[0]["content"].as_str().unwrap().contains("British spelling"), "{block:?}");
+        // Nothing learned: the prompt is the plain one.
+        j.style_block = vi_core::habits::style_block(&vi_core::style::StyleStore::default(), vi_core::habits::Dialect::Auto, vi_core::style::Scope::Email);
+        assert!(j.style_block.is_none());
+        assert!(!job_messages(&j)[0]["content"].as_str().unwrap().contains("habits"));
     }
 }

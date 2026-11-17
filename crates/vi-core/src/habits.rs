@@ -4,6 +4,7 @@
 
 use crate::analysers::{analyse, dialect_words};
 use crate::style::{Scope, StyleStore};
+use serde::{Deserialize, Serialize};
 
 /// The style block stays within about this many tokens (estimated, see [`estimate_tokens`]).
 pub const MAX_STYLE_BLOCK_TOKENS: usize = 120;
@@ -13,7 +14,8 @@ pub const MAX_STYLE_BLOCK_TOKENS: usize = 120;
 pub const COLLECTIVE_KEY: &str = "collective_noun";
 
 /// The user's spelling setting. `Auto` follows what was learned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Dialect {
     #[default]
     Auto,
@@ -41,7 +43,9 @@ fn plain_phrase(v: &str) -> Option<&str> {
     ok.then_some(v)
 }
 
-fn sentence(key: &str, value: &str) -> Option<String> {
+/// One plain sentence for a habit value, for the style block and the "My style" list. `None` for a key or value
+/// that is not in the closed list (or a hand-edited phrase that fails validation).
+pub fn habit_sentence(key: &str, value: &str) -> Option<String> {
     let s = match (key, value) {
         ("dialect", "british") => "Use British spelling (colour, organise).".to_string(),
         ("dialect", "american") => "Use American spelling (color, organize).".to_string(),
@@ -82,7 +86,7 @@ pub fn style_block(store: &StyleStore, dialect: Dialect, context: Scope) -> Opti
     let mut block = String::from(BLOCK_HEAD);
     let mut any = false;
     for key in BLOCK_ORDER {
-        let Some(line) = habit(store, dialect, key, context).and_then(|v| sentence(key, v)) else { continue };
+        let Some(line) = habit(store, dialect, key, context).and_then(|v| habit_sentence(key, v)) else { continue };
         if estimate_tokens(&format!("{block} {line}")) > MAX_STYLE_BLOCK_TOKENS {
             continue; // a shorter one further down may still fit
         }

@@ -37,6 +37,8 @@ pub struct TextJob {
     pub max_output_tokens: u32,
     /// Personal-dictionary terms Quick Fix never changes.
     pub terms: Vec<String>,
+    /// `habits::style_block` for the Composer's system prompt; `None` when nothing was learned.
+    pub style_block: Option<String>,
     pub cancel: Arc<AtomicBool>,
 }
 

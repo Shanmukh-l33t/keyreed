@@ -20,6 +20,7 @@ use vi_asr::{
     LocalAsrEngine,
 };
 use vi_audio::{list_input_devices, load_wav_16k_mono, ActiveCapture};
+use vi_core::style::{LearnState, LoadOutcome, StyleStore};
 use vi_core::{
     brand::{AUTOSTART_REG_VALUE, PRODUCT_NAME, PRODUCT_TAGLINE, SINGLE_INSTANCE_MUTEX, VERSION_STR},
     AppCategory, AppConfig, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
@@ -247,6 +248,26 @@ fn with_engine_or_rules<R>(
 /// Registers the Quick Fix chord with the hook. The Composer chord is left out of beta.1 (the bar is not wired).
 fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
     hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
+}
+
+/// The learning switch is a setting (setup and My style both edit it) while the store is what records, so the
+/// store follows the setting. Returns whether it changed.
+fn sync_learning_switch(cfg: &AppConfig, style: &mut StyleStore) -> bool {
+    let want = if cfg.learn_from_edits { LearnState::On } else { LearnState::Off };
+    if style.learn_from_edits == want {
+        return false;
+    }
+    style.learn_from_edits = want;
+    true
+}
+
+/// Writes the style store and hands the fresh copy to Settings: the coordinator owns the file.
+#[cfg(windows)]
+fn save_style(style: &StyleStore, path: &Path, gui: &vi_win32::ui::win_gui::WinGuiHandle) {
+    if let Err(e) = style.save_atomic(path) {
+        log::warn!("the style store could not be saved: {e:#}");
+    }
+    gui.set_style(style.clone());
 }
 
 /// Whether the speech engine should decode with hotword biasing: the model supports it and the
@@ -1939,6 +1960,21 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
         .spawn(move || {
             let mut cfg = initial_cfg;
             let mut history = HistoryStore::load_or_default(&hist_path);
+            // "My style" (plan F3): loaded once here, written after every change, and mirrored to Settings.
+            let style_path = StyleStore::default_path();
+            let mut style = match StyleStore::load(&style_path) {
+                Ok((s, LoadOutcome::SetAside(p))) => {
+                    log::warn!("the style file could not be read; it was kept as {}", p.display());
+                    s
+                }
+                Ok((s, _)) => s,
+                Err(e) => {
+                    log::warn!("the style store could not be loaded: {e:#}");
+                    StyleStore::default()
+                }
+            };
+            sync_learning_switch(&cfg, &mut style);
+            gui_for_worker.set_style(style.clone());
             let mut ptt = PttController::new(cfg.activation_mode, 110, 1_800_000);
             let _ = ptt.set_app_enabled(cfg.app_enabled);
             let _ = ptt.set_ptt_enabled(cfg.ptt_enabled);
@@ -2375,11 +2411,19 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 new_cfg.floating_pill_pos = cfg.floating_pill_pos;
                                 cfg = *new_cfg;
                                 let _ = cfg.save_atomic(&cfg_path);
+                                if sync_learning_switch(&cfg, &mut style) {
+                                    save_style(&style, &style_path, &gui_for_worker);
+                                }
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                                 if llm_changed {
                                     // After saving: re-verifying a grammar model can take seconds.
                                     supervisor = InferenceSupervisor::new(&cfg);
                                 }
+                            }
+                            Ok(UiAction::SaveStyleStore(new_style)) => {
+                                style = *new_style;
+                                sync_learning_switch(&cfg, &mut style);
+                                save_style(&style, &style_path, &gui_for_worker);
                             }
                             Ok(UiAction::QuickFixUndo) => quick_fix.undo(&gui_for_worker),
                             Ok(UiAction::ReviewDone { choice, text, accepted, .. }) => {
@@ -2415,7 +2459,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     recv(job_ev_rx) -> ev => {
                         // Composer events join in P3.4.
                         if let Ok(ev) = ev {
-                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
+                            quick_fix.on_job_event(ev, &cfg, &style, &gui_for_worker);
                         }
                     }
                     recv(ticker) -> _ => {

@@ -6,6 +6,8 @@
 use crate::textjobs::{JobRequest, SharedEngine};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
+use vi_core::habits::{self, Dialect};
+use vi_core::style::{Scope, StyleStore};
 use vi_core::textjob::{FixEdit, JobFailure, TextJob, TextJobEvent, TextJobKind};
 use vi_core::{AppConfig, ForegroundContext};
 use vi_rewrite::{gector::Gector, quickfix::QuickFixEngine};
@@ -66,6 +68,8 @@ impl QuickFixFlow {
             target: ctx.clone(),
             max_output_tokens: 0,
             terms: if cfg.dictionary.enabled { cfg.dictionary.vocabulary.clone() } else { Vec::new() },
+            // Quick Fix runs no language model, so it takes no style block.
+            style_block: None,
             cancel: Default::default(),
         };
         if jobs.send((job, engine.clone())).is_err() {
@@ -75,10 +79,16 @@ impl QuickFixFlow {
     }
 
     /// A text-job event; anything that is not this flow's job is ignored.
-    pub fn on_job_event(&mut self, ev: TextJobEvent, cfg: &AppConfig, gui: &WinGuiHandle) {
+    pub fn on_job_event(&mut self, ev: TextJobEvent, cfg: &AppConfig, style: &StyleStore, gui: &WinGuiHandle) {
         match ev {
             TextJobEvent::QuickFixDone { id, text, edits } if self.is_pending(id) => {
                 let p = self.pending.take().expect("checked");
+                // A change that would undo a habit the user holds (a locked "British spelling", the spelling
+                // setting) is dropped here: it is never reviewed, never applied and never counted as accepted.
+                let offered = edits.len();
+                let edits = keep_edits(&p.captured.text, edits, style, cfg.dialect, Scope::for_category(p.ctx.category));
+                // The engine's text still holds the dropped changes, so rebuild it from the kept edits.
+                let text = if edits.len() == offered { text } else { apply_edits(&p.captured.text, &edits) };
                 if edits.is_empty() {
                     gui.quick_fix(QuickFixStage::LooksGood);
                 } else if !cfg.quick_fix_always_review && !p.captured.structured && edits.iter().all(|e| e.silent) {
@@ -146,6 +156,46 @@ fn plural(n: usize) -> String {
     format!("{n} change{}", if n == 1 { "" } else { "s" })
 }
 
+/// The edits that do not undo a habit the user holds.
+fn keep_edits(source: &str, edits: Vec<FixEdit>, store: &StyleStore, dialect: Dialect, scope: Scope) -> Vec<FixEdit> {
+    edits.into_iter().filter(|e| !conflicts_with_habits(source, e, store, dialect, scope)).collect()
+}
+
+fn conflicts_with_habits(source: &str, e: &FixEdit, store: &StyleStore, dialect: Dialect, scope: Scope) -> bool {
+    sentence_around(source, e)
+        .is_some_and(|(before, after)| habits::edit_conflicts_with_dialect(&before, &after, store, scope, dialect))
+}
+
+/// The sentence of `source` holding the edit, and that sentence with the edit applied: the habit check needs
+/// the whole sentence (the serial comma, a collective noun's verb), not just the changed word.
+fn sentence_around(source: &str, e: &FixEdit) -> Option<(String, String)> {
+    source.get(e.start..e.end)?;
+    let start = source.get(..e.start)?.rfind(|c: char| matches!(c, '.' | '!' | '?' | '\n')).map_or(0, |i| i + 1);
+    let end = source.get(e.end..)?.find(|c: char| matches!(c, '.' | '!' | '?' | '\n')).map_or(source.len(), |i| e.end + i + 1);
+    let mut after = String::with_capacity(end - start + e.replacement.len());
+    after.push_str(&source[start..e.start]);
+    after.push_str(&e.replacement);
+    after.push_str(&source[e.end..end]);
+    Some((source[start..end].to_string(), after))
+}
+
+/// `source` with `edits` applied; the silent path applies the kept ones only.
+fn apply_edits(source: &str, edits: &[FixEdit]) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut at = 0;
+    for e in edits {
+        let Some(gap) = source.get(at..e.start).filter(|_| e.start >= at) else { return source.to_string() };
+        out.push_str(gap);
+        out.push_str(&e.replacement);
+        at = e.end;
+    }
+    match source.get(at..) {
+        Some(rest) => out.push_str(rest),
+        None => return source.to_string(),
+    }
+    out
+}
+
 fn review_request(original: &str, edits: &[FixEdit], structured: bool) -> ReviewRequest {
     ReviewRequest {
         original: original.to_string(),
@@ -170,5 +220,22 @@ mod tests {
         assert!(review_request("x", &[e], true).note.is_some());
         assert_eq!(plural(1), "1 change");
         assert_eq!(plural(3), "3 changes");
+    }
+
+    #[test]
+    fn a_locked_habit_drops_its_own_edit_and_keeps_the_others() {
+        let mut s = StyleStore::default();
+        assert!(s.set_locked("dialect", Scope::Everywhere, "british", 1));
+        let source = "The colour of the sky. I has a cat.";
+        let spelling = FixEdit { start: 4, end: 10, replacement: "color".into(), label: "Spelling", silent: true };
+        let grammar = FixEdit { start: 25, end: 28, replacement: "have".into(), label: "Grammar", silent: false };
+        let kept = keep_edits(source, vec![spelling.clone(), grammar.clone()], &s, Dialect::Auto, Scope::Everywhere);
+        assert_eq!(kept, vec![grammar], "the spelling the user keeps is not changed");
+        assert_eq!(apply_edits(source, &kept), "The colour of the sky. I have a cat.");
+        // Without the habit, or with the other spelling chosen, the edit stands.
+        assert_eq!(keep_edits(source, vec![spelling.clone()], &StyleStore::default(), Dialect::Auto, Scope::Everywhere).len(), 1);
+        assert_eq!(keep_edits(source, vec![spelling.clone()], &s, Dialect::American, Scope::Everywhere).len(), 1);
+        // The spelling setting restrains on its own.
+        assert!(keep_edits(source, vec![spelling], &StyleStore::default(), Dialect::British, Scope::Everywhere).is_empty());
     }
 }

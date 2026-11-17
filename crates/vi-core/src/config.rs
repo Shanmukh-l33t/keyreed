@@ -1,5 +1,6 @@
 use crate::brand::PRODUCT_SLUG;
 use crate::dictionary::PersonalDictionary;
+use crate::habits::Dialect;
 use crate::types::{ActivationMode, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,9 @@ pub struct AppConfig {
     /// Learn words and habits from the corrections the user makes to KeyReed's own text (plan F3, P4.2).
     #[serde(default = "default_true")]
     pub learn_from_edits: bool,
+    /// Spelling the user asked for; `Auto` follows the learned dialect (plan P4.6).
+    #[serde(default)]
+    pub dialect: Dialect,
 }
 
 impl Default for AppConfig {
@@ -180,6 +184,7 @@ impl Default for AppConfig {
             dictionary: PersonalDictionary::default(),
             text_jobs_allow_cloud: false,
             learn_from_edits: true,
+            dialect: Dialect::Auto,
         }
     }
 }
@@ -325,8 +330,11 @@ mod tests {
         assert_eq!(cfg.local_asr_model, "parakeet-tdt-0.6b-v2-int8");
         // New 2.1 keys: cloud stays off for text jobs, learning stays on, and an older file keeps both defaults.
         assert!(!cfg.text_jobs_allow_cloud && cfg.learn_from_edits);
+        assert_eq!(cfg.dialect, Dialect::Auto, "spelling follows what is learned until the user picks one");
         let (old, dropped) = AppConfig::parse_lenient(r#"{"processing_profile": "max_privacy_offline"}"#);
-        assert!(dropped.is_empty() && !old.text_jobs_allow_cloud && old.learn_from_edits);
+        assert!(dropped.is_empty() && !old.text_jobs_allow_cloud && old.learn_from_edits && old.dialect == Dialect::Auto);
+        let (picked, _) = AppConfig::parse_lenient(r#"{"dialect": "british"}"#);
+        assert_eq!(picked.dialect, Dialect::British);
     }
 
     #[test]
