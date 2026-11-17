@@ -10,7 +10,7 @@ for t in windres dlltool x86_64-w64-mingw32-gcc; do
 done
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 cargo build --release -p vi-app
-E=target/release/keyreed.exe
+E="${CARGO_TARGET_DIR:-target}/release/keyreed.exe"
 # Smoke test with a stripped PATH: proves no developer toolchain is needed at runtime.
 env -i SystemRoot="${SYSTEMROOT:-C:\Windows}" PATH="/c/Windows/System32" "$E" --version
 # Imports must be system DLLs only (no msys/mingw runtime).
