@@ -459,6 +459,14 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // The Sounds group on the Microphone page, with the cue volume at its top step.
+    let mut loud = AppConfig::default();
+    loud.first_run_completed = true;
+    loud.audio_cue_volume = 100;
+    g.gui.sync(EngineState::Idle, 0.0, Some(loud));
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_AUDIO, 0);
+    pump_for(500);
+    g.shot_settings("settings_12_sounds", "Microphone page: cue choice, its own volume at 100 %, Play")?;
     // The Speech models page is taller than the window: the scrolled view must stay inside the content column,
     // and the Quick Fix grammar row sits at its end.
     vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);

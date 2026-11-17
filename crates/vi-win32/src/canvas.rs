@@ -73,8 +73,10 @@ impl Canvas {
     pub fn set_clip(&mut self, x: i32, y: i32, w: i32, h: i32) {
         let x0 = x.clamp(0, self.w);
         let y0 = y.clamp(0, self.h);
-        let x1 = (x + w).clamp(0, self.w);
-        let y1 = (y + h).clamp(0, self.h);
+        // A layout can hand over an empty or inverted box (a window narrower than the sidebar while it is being
+        // sized, a clipped pill). Normalise it: `clamp` panics when minimum > maximum, which aborted the app.
+        let x1 = x.saturating_add(w.max(0)).clamp(0, self.w).max(x0);
+        let y1 = y.saturating_add(h.max(0)).clamp(0, self.h).max(y0);
         self.clip = (x0, y0, x1, y1);
         unsafe {
             IntersectClipRect(self.dc, x0, y0, x1, y1);
@@ -105,10 +107,16 @@ impl Canvas {
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u32) {
         let p = colorref_to_px(c);
         let (cw, clip) = (self.w, self.clip);
+        if clip.2 <= clip.0 || clip.3 <= clip.1 {
+            return;
+        }
         let x0 = x.clamp(clip.0, clip.2);
-        let x1 = (x + w).clamp(clip.0, clip.2);
+        let x1 = x.saturating_add(w.max(0)).clamp(clip.0, clip.2).max(x0);
         let y0 = y.clamp(clip.1, clip.3);
-        let y1 = (y + h).clamp(clip.1, clip.3);
+        let y1 = y.saturating_add(h.max(0)).clamp(clip.1, clip.3).max(y0);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
         let buf = self.px();
         for yy in y0..y1 {
             let row = (yy * cw) as usize;
@@ -286,6 +294,21 @@ mod tests {
 
     fn px(cv: &Canvas, x: i32, y: i32) -> u32 {
         unsafe { *cv.bits.add((y * cv.w + x) as usize) }
+    }
+
+    /// The Settings window is painted while it is still being sized; a box narrower than the sidebar
+    /// produced an inverted clip and `clamp` aborted the process (seen in the wild, min > max).
+    #[test]
+    fn an_inverted_or_empty_clip_draws_nothing_instead_of_panicking() {
+        let mut cv = unsafe { Canvas::new(20, 10) }.expect("canvas");
+        cv.fill(rgb(0x10, 0x10, 0x10));
+        cv.set_clip(1, 0, -3, 5);
+        cv.rect(0, 0, 20, 10, rgb(0xFF, 0, 0));
+        cv.round_rect(0.0, 0.0, 20.0, 10.0, 3.0, rgb(0, 0xFF, 0), 1.0);
+        assert_eq!(px(&cv, 0, 0), colorref_to_px(rgb(0x10, 0x10, 0x10)), "nothing is painted through an empty clip");
+        cv.set_clip(0, 0, 0, 0);
+        cv.rect(0, 0, 20, 10, rgb(0xFF, 0, 0));
+        assert_eq!(px(&cv, 5, 5), colorref_to_px(rgb(0x10, 0x10, 0x10)));
     }
 
     #[test]

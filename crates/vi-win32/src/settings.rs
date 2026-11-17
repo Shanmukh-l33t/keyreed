@@ -20,7 +20,10 @@ use std::cell::RefCell;
 use std::time::Instant;
 use vi_core::brand::{PRODUCT_NAME, PRODUCT_TAGLINE, SETTINGS_WINDOW_CLASS, VERSION_STR};
 use vi_core::habits::Dialect;
-use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, MouseAction, OutputMode, ProcessingProfile, WritingMode};
+use vi_core::{
+    ActivationMode, AppConfig, AudioCueStyle, EngineState, HotkeySpec, MouseAction, OutputMode,
+    ProcessingProfile, WritingMode,
+};
 use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
@@ -118,6 +121,10 @@ const O_ASK: i32 = 503;
 const O_COPYLAST: i32 = 505;
 const A_MIC: i32 = 601;
 const A_TEST: i32 = 602;
+/// The "Sounds" group on the Microphone page: cue style, its own volume, and a Play button.
+const A_CUE: i32 = 605;
+const A_VOL: i32 = 606;
+const A_PLAY: i32 = 607;
 /// "Open privacy settings" under a failed or silent microphone test (shared by the Microphone page and setup).
 const MIC_PRIVACY: i32 = 604;
 const M_ACT: i32 = 700;
@@ -1697,10 +1704,37 @@ fn page_output(b: &mut Builder, m: &SharedUiModel) {
 
 fn page_audio(b: &mut Builder, m: &SharedUiModel) {
     b.title("Microphone", "Choose a microphone and check that KeyReed hears you clearly.");
+    let c = &m.config;
     b.section("Input device");
     b.group();
     let (items, sel) = mic_items(m);
     b.combo_row(A_MIC, "Microphone", "If it's unplugged, KeyReed switches to the Windows default.", C::Text2, items, sel, 300);
+    b.end_group();
+    b.section("Sounds");
+    b.group();
+    let styles: Vec<String> = AudioCueStyle::ALL.iter().map(|s| s.label().to_string()).collect();
+    let sel = AudioCueStyle::ALL.iter().position(|s| *s == c.audio_cue_style).unwrap_or(0);
+    b.combo_row(
+        A_CUE,
+        "Cue",
+        "A short tone when listening starts, a different one when the text is ready.",
+        C::Text2,
+        styles,
+        sel,
+        220,
+    );
+    // Steps of 5 %: fine enough to place the cue, and no slider control exists in this window.
+    let levels: Vec<String> = (0..=20).map(|i| format!("{} %", i * 5)).collect();
+    b.combo_row(
+        A_VOL,
+        "Cue volume",
+        "Moves only the cue. Your microphone and playback volume stay as they are.",
+        C::Text2,
+        levels,
+        (c.audio_cue_volume.min(100) / 5) as usize,
+        220,
+    );
+    b.button_row(A_PLAY, "Hear it", "Plays the cue now, at this volume.", "Play", BtnStyle::Secondary);
     b.end_group();
     b.section("Test");
     mic_test_block(b, m, A_TEST);
@@ -3108,6 +3142,15 @@ fn on_command(id: i32, code: u32) {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
         }
+        (A_CUE, _, CBN_SELCHANGE) => {
+            let s = AudioCueStyle::ALL.get(combo_sel(A_CUE)).copied().unwrap_or_default();
+            commit(|c| c.audio_cue_style = s)
+        }
+        (A_VOL, _, CBN_SELCHANGE) => {
+            let v = (combo_sel(A_VOL) * 5).min(100) as u8;
+            commit(|c| c.audio_cue_volume = v)
+        }
+        (A_PLAY, true, _) => send(UiAction::PreviewAudioCue),
         (D_HOTKEY, true, _) | (D_QF_KEY, true, _) | (D_VOICE_KEY, true, _) | (D_COMPOSER_KEY, true, _) => {
             start_capture(id)
         }

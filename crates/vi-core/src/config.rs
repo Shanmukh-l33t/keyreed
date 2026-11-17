@@ -114,6 +114,44 @@ impl MouseAction {
     }
 }
 
+/// The start/stop cue the user picked. Each style is a short, quiet pair generated in memory, so there are no
+/// sound files and nothing to install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCueStyle {
+    /// The original low sine pair (660 Hz start, 880 Hz stop).
+    #[default]
+    Soft,
+    /// Two notes a fifth apart, the second one leading: brighter, still quiet.
+    Bright,
+    /// Two struck notes that ring out gently.
+    Chime,
+    /// A few milliseconds of tick: the least noticeable cue.
+    Click,
+    /// No cue at all, without turning recording sounds off for anything else.
+    None,
+}
+
+impl AudioCueStyle {
+    pub const ALL: [AudioCueStyle; 5] = [
+        AudioCueStyle::Soft,
+        AudioCueStyle::Bright,
+        AudioCueStyle::Chime,
+        AudioCueStyle::Click,
+        AudioCueStyle::None,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioCueStyle::Soft => "Soft",
+            AudioCueStyle::Bright => "Bright",
+            AudioCueStyle::Chime => "Chime",
+            AudioCueStyle::Click => "Click",
+            AudioCueStyle::None => "None",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub schema_version: u32,
@@ -165,7 +203,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub pill_click_action: PillClickAction,
     /// Play subtle non-intrusive earcon tones on start/ready/error.
-    pub audio_cues_enabled: bool,
+        pub audio_cues_enabled: bool,
+    /// Which cue pair, and its own volume: it never touches system or dictation audio.
+    #[serde(default)]
+    pub audio_cue_style: AudioCueStyle,
+    #[serde(default = "default_audio_cue_volume")]
+    pub audio_cue_volume: u8,
     /// Show subtle completion notification when clipboard text is ready.
     pub notify_on_ready: bool,
     /// Unload heavy local models after N seconds of inactivity (0 = keep warm in RAM).
@@ -223,6 +266,8 @@ impl Default for AppConfig {
             show_floating_mic: true,
             pill_click_action: PillClickAction::Dictate,
             audio_cues_enabled: true,
+            audio_cue_style: AudioCueStyle::Soft,
+            audio_cue_volume: default_audio_cue_volume(),
             notify_on_ready: true,
             idle_unload_seconds: 300,
             inference_threads: 4,
@@ -241,6 +286,11 @@ impl Default for AppConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// Loud enough to notice, quiet enough not to startle: the cue's designed peak at 100 %.
+fn default_audio_cue_volume() -> u8 {
+    40
 }
 
 fn default_quick_fix_hotkey() -> HotkeySpec {
@@ -374,6 +424,24 @@ mod tests {
         let reloaded = AppConfig::load_or_default(&path);
         assert_eq!(reloaded.local_asr_model, "moonshine-base-en-int8");
         assert!(dir.path().join("config.invalid.json").exists(), "original kept for the user");
+    }
+
+    #[test]
+    fn audio_cue_style_and_volume_default_and_parse_leniently() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.audio_cue_style, AudioCueStyle::Soft);
+        assert_eq!(cfg.audio_cue_volume, 40);
+        // A file written before the cue styles existed keeps both defaults.
+        let (old, dropped) = AppConfig::parse_lenient(r#"{"audio_cues_enabled": true}"#);
+        assert!(dropped.is_empty());
+        assert_eq!((old.audio_cue_style, old.audio_cue_volume), (AudioCueStyle::Soft, 40));
+        let (picked, dropped) = AppConfig::parse_lenient(r#"{"audio_cue_style": "chime", "audio_cue_volume": 100}"#);
+        assert!(dropped.is_empty());
+        assert_eq!((picked.audio_cue_style, picked.audio_cue_volume), (AudioCueStyle::Chime, 100));
+        // A style this version does not know is dropped; the rest of the file still loads.
+        let (bad, dropped) = AppConfig::parse_lenient(r#"{"audio_cue_style": "theremin", "audio_cue_volume": 65}"#);
+        assert_eq!(dropped, vec!["audio_cue_style".to_string()]);
+        assert_eq!((bad.audio_cue_style, bad.audio_cue_volume), (AudioCueStyle::Soft, 65));
     }
 
     #[test]

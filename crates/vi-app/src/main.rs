@@ -28,7 +28,7 @@ use vi_audio::{list_input_devices, load_wav_16k_mono, ActiveCapture};
 use vi_core::style::{LearnState, LoadOutcome, StyleStore};
 use vi_core::{
     brand::{AUTOSTART_REG_VALUE, PRODUCT_NAME, PRODUCT_TAGLINE, SINGLE_INSTANCE_MUTEX, VERSION_STR},
-    AppCategory, AppConfig, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
+    AppCategory, AppConfig, AudioCueStyle, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
     HotkeySpec, MouseAction, PipelineMetrics, PipelineResult, PttAction, PttController, WritingMode,
 };
 use vi_rewrite::{slm::LlamaServerSupervisor, RewriteEngine};
@@ -953,36 +953,36 @@ impl InferenceSupervisor {
     }
 }
 
-/// The start/stop cue: queued to the default output device and never waited on, so the coordinator
-/// is not held for it and it does not depend on the system beep driver being present.
-fn play_subtle_earcon(enabled: bool, is_start: bool) {
-    if !enabled {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
-        static TONES: std::sync::OnceLock<(Vec<u8>, Vec<u8>)> = std::sync::OnceLock::new();
-        // Both live for the process, which SND_MEMORY | SND_ASYNC requires while the tone plays.
-        let (start, stop) = TONES.get_or_init(|| (tone_wav(660.0), tone_wav(880.0)));
-        let wav = if is_start { start } else { stop };
-        unsafe {
-            PlaySoundW(
-                wav.as_ptr() as *const u16,
-                std::ptr::null_mut(),
-                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
-            );
-        }
+/// A note of a cue: frequency in Hz, length in ms, and whether it rings out like a struck chime.
+#[cfg(windows)]
+type Note = (f32, u32, bool);
+
+/// The two halves of a style's cue: start (listening) and stop (text ready). Short and quiet by design,
+/// and consonant: a fifth or a fourth, never a bare high beep.
+#[cfg(windows)]
+fn cue_notes(style: AudioCueStyle, is_start: bool) -> &'static [Note] {
+    match (style, is_start) {
+        (AudioCueStyle::Soft, true) => &[(660.0, 40, false)],
+        (AudioCueStyle::Soft, false) => &[(880.0, 40, false)],
+        (AudioCueStyle::Bright, true) => &[(784.0, 32, false), (1175.0, 32, false)],
+        (AudioCueStyle::Bright, false) => &[(1175.0, 32, false), (784.0, 32, false)],
+        (AudioCueStyle::Chime, true) => &[(784.0, 120, true), (1047.0, 200, true)],
+        (AudioCueStyle::Chime, false) => &[(1047.0, 120, true), (784.0, 200, true)],
+        (AudioCueStyle::Click, true) => &[(2400.0, 8, false)],
+        (AudioCueStyle::Click, false) => &[(1800.0, 8, false)],
+        (AudioCueStyle::None, _) => &[],
     }
 }
 
-/// 40 ms sine with 5 ms fades as a mono 16-bit 44.1 kHz WAV: what `PlaySoundW` reads from memory.
+/// One cue as a mono 16-bit 44.1 kHz WAV: what `PlaySoundW` reads from memory. `volume` (0-100) scales the
+/// samples, so the cue carries its own level and no other audio is touched.
 #[cfg(windows)]
-fn tone_wav(freq: f32) -> Vec<u8> {
+fn cue_wav(style: AudioCueStyle, is_start: bool, volume: u8) -> Vec<u8> {
     const RATE: u32 = 44_100;
-    const FRAMES: u32 = RATE * 40 / 1000;
     const FADE: u32 = RATE * 5 / 1000;
-    let data_len = FRAMES * 2;
+    let notes = cue_notes(style, is_start);
+    let data_len: u32 = notes.iter().map(|n| RATE * n.1 / 1000 * 2).sum();
+    let peak = 0.28 * volume.min(100) as f32 / 100.0;
     let mut wav = Vec::with_capacity(44 + data_len as usize);
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36 + data_len).to_le_bytes());
@@ -996,10 +996,15 @@ fn tone_wav(freq: f32) -> Vec<u8> {
     wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_len.to_le_bytes());
-    for i in 0..FRAMES {
-        let ramp = i.min(FRAMES - 1 - i).min(FADE) as f32 / FADE as f32;
-        let s = (std::f32::consts::TAU * freq * i as f32 / RATE as f32).sin() * ramp * 0.28;
-        wav.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+    for &(freq, ms, rings) in notes {
+        let frames = RATE * ms / 1000;
+        for i in 0..frames {
+            let ramp = i.min(frames - 1 - i).min(FADE) as f32 / FADE as f32;
+            // A struck note loses most of its level over its own length; a plain tone holds it.
+            let decay = if rings { (-4.0 * i as f32 / frames as f32).exp() } else { 1.0 };
+            let s = (std::f32::consts::TAU * freq * i as f32 / RATE as f32).sin() * ramp * decay * peak;
+            wav.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+        }
     }
     wav
 }
@@ -1018,6 +1023,45 @@ fn claims_a_session(state: &EngineState) -> bool {
 /// No frame since the press, or nothing but silence in the latest callback.
 fn capture_has_no_audio(first_frame_ms: f64, rms: f32) -> bool {
     first_frame_ms <= 0.0 || rms <= 0.0
+}
+
+/// The buffer for one cue, built once per style, side and volume the user has actually tried. It lives for
+/// the process because `SND_MEMORY | SND_ASYNC` reads it while the cue plays.
+#[cfg(windows)]
+fn cue_buffer(style: AudioCueStyle, is_start: bool, volume: u8) -> &'static [u8] {
+    type Key = (AudioCueStyle, bool, u8);
+    static BUFFERS: std::sync::Mutex<Vec<(Key, &'static [u8])>> = std::sync::Mutex::new(Vec::new());
+    let key = (style, is_start, volume.min(100));
+    let mut buffers = BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, wav)) = buffers.iter().find(|(k, _)| *k == key) {
+        return wav;
+    }
+    let wav: &'static [u8] = Box::leak(cue_wav(key.0, key.1, key.2).into_boxed_slice());
+    buffers.push((key, wav));
+    wav
+}
+
+/// The start/stop cue: queued to the default output device and never waited on, so the coordinator
+/// is not held for it and it does not depend on the system beep driver being present. `force` plays it
+/// from the Settings "Play" button even while cues are switched off.
+fn play_subtle_earcon(cfg: &AppConfig, is_start: bool, force: bool) {
+    if !(cfg.audio_cues_enabled || force) || cfg.audio_cue_style == AudioCueStyle::None {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        let wav = cue_buffer(cfg.audio_cue_style, is_start, cfg.audio_cue_volume);
+        unsafe {
+            PlaySoundW(
+                wav.as_ptr() as *const u16,
+                std::ptr::null_mut(),
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = is_start;
 }
 
 fn parse_mode_str(s: &str) -> WritingMode {
@@ -2597,6 +2641,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 let _ = cfg.save_atomic(&cfg_path);
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                             }
+                            // Settings "Play": the same cue the next recording start will use.
+                            Ok(UiAction::PreviewAudioCue) => play_subtle_earcon(&cfg, true, true),
                             Ok(UiAction::SaveUpdatedConfig { mut new_cfg, mut new_plaintext_api_key }) => {
                                 if let Some(ref mut key) = new_plaintext_api_key {
                                     if let Ok(enc) = dpapi_encrypt_to_b64(key) {
@@ -2822,7 +2868,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
                                 // The cue goes out before the work that is not on the audio path.
-                                play_subtle_earcon(cfg.audio_cues_enabled, true);
+                                play_subtle_earcon(&cfg, true, false);
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                                 let t_fg = Instant::now();
                                 let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
@@ -2910,7 +2956,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         // Dictation is delivered below; a closed Composer or silence puts it nowhere.
                                         _ => {}
                                     }
-                                    play_subtle_earcon(cfg.audio_cues_enabled, false);
+                                    play_subtle_earcon(&cfg, false, false);
                                     ptt.transition_to_idle();
                                     gui_for_worker.sync(EngineState::Idle, 0.0, None);
                                 }
@@ -2936,7 +2982,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     ptt.transition_to_ready();
                                     gui_for_worker.set_outcome(outcome.clone());
                                     gui_for_worker.sync(EngineState::ReadyToPaste, 0.0, None);
-                                    play_subtle_earcon(cfg.audio_cues_enabled, false);
+                                    play_subtle_earcon(&cfg, false, false);
 
                                     if history.enabled {
                                         history.record(HistoryEntry {
@@ -3275,20 +3321,63 @@ mod watchdog_tests {
 mod earcon_tests {
     use super::*;
 
-    /// The cue only plays if winmm accepts the buffer: check the WAV it is given and ask winmm.
+    fn le16(wav: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([wav[at], wav[at + 1]])
+    }
+    fn le32(wav: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]])
+    }
+
+    /// Every style is a valid mono 16-bit WAV whose body matches its header, short enough to stay subtle, and
+    /// different from every other style: that is what makes the choice audible.
     #[test]
-    fn tone_is_a_40ms_wav_the_sound_api_accepts() {
-        let wav = tone_wav(660.0);
-        let be16 = |at: usize| u16::from_le_bytes([wav[at], wav[at + 1]]);
-        let be32 = |at: usize| u32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]]);
-        assert_eq!(&wav[0..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        assert_eq!(be16(20), 1, "PCM");
-        assert_eq!(be16(22), 1, "mono");
-        assert_eq!(be32(24), 44_100);
-        assert_eq!(be16(34), 16);
-        assert_eq!(wav.len(), 44 + 44_100 * 40 / 1000 * 2);
-        assert_eq!(be16(44), 0, "the tone has to fade in");
+    fn every_style_is_a_valid_wav_of_its_own_length() {
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        for style in AudioCueStyle::ALL {
+            for is_start in [true, false] {
+                let wav = cue_wav(style, is_start, 100);
+                assert_eq!(&wav[0..4], b"RIFF");
+                assert_eq!(&wav[8..12], b"WAVE");
+                assert_eq!(le16(&wav, 20), 1, "PCM");
+                assert_eq!(le16(&wav, 22), 1, "mono");
+                assert_eq!(le32(&wav, 24), 44_100);
+                assert_eq!(le16(&wav, 34), 16);
+                let declared = le32(&wav, 40) as usize;
+                assert_eq!(wav.len(), 44 + declared, "the body matches the header");
+                let expected: usize =
+                    cue_notes(style, is_start).iter().map(|n| (44_100 * n.1 / 1000 * 2) as usize).sum();
+                assert_eq!(declared, expected, "{style:?} start={is_start}");
+                assert!(declared <= 44_100, "a cue stays under half a second ({style:?})");
+                if declared == 0 {
+                    continue;
+                }
+                assert_eq!(le16(&wav, 44), 0, "the cue fades in, so it never starts with a click");
+                assert!(
+                    !seen.iter().any(|old| old[44..] == wav[44..]),
+                    "{style:?} start={is_start} is a copy of another cue"
+                );
+                seen.push(wav);
+            }
+        }
+    }
+
+    /// The setting scales the samples only: 0 is silent, 100 is the cue's designed peak, and the steps in
+    /// between rise. winmm has to accept the buffer or the cue would be silent on the real device.
+    #[test]
+    fn volume_scales_the_cue_from_silent_to_full_and_winmm_accepts_it() {
+        let peak = |v: u8| -> u16 {
+            let wav = cue_wav(AudioCueStyle::Soft, true, v);
+            wav[44..]
+                .chunks(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let full = 0.28 * i16::MAX as f32;
+        assert_eq!(peak(0), 0, "0 % is silent");
+        assert!((peak(100) as f32 - full).abs() < 40.0, "100 % is the cue's designed peak");
+        assert!(peak(25) < peak(50) && peak(50) < peak(75) && peak(75) < peak(100), "volume rises");
+        let wav = cue_wav(AudioCueStyle::Soft, true, 100);
         let played = unsafe {
             windows_sys::Win32::Media::Audio::PlaySoundW(
                 wav.as_ptr() as *const u16,
@@ -3301,15 +3390,27 @@ mod earcon_tests {
         assert_ne!(played, 0, "winmm rejected the generated WAV (the cue would be silent)");
     }
 
+    /// What the coordinator plays is the style and volume in the config, built once and then reused.
+    #[test]
+    fn the_configured_style_and_volume_reach_the_played_buffer() {
+        let mut cfg = AppConfig::default();
+        cfg.audio_cue_style = AudioCueStyle::Chime;
+        cfg.audio_cue_volume = 100;
+        let played = cue_buffer(cfg.audio_cue_style, true, cfg.audio_cue_volume);
+        assert_eq!(played, &cue_wav(AudioCueStyle::Chime, true, 100)[..]);
+        assert_eq!(played.as_ptr(), cue_buffer(AudioCueStyle::Chime, true, 100).as_ptr());
+    }
+
     /// The cue must cost the press path nothing: it is queued, not played to completion. The first
-    /// call also loads winmm, which is why it is measured separately.
+    /// call also builds the buffer and loads winmm, which is why it is measured separately.
     #[test]
     fn start_cue_does_not_block() {
+        let cfg = AppConfig::default();
         let t = Instant::now();
-        play_subtle_earcon(true, true);
+        play_subtle_earcon(&cfg, true, false);
         let first = t.elapsed();
         let t = Instant::now();
-        play_subtle_earcon(true, true);
+        play_subtle_earcon(&cfg, true, false);
         assert!(
             t.elapsed() < Duration::from_millis(15),
             "the cue blocked the coordinator (first call {first:?})"

@@ -55,6 +55,8 @@ pub enum UiAction {
     ToggleAutoContext,
     SetProcessingProfile(ProcessingProfile),
     ToggleFloatingMicVisible,
+    /// The Settings "Play" button: sound the selected cue now, at the selected volume.
+    PreviewAudioCue,
     SavePillPosition(i32, i32),
     SaveUpdatedConfig {
         new_cfg: Box<AppConfig>,
