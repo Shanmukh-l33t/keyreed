@@ -104,6 +104,26 @@ pub const QWEN35_GGUF_NAME: &str = "Qwen3.5-0.8B-Q4_K_M.gguf";
 pub const QWEN35_GGUF_SIZE: u64 = 532_517_120;
 pub const QWEN35_GGUF_SHA256: &str = "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517";
 
+/// A pinned writing-model weight file: only these exact names, sizes and hashes are loaded.
+#[derive(Debug, Clone, Copy)]
+pub struct GgufPin {
+    pub name: &'static str,
+    pub size: u64,
+    pub sha256: &'static str,
+}
+
+/// Qwen3.5 Q4_K_M files (Apache-2.0), figures from the Hugging Face file listing of the
+/// `unsloth/Qwen3.5-*-GGUF` repositories at the revisions in `catalog::WRITING_MODELS`.
+pub const GGUF_PINS: &[GgufPin] = &[
+    GgufPin { name: QWEN35_GGUF_NAME, size: QWEN35_GGUF_SIZE, sha256: QWEN35_GGUF_SHA256 },
+    GgufPin { name: "Qwen3.5-2B-Q4_K_M.gguf", size: 1_280_835_840, sha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223" },
+    GgufPin { name: "Qwen3.5-4B-Q4_K_M.gguf", size: 2_740_937_888, sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4" },
+];
+
+pub fn gguf_pin(file_name: &str) -> Option<&'static GgufPin> {
+    GGUF_PINS.iter().find(|p| p.name.eq_ignore_ascii_case(file_name))
+}
+
 pub fn pins_for(model_id: &str) -> Option<&'static [FilePin]> {
     let pins = match model_id {
         "parakeet-tdt-0.6b-v2-int8" | "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8" => PARAKEET_V2,
@@ -220,13 +240,10 @@ pub fn verify_silero(path: &Path) -> Result<()> {
 
 pub fn verify_gguf(path: &Path) -> Result<()> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if !name.eq_ignore_ascii_case(QWEN35_GGUF_NAME) {
+    let Some(pin) = gguf_pin(name) else {
         bail!("refusing unpinned weight file {}", path.display());
-    }
-    verify_named_files(
-        path.parent().unwrap_or_else(|| Path::new(".")),
-        &[(name, QWEN35_GGUF_SIZE, QWEN35_GGUF_SHA256)],
-    )
+    };
+    verify_named_files(path.parent().unwrap_or_else(|| Path::new(".")), &[(name, pin.size, pin.sha256)])
 }
 
 fn rejected_root(models_root: &Path) -> PathBuf {
@@ -445,6 +462,27 @@ pub fn install_verified_archive(archive: &Path, models_root: &Path, model_id: &s
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_listed_weight_files_pass_and_an_altered_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("kr-gguf-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["Qwen3.5-2B-Q4_K_M.gguf", "qwen3.5-4b-q4_k_m.GGUF", "Qwen3.5-0.8B-Q4_K_M.gguf"] {
+            assert!(gguf_pin(name).is_some(), "{name}");
+        }
+        // A listed name with the wrong content is refused (the size differs, so nothing is hashed).
+        for name in ["Qwen3.5-2B-Q4_K_M.gguf", "Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5-0.8B-Q4_K_M.gguf"] {
+            fs::write(dir.join(name), b"not the real weights").unwrap();
+            assert!(verify_gguf(&dir.join(name)).is_err(), "{name}");
+        }
+        // An unlisted name is refused before the file is read.
+        fs::write(dir.join("Qwen3.5-9B-Q4_K_M.gguf"), b"x").unwrap();
+        let e = verify_gguf(&dir.join("Qwen3.5-9B-Q4_K_M.gguf")).unwrap_err().to_string();
+        assert!(e.contains("unpinned"));
+        assert!(verify_gguf(&dir.join("missing.gguf")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn grammar_model_is_pinned_with_its_licence_and_kept_out_of_speech_models() {
