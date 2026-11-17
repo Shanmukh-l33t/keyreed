@@ -13,7 +13,7 @@ use crate::canvas::{rgb, text_width, Canvas, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT
 use crate::overlay::scaled_icon;
 use crate::ui::win_gui::{brand_hicon, globals, send, to_wide, ui_font_face};
 use crate::ui::{
-    asr_ui_info, friendly_error, hotkey_conflict, hotkey_presets, DownloadStage, MicVerdict,
+    asr_ui_info, friendly_error, hotkey_conflict, hotkey_presets, DownloadStage, ErrorFix, MicVerdict, ReadyOutcome,
     SharedUiModel, UiAction, ASR_UI_CATALOG,
 };
 use std::cell::RefCell;
@@ -90,13 +90,29 @@ const D_QF_KEY: i32 = 305;
 const D_QF_REVIEW: i32 = 306;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
+/// The "Edit" button of the personal dictionary row on the Writing page.
 const W_VOCAB: i32 = 411;
+// Personal dictionary editor: one Term field, one Sounds like field and one Remove button per visible row.
+const V_TERM: i32 = 1100;
+const V_SOUND: i32 = 1110;
+const V_DEL: i32 = 1120;
+const V_ADD: i32 = 1130;
+const V_DONE: i32 = 1131;
+const V_PREV: i32 = 1132;
+const V_NEXT: i32 = 1133;
+/// Visible rows per page of the dictionary editor.
+const DICT_ROWS: usize = 8;
+const DICT_MAX_TERMS: usize = 500;
+const DICT_MAX_TERM_CHARS: usize = 64;
+const DICT_MAX_SOUNDS_CHARS: usize = 400;
 const O_TYPE: i32 = 501;
 const O_CLIP: i32 = 502;
 const O_ASK: i32 = 503;
 const O_COPYLAST: i32 = 505;
 const A_MIC: i32 = 601;
 const A_TEST: i32 = 602;
+/// "Open privacy settings" under a failed or silent microphone test (shared by the Microphone page and setup).
+const MIC_PRIVACY: i32 = 604;
 const M_ACT: i32 = 700;
 const P_PROF: i32 = 800;
 const P_KEY: i32 = 810;
@@ -126,6 +142,11 @@ const S_NEXT: i32 = 1011;
 const S_SKIP: i32 = 1012;
 
 const IDT_SAVED: usize = 9001;
+/// One-shot: how long the finished model step shows "ready" before setup moves on.
+const IDT_ADVANCE: usize = 9003;
+const ADVANCE_MS: u32 = 700;
+/// Posted when a dictionary field loses focus; the commit runs once focus has settled.
+const WM_DICT_COMMIT: u32 = WM_APP + 1;
 const WM_MOUSELEAVE_U: u32 = 0x02A3;
 
 // ------------------------------------------------------------------------------------------------
@@ -160,6 +181,10 @@ pub(crate) struct Theme {
     pub(crate) track: u32,
     pub(crate) disabled_bg: u32,
     pub(crate) focus: u32,
+    /// Keyboard focus ring on controls (emerald); `focus` (the text colour) remains for high contrast.
+    pub(crate) focus_ring: u32,
+    /// "Working" hue (transcribing, downloading): teal, so amber stays reserved for "needs attention".
+    pub(crate) working: u32,
     pub(crate) hc: bool,
 }
 
@@ -239,6 +264,8 @@ pub(crate) fn theme() -> Theme {
                 track: gray,
                 disabled_bg: win,
                 focus: txt,
+                focus_ring: txt,
+                working: txt,
                 hc: true,
             };
         }
@@ -272,6 +299,8 @@ pub(crate) fn theme() -> Theme {
             track: rgb(0x3A, 0x4B, 0x42),
             disabled_bg: rgb(0x14, 0x1E, 0x19),
             focus: rgb(0xE8, 0xF1, 0xEC),
+            focus_ring: rgb(0x34, 0xD3, 0x99),
+            working: rgb(0x2D, 0xD4, 0xBF),
             hc: false,
         };
     }
@@ -302,6 +331,8 @@ pub(crate) fn theme() -> Theme {
         track: rgb(0xD8, 0xE1, 0xDC),
         disabled_bg: rgb(0xEF, 0xF2, 0xF0),
         focus: rgb(0x0E, 0x1A, 0x14),
+        focus_ring: rgb(0x04, 0x78, 0x57),
+        working: rgb(0x0F, 0x76, 0x6E),
         hc: false,
     }
 }
@@ -420,6 +451,7 @@ enum C {
     Warn,
     Err,
     Ok,
+    Working,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -586,7 +618,8 @@ impl Builder {
     }
 
     fn toggle_row(&mut self, id: i32, label: &str, desc: &str, on: bool, enabled: bool) {
-        let w = 96;
+        // Just the switch: its position and fill show the state (the accessible name still says On or Off).
+        let w = 52;
         let wrap = desc.chars().count() as i32 * 6 > CW - 2 * PAD - w - 20;
         let (y0, h) = self.row_ex(label, desc, C::Text2, w, wrap);
         self.ctrl(id, Kind::Toggle { on }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &format!("{label}: {}", if on { "On" } else { "Off" }));
@@ -686,6 +719,16 @@ thread_local! {
     static CAPTURE: RefCell<Option<(i32, ShortcutCapture)>> = const { RefCell::new(None) };
     /// Why the last captured chord was refused; shown under that row until the next capture.
     static SHORTCUT_REFUSAL: RefCell<Option<(i32, String)>> = const { RefCell::new(None) };
+    /// Setup step 4: the practice box holds text (a dictation arrived).
+    static PRACTICE_HEARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Setup step 4: why the last practice attempt produced nothing (0 none, 1 nothing heard, 3 failed).
+    static PRACTICE_NOTE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// The step-3 "Ready" beat is already counting down to the next step.
+    static ADVANCE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Writing page: `Some(page)` while the personal dictionary editor is open, showing that page of rows.
+    static VOCAB_VIEW: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// The dictionary editor shows one blank row at the end for a new term.
+    static VOCAB_DRAFT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Window DPI, honouring the gallery's scale override.
@@ -902,6 +945,8 @@ fn navigate(page: usize) {
             if st.page != page {
                 st.page = page;
                 st.scroll = 0;
+                VOCAB_VIEW.with(|v| v.set(None));
+                VOCAB_DRAFT.with(|v| v.set(false));
                 changed = true;
                 if page != PAGE_START {
                     st.last_page = page;
@@ -941,8 +986,10 @@ fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>
         _ => page_about(&mut b, m),
     }
     if page != PAGE_START {
-        let (s, c) = if saved { ("Saved", C::Accent) } else { ("Changes save automatically", C::Text3) };
-        b.text(r(X0, WIN_H - 34, CW, 18), s, F::Caption, c, DT_SINGLELINE | DT_RIGHT);
+        // Only said when something was saved; changes always apply at once, so there is nothing to remind the user of.
+        if saved {
+            b.text(r(X0, WIN_H - 34, CW, 18), "Saved", F::Caption, C::Accent, DT_SINGLELINE | DT_RIGHT);
+        }
     }
     (b.items, b.ctrls)
 }
@@ -1014,14 +1061,18 @@ fn mic_test_block(b: &mut Builder, m: &SharedUiModel, test_id: i32) {
     b.text(r(X0 + PAD + (CW - 2 * PAD) / 2 - 60, y + 80, 120, 16), "Good", F::Caption, C::Text3, DT_SINGLELINE | DT_CENTER);
     b.text(r(X0 + CW - PAD - 120, y + 80, 120, 16), "Too loud", F::Caption, C::Text3, DT_SINGLELINE | DT_RIGHT);
     let mut h = 106;
+    // Windows can hand desktop apps silence when microphone privacy is off; one click opens that page.
+    let privacy_button = |b: &mut Builder, y: i32| {
+        let label = "Open privacy settings";
+        b.ctrl(MIC_PRIVACY, Kind::Button { style: BtnStyle::Secondary, label: label.into() }, r(X0 + PAD, y, button_width(label), 32), Bg::Surface, "Open Windows microphone privacy settings");
+        b.last_ctrl().tip = Some("Turn on \u{201C}Let desktop apps access your microphone\u{201D} in Windows Settings.".into());
+    };
     if let Some(e) = &t.error {
-        b.items.push(Item::Banner {
-            r: r(X0 + PAD, y + 104, CW - 2 * PAD, 52),
-            tone: Tone::Err,
-            title: "Couldn't open the microphone".into(),
-            body: friendly_error(e).message.into(),
-        });
-        h = 168;
+        let fe = friendly_error(e);
+        let body = if fe.fix == ErrorFix::Microphone { "Check it's connected, and turn on \u{201C}Let desktop apps access your microphone\u{201D}." } else { fe.message };
+        b.items.push(Item::Banner { r: r(X0 + PAD, y + 104, CW - 2 * PAD, 52), tone: Tone::Err, title: "Couldn't open the microphone".into(), body: body.into() });
+        privacy_button(b, y + 164);
+        h = 208;
     } else if let Some(v) = t.verdict {
         let tone = match v {
             MicVerdict::Good => Tone::Ok,
@@ -1038,9 +1089,19 @@ fn mic_test_block(b: &mut Builder, m: &SharedUiModel, test_id: i32) {
         );
         b.text(r(X0 + PAD, y + 162, CW - 2 * PAD, 16), detail, F::Caption, C::Text3, DT_SINGLELINE | DT_END_ELLIPSIS);
         h = 188;
+        if v == MicVerdict::Silent {
+            privacy_button(b, y + 186);
+            h = 230;
+        }
     }
     b.y = y + h;
     b.end_group();
+}
+
+/// The quiet line at the foot of the setup steps that handle the microphone and the model.
+fn privacy_line(b: &mut Builder) {
+    b.items.push(Item::Glyph { r: r(X0, WIN_H - 49, 16, 18), ch: '\u{E72E}', font: F::IconSmall, color: C::Text3 });
+    b.text(r(X0 + 22, WIN_H - 49, CW - 282, 18), "Speech is processed on this PC.", F::Caption, C::Text3, DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
@@ -1048,9 +1109,12 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
     b.text(r(X0, b.y, CW, 18), format!("Setup · step {} of 4", step + 1), F::CaptionSemi, C::Text2, DT_SINGLELINE);
     b.items.push(Item::Steps { r: r(X0, b.y + 24, CW, 4), current: step, total: 4 });
     b.y += 44;
+    let downloading = m.download.as_ref().is_some_and(|d| d.is_active());
+    let toggle = m.config.activation_mode == ActivationMode::ToggleToTalk;
     match step {
         0 => {
-            b.title("Welcome to KeyReed", "Talk instead of type, in any app. Speech is turned into text on this PC.");
+            let how = if toggle { format!("Press {hk}, speak, press again.") } else { format!("Hold {hk}, speak, let go.") };
+            b.title("Welcome to KeyReed", &format!("{how} KeyReed types it wherever your cursor is."));
             let w = (CW - 24) / 3;
             let y = b.y;
             let cards: [(&str, &str); 3] = [
@@ -1077,21 +1141,31 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             b.combo_row(S_HOTKEY, "Push-to-talk shortcut", &note, nc, items, sel, 220);
             b.end_group();
             activation_choices(b, m, S_HOLD, S_TOGGLE);
+            // Next starts the one-time download, so say so (and how big it is) before the user presses it.
+            if !m.active_model_ready() && !downloading {
+                let mb = ASR_UI_CATALOG[0].download_mb;
+                b.text(r(X0, b.y, CW, 18), format!("Next downloads the speech engine to this PC, once ({mb} MB)."), F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
             b.ctrl(S_SKIP, Kind::Button { style: BtnStyle::Subtle, label: "Skip setup".into() }, r(X0, WIN_H - 56, 110, 32), Bg::Content, "Skip setup");
             b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: "Next".into() }, r(X0 + CW - 120, WIN_H - 56, 120, 32), Bg::Content, "Next");
         }
         1 => {
-            b.title("Check your microphone", "Pick the microphone you'll speak into, then run a quick test.");
+            let lead = if toggle { format!("KeyReed listens only between your two presses of {hk}.") } else { format!("KeyReed listens only while you hold {hk}.") };
+            b.title("Let KeyReed hear you", &lead);
             b.group();
             let (items, sel) = mic_items(m);
-            b.combo_row(S_MIC, "Microphone", "If it's unplugged, KeyReed uses the Windows default.", C::Text2, items, sel, 300);
+            b.combo_row(S_MIC, "Microphone", "If it's unplugged, KeyReed uses the Windows default", C::Text2, items, sel, 300);
             b.end_group();
             mic_test_block(b, m, S_TEST);
+            privacy_line(b);
             nav_buttons(b, "Next");
         }
         2 => {
-            b.title("Get the speech engine", "KeyReed turns speech into text on your PC. It's a one-time download.");
-            let id = if m.active_model_ready() { m.config.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
+            let ready = m.active_model_ready();
+            let id = if ready { m.config.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
+            let mb = asr_ui_info(&id).map_or(ASR_UI_CATALOG[0].download_mb, |i| i.download_mb);
+            let lead = if ready { "The speech engine is ready.".to_string() } else { format!("Downloading the speech engine, {mb} MB, once.") };
+            b.title("Setting up KeyReed", &lead);
             b.group();
             model_row(b, m, &id, S_DL, false);
             b.end_group();
@@ -1104,10 +1178,17 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
                 body: "Speech stays on this PC. Cloud processing is off unless you add your own key under Processing.".into(),
             });
             b.y += 68;
+            privacy_line(b);
             nav_buttons(b, "Next");
         }
         _ => {
-            b.title("Try it", &format!("Click in the box, hold {hk}, say a sentence, then let go."));
+            let heard = PRACTICE_HEARD.with(|c| c.get());
+            if heard {
+                b.title("That's KeyReed", "It types wherever your cursor is, in any app.");
+            } else {
+                let lead = if toggle { format!("Press {hk}, say anything, then press it again.") } else { format!("Hold {hk} and say anything, then let go.") };
+                b.title("Your turn", &lead);
+            }
             if !m.active_model_ready() {
                 b.items.push(Item::Banner {
                     r: r(X0, b.y, CW, 56),
@@ -1120,27 +1201,40 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             b.text(r(X0, b.y, CW, 18), "Practice area · text appears here, nothing is sent anywhere", F::CaptionSemi, C::Text2, DT_SINGLELINE);
             b.y += 22;
             b.ctrl(S_PRACTICE, Kind::Edit { text: String::new(), password: false, multiline: true, cue: String::new() }, r(X0, b.y, CW, 104), Bg::Content, "Practice area");
-            b.y += 120;
+            // One quiet line under the box says what is happening or what to try next.
+            let (hint, color) = match (&m.state, PRACTICE_NOTE.with(|c| c.get())) {
+                _ if heard => (format!("It typed what you said. Use {hk} again to try another."), C::Ok),
+                (EngineState::Listening, _) => ("Listening…".to_string(), C::Text2),
+                (EngineState::Processing | EngineState::Correcting, _) => ("Typing what you said…".to_string(), C::Working),
+                (_, 1) => ("KeyReed didn't hear any words. Speak while it's listening, then try again.".to_string(), C::Warn),
+                (_, 3) => ("That didn't work. Try again.".to_string(), C::Warn),
+                _ => (String::new(), C::Text2),
+            };
+            if !hint.is_empty() {
+                b.text(r(X0, b.y + 108, CW, 18), hint, F::Caption, color, DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            b.y += 138;
             b.group();
             let mode = m.config.default_writing_mode;
             b.row(&format!("Writing mode: {}", mode.label()), mode.description(), C::Text2, 0);
             let om = m.config.output_mode;
             let short = match om {
-                OutputMode::DirectTyping => "Types straight into the app you're using.",
-                OutputMode::Clipboard => "Copies the text; you paste it with Ctrl+V.",
-                OutputMode::AskBeforeInserting => "Shows the text first and asks before inserting.",
+                OutputMode::DirectTyping => "Types straight into the app you're using",
+                OutputMode::Clipboard => "Copies the text; you paste it with Ctrl+V",
+                OutputMode::AskBeforeInserting => "Shows the text first and asks before inserting",
             };
             b.row(&format!("Output: {}", om.title()), short, C::Text2, 0);
             b.end_group();
             b.text(r(X0, b.y, CW, 18), "You can change these any time under Writing and Output.", F::Caption, C::Text3, DT_SINGLELINE);
-            nav_buttons(b, "Finish");
+            nav_buttons(b, "Start using KeyReed");
         }
     }
 }
 
 fn nav_buttons(b: &mut Builder, next: &str) {
-    b.ctrl(S_BACK, Kind::Button { style: BtnStyle::Secondary, label: "Back".into() }, r(X0 + CW - 248, WIN_H - 56, 120, 32), Bg::Content, "Back");
-    b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: next.into() }, r(X0 + CW - 120, WIN_H - 56, 120, 32), Bg::Content, next);
+    let nw = button_width(next).max(120);
+    b.ctrl(S_BACK, Kind::Button { style: BtnStyle::Secondary, label: "Back".into() }, r(X0 + CW - nw - 128, WIN_H - 56, 120, 32), Bg::Content, "Back");
+    b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: next.into() }, r(X0 + CW - nw, WIN_H - 56, nw, 32), Bg::Content, next);
 }
 
 fn page_general(b: &mut Builder, m: &SharedUiModel) {
@@ -1208,6 +1302,9 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
 }
 
 fn page_writing(b: &mut Builder, m: &SharedUiModel) {
+    if let Some(page) = VOCAB_VIEW.with(|v| v.get()) {
+        return page_vocab(b, m, page);
+    }
     let c = &m.config;
     b.title("Writing", &format!("Pick how KeyReed turns speech into text. {} switches modes any time.", c.mode_cycle_hotkey.display_name));
     let w = (CW - 10) / 2;
@@ -1232,15 +1329,160 @@ fn page_writing(b: &mut Builder, m: &SharedUiModel) {
     b.group();
     b.toggle_row(W_AUTOCTX, "Adapt to the app I'm using", "Professional in email, Casual in chat, Code in terminals.", c.auto_context_mode, true);
     b.ctrls.last_mut().unwrap().tip = Some("Email → Professional, chat → Casual, code editors → Technical, terminals → Terminal / Code. Other apps use your default mode.".into());
-    let (y0, h) = b.row("Personal dictionary", "Names and terms to spell your way, separated by commas.", C::Text2, 250);
-    b.ctrl(
-        W_VOCAB,
-        Kind::Edit { text: c.dictionary.vocabulary.join(", "), password: false, multiline: false, cue: "e.g. KeyReed, Kubernetes".into() },
-        r(X0 + CW - PAD - 250, y0 + (h - 30) / 2, 250, 30),
-        Bg::Surface,
-        "Personal dictionary",
-    );
+    let terms = dict_entries(&c.dictionary).len();
+    let desc = match terms {
+        0 => "Names and terms to spell your way".to_string(),
+        1 => "1 term".to_string(),
+        n => format!("{n} terms"),
+    };
+    b.button_row(W_VOCAB, "Personal dictionary", &desc, "Edit", BtnStyle::Secondary);
+    b.last_ctrl().name = "Edit personal dictionary".into();
     b.end_group();
+}
+
+/// One row of the personal dictionary editor: a term and the spoken forms that should become it.
+#[derive(Clone, Debug, PartialEq)]
+struct DictEntry {
+    term: String,
+    sounds: Vec<String>,
+}
+
+fn spoken_for(d: &vi_core::PersonalDictionary, term: &str) -> Vec<String> {
+    d.replacements.iter().filter(|r| r.written.eq_ignore_ascii_case(term)).map(|r| r.spoken.clone()).collect()
+}
+
+/// Vocabulary terms in order, each with the replacement rules that write it. A rule whose written form is not a
+/// vocabulary term still gets its own row, so nothing stored by another route is hidden or lost.
+fn dict_entries(d: &vi_core::PersonalDictionary) -> Vec<DictEntry> {
+    let mut v: Vec<DictEntry> = d.vocabulary.iter().map(|t| DictEntry { term: t.clone(), sounds: spoken_for(d, t) }).collect();
+    for r in &d.replacements {
+        if !v.iter().any(|e| e.term.eq_ignore_ascii_case(&r.written)) {
+            v.push(DictEntry { term: r.written.clone(), sounds: spoken_for(d, &r.written) });
+        }
+    }
+    v
+}
+
+fn same_spellings(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+/// The dictionary is on whenever it has something to apply (it shipped disabled, so entries used to be ignored).
+fn dict_sync_enabled(d: &mut vi_core::PersonalDictionary) {
+    d.enabled = !(d.vocabulary.is_empty() && d.replacements.is_empty());
+}
+
+/// Applies the edited texts of one row. `index` is the row's place in `dict_entries`, `None` for the blank row that
+/// adds a term. An empty term never deletes anything (use Remove), a duplicate term is refused, nothing is truncated.
+/// Returns true when the dictionary changed.
+fn apply_dict_row(d: &mut vi_core::PersonalDictionary, index: Option<usize>, term: &str, sounds: &str) -> bool {
+    let (before_v, before_r, before_e) = (d.vocabulary.clone(), d.replacements.clone(), d.enabled);
+    let term = term.trim();
+    let spoken = parse_vocab(sounds);
+    let entries = dict_entries(d);
+    match index.and_then(|i| entries.get(i)).cloned() {
+        Some(old) => {
+            let taken = entries.iter().enumerate().any(|(j, e)| Some(j) != index && e.term.eq_ignore_ascii_case(term));
+            let new_term = if term.is_empty() || taken { old.term.clone() } else { term.to_string() };
+            if new_term != old.term {
+                for v in d.vocabulary.iter_mut().filter(|v| v.eq_ignore_ascii_case(&old.term)) {
+                    *v = new_term.clone();
+                }
+                for r in d.replacements.iter_mut().filter(|r| r.written.eq_ignore_ascii_case(&old.term)) {
+                    r.written = new_term.clone();
+                }
+            }
+            if !same_spellings(&spoken, &old.sounds) {
+                let kept: Vec<_> = d.replacements.iter().filter(|r| r.written.eq_ignore_ascii_case(&new_term)).cloned().collect();
+                d.replacements.retain(|r| !r.written.eq_ignore_ascii_case(&new_term));
+                for sp in spoken {
+                    match kept.iter().find(|r| r.spoken.eq_ignore_ascii_case(&sp)) {
+                        Some(rule) => d.replacements.push(rule.clone()),
+                        None => d.upsert_replacement(sp, new_term.clone(), false),
+                    }
+                }
+            }
+        }
+        None => {
+            if term.is_empty() || d.vocabulary.len() >= DICT_MAX_TERMS {
+                return false;
+            }
+            d.add_term(term);
+            for sp in spoken {
+                d.upsert_replacement(sp, term.to_string(), false);
+            }
+        }
+    }
+    dict_sync_enabled(d);
+    d.vocabulary != before_v || d.replacements != before_r || d.enabled != before_e
+}
+
+fn remove_dict_entry(d: &mut vi_core::PersonalDictionary, index: usize) {
+    if let Some(e) = dict_entries(d).get(index) {
+        d.vocabulary.retain(|v| !v.eq_ignore_ascii_case(&e.term));
+        d.replacements.retain(|r| !r.written.eq_ignore_ascii_case(&e.term));
+        dict_sync_enabled(d);
+    }
+}
+
+fn is_dict_edit(id: i32) -> bool {
+    (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) || (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id)
+}
+
+/// The dictionary editor: `DICT_ROWS` rows per page, a blank row for the next term, Remove per row.
+fn page_vocab(b: &mut Builder, m: &SharedUiModel, page_idx: usize) {
+    let entries = dict_entries(&m.config.dictionary);
+    let n = entries.len();
+    let at_cap = n >= DICT_MAX_TERMS;
+    let draft = !at_cap && (VOCAB_DRAFT.with(|c| c.get()) || n == 0);
+    let total = n + draft as usize;
+    let pages = total.div_ceil(DICT_ROWS).max(1);
+    let page = page_idx.min(pages - 1);
+    VOCAB_VIEW.with(|v| v.set(Some(page)));
+    let first = page * DICT_ROWS;
+    let rows = (total - first).min(DICT_ROWS);
+
+    b.title("Personal dictionary", "Spell names and terms your way. Add how they sound if they get misheard.");
+    b.text(r(X0 + PAD + 12, b.y, 180, 18), "Term", F::CaptionSemi, C::Text2, DT_SINGLELINE);
+    b.text(r(X0 + 230, b.y, 240, 18), "Sounds like (separate with commas)", F::CaptionSemi, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    b.y += 22;
+    b.group();
+    b.y += 4;
+    for i in 0..rows {
+        let abs = first + i;
+        if i > 0 {
+            b.items.push(Item::Divider { x: X0 + PAD, y: b.y, w: CW - 2 * PAD });
+        }
+        let (term, sounds) = entries.get(abs).map(|e| (e.term.clone(), e.sounds.join(", "))).unwrap_or_default();
+        let ry = b.y;
+        let (tname, sname) = if term.is_empty() { ("New term".to_string(), "Sounds like for the new term".to_string()) } else { (format!("Term {term}"), format!("Sounds like for {term}")) };
+        b.ctrl(V_TERM + i as i32, Kind::Edit { text: term.clone(), password: false, multiline: false, cue: "Name or term".into() }, r(X0 + PAD, ry + 7, 190, 30), Bg::Surface, &tname);
+        b.ctrl(V_SOUND + i as i32, Kind::Edit { text: sounds, password: false, multiline: false, cue: "How it sounds".into() }, r(X0 + 218, ry + 7, 250, 30), Bg::Surface, &sname);
+        if abs < n {
+            b.ctrl(V_DEL + i as i32, Kind::Button { style: BtnStyle::Subtle, label: "Remove".into() }, r(X0 + 480, ry + 6, 84, 32), Bg::Surface, &format!("Remove {term}"));
+        }
+        b.y += 44;
+    }
+    b.y += 4;
+    let group_end = b.y;
+    b.end_group();
+    b.text(r(X0, group_end + 8, CW, 18), "A spelling that is also a common word is replaced whenever KeyReed hears it.", F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    if at_cap {
+        b.text(r(X0, group_end + 28, CW, 18), format!("That is the limit of {DICT_MAX_TERMS} terms. Remove one to add another."), F::Caption, C::Warn, DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    // Actions sit above the "Saved" line at the foot of the window.
+    let y = WIN_H - 80;
+    b.ctrl(V_ADD, Kind::Button { style: BtnStyle::Secondary, label: "Add term".into() }, r(X0, y, button_width("Add term"), 32), Bg::Content, "Add term");
+    b.last_ctrl().enabled = !at_cap;
+    b.ctrl(V_DONE, Kind::Button { style: BtnStyle::Primary, label: "Done".into() }, r(X0 + CW - 120, y, 120, 32), Bg::Content, "Done");
+    if pages > 1 {
+        b.ctrl(V_NEXT, Kind::Button { style: BtnStyle::Secondary, label: "Next".into() }, r(X0 + CW - 212, y, 84, 32), Bg::Content, "Next page of terms");
+        b.last_ctrl().enabled = page + 1 < pages;
+        b.ctrl(V_PREV, Kind::Button { style: BtnStyle::Secondary, label: "Previous".into() }, r(X0 + CW - 304, y, 84, 32), Bg::Content, "Previous page of terms");
+        b.last_ctrl().enabled = page > 0;
+        b.text(r(X0 + 112, y + 7, CW - 304 - 112 - 8, 18), format!("Page {} of {pages} · {n} terms", page + 1), F::Caption, C::Text3, DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS);
+    }
 }
 
 fn page_output(b: &mut Builder, m: &SharedUiModel) {
@@ -1307,7 +1549,7 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
     let (label, style, enabled) = match dl.map(|d| &d.stage) {
         Some(DownloadStage::Starting) | Some(DownloadStage::Downloading) => ("Cancel", BtnStyle::Secondary, true),
         Some(DownloadStage::Verifying) => ("Verifying…", BtnStyle::Secondary, false),
-        Some(DownloadStage::Failed(_)) if !installed => ("Retry", BtnStyle::Primary, !other_active),
+        Some(DownloadStage::Failed(_)) if !installed => ("Try again", BtnStyle::Primary, !other_active),
         _ if active && installed => ("In use", BtnStyle::Status, false),
         _ if installed => ("Use", BtnStyle::Secondary, true),
         _ => ("Download", if info.recommended { BtnStyle::Primary } else { BtnStyle::Secondary }, !other_active),
@@ -1533,6 +1775,10 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     SendMessageW(hwnd, WM_SETFONT, cx.body as WPARAM, 0);
     if matches!(c.kind, Kind::Edit { .. }) {
         theme_native_control(hwnd, "Edit");
+        if is_dict_edit(c.id) {
+            let max = if c.id < V_SOUND { DICT_MAX_TERM_CHARS } else { DICT_MAX_SOUNDS_CHARS };
+            SendMessageW(hwnd, 0x00C5 /* EM_LIMITTEXT */, max, 0);
+        }
     }
     match &c.kind {
         Kind::Edit { cue, .. } => {
@@ -1542,10 +1788,11 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
             }
         }
         _ => {
-            // Reference data: 1 = drop-down field, 2 = shortcut capture field.
+            // Reference data: 1 = drop-down field, 2 = shortcut capture field, 3 = navigation item.
             let kind = match c.kind {
                 Kind::Combo { .. } => 1,
                 Kind::Shortcut { .. } => 2,
+                Kind::Nav { .. } => 3,
                 _ => 0,
             };
             SetWindowSubclass(hwnd, Some(btn_subclass), 1, kind);
@@ -1610,46 +1857,151 @@ fn read_text(h: HWND) -> String {
     }
 }
 
-/// Copies edit contents into `St` (practice text, unsaved key) and returns the dictionary text,
-/// which the caller commits *after* releasing the borrow. Reading child text only messages the
+/// Copies edit contents into `St` (practice text, unsaved key) and returns the texts of the dictionary fields
+/// (control id, text), which the caller applies *after* releasing the borrow. Reading child text only messages the
 /// child controls, never `wnd_proc`.
-fn harvest_edits(st: &mut St) -> Option<String> {
-    let mut vocab = None;
+fn harvest_edits(st: &mut St) -> Vec<(i32, String)> {
+    let mut dict = Vec::new();
     for (c, h) in &st.ctrls {
         match c.id {
             S_PRACTICE => st.practice_text = read_text(*h),
             P_KEY => st.key_draft = read_text(*h),
-            W_VOCAB => vocab = Some(read_text(*h)),
+            id if is_dict_edit(id) => dict.push((id, read_text(*h))),
             _ => {}
         }
     }
-    vocab
+    dict
 }
 
 fn harvest_and_commit() {
-    let vocab = ST.with(|s| s.borrow_mut().as_mut().and_then(harvest_edits));
-    if let Some(v) = vocab {
-        save_vocab(&v);
-    }
+    let edits = ST.with(|s| s.borrow_mut().as_mut().map(harvest_edits)).unwrap_or_default();
+    apply_dict_edits(&edits, false);
 }
 
 fn parse_vocab(v: &str) -> Vec<String> {
     v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-fn save_vocab(v: &str) {
-    let list = parse_vocab(v);
-    let (current, enabled) = snapshot()
-        .map(|m| (m.config.dictionary.vocabulary, m.config.dictionary.enabled))
-        .unwrap_or_default();
-    // Words typed here must actually be used: the dictionary is on whenever it has entries
-    // (it shipped disabled by default, so entries were silently ignored before v0.4.0).
-    let want_enabled = !list.is_empty();
-    if list != current || enabled != want_enabled {
-        commit(|c| {
-            c.dictionary.vocabulary = list;
-            c.dictionary.enabled = want_enabled;
-        });
+/// Saves the edited dictionary rows in one change. With `skip_draft`, the blank row for a new term is left alone
+/// (it is saved when focus leaves the row or on Enter), so adding a row never rebuilds the page under the caret.
+fn apply_dict_edits(edits: &[(i32, String)], skip_draft: bool) {
+    if edits.is_empty() {
+        return;
+    }
+    let Some(m) = snapshot() else { return };
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    let mut d = m.config.dictionary.clone();
+    let n = dict_entries(&d).len();
+    let text = |base: i32, i: usize| edits.iter().find(|(id, _)| *id == base + i as i32).map(|(_, t)| t.as_str());
+    let mut changed = false;
+    for i in 0..DICT_ROWS {
+        let (Some(term), Some(sounds)) = (text(V_TERM, i), text(V_SOUND, i)) else { continue };
+        let abs = page * DICT_ROWS + i;
+        let index = (abs < n).then_some(abs);
+        if index.is_none() && skip_draft {
+            continue;
+        }
+        changed |= apply_dict_row(&mut d, index, term, sounds);
+    }
+    if changed {
+        commit(|c| c.dictionary = d);
+    }
+}
+
+fn focused_id() -> i32 {
+    unsafe {
+        let f = GetFocus();
+        if f.is_null() {
+            0
+        } else {
+            GetDlgCtrlID(f)
+        }
+    }
+}
+
+/// Runs after a dictionary field lost focus, once focus has settled on its new owner.
+fn dict_commit_deferred() {
+    let id = focused_id();
+    let row = if (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) {
+        Some((id - V_TERM) as usize)
+    } else if (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id) {
+        Some((id - V_SOUND) as usize)
+    } else {
+        None
+    };
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    let n = snapshot().map(|m| dict_entries(&m.config.dictionary).len()).unwrap_or(0);
+    let in_draft = row.is_some_and(|r| page * DICT_ROWS + r >= n);
+    let edits = ST.with(|s| s.try_borrow_mut().ok().and_then(|mut b| b.as_mut().map(harvest_edits))).unwrap_or_default();
+    apply_dict_edits(&edits, in_draft);
+}
+
+fn focus_ctrl(id: i32) {
+    unsafe {
+        let h = GetDlgItem(hwnd(), id);
+        if !h.is_null() {
+            SetFocus(h);
+        }
+    }
+}
+
+/// Leaves the dictionary editor for the Writing page.
+fn close_vocab() {
+    harvest_and_commit();
+    VOCAB_VIEW.with(|v| v.set(None));
+    VOCAB_DRAFT.with(|v| v.set(false));
+    rebuild(false);
+    focus_ctrl(W_VOCAB);
+}
+
+/// Moves the editor to `page` (rows per page: `DICT_ROWS`) and focuses its first field.
+fn vocab_goto(page: usize, draft: bool) {
+    VOCAB_VIEW.with(|v| v.set(Some(page)));
+    VOCAB_DRAFT.with(|v| v.set(draft));
+    rebuild(false);
+}
+
+fn dict_len() -> usize {
+    snapshot().map(|m| dict_entries(&m.config.dictionary).len()).unwrap_or(0)
+}
+
+/// Enter in a "Sounds like" field: save the row; a newly added term is followed by a fresh blank row.
+fn dict_enter(row: usize) {
+    let before = dict_len();
+    harvest_and_commit();
+    let after = dict_len();
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    if page * DICT_ROWS + row >= before && after > before {
+        vocab_goto(after / DICT_ROWS, true);
+        focus_ctrl(V_TERM + (after % DICT_ROWS) as i32);
+    } else {
+        unsafe { SendMessageW(hwnd(), WM_NEXTDLGCTL, 0, 0) };
+    }
+}
+
+/// Return: presses the focused push button, moves Term to Sounds like, saves a Sounds like row, and otherwise
+/// presses the setup step's primary button (never a destructive one).
+fn on_enter() {
+    let id = focused_id();
+    if (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id) {
+        return dict_enter((id - V_SOUND) as usize);
+    }
+    if (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) {
+        unsafe { SendMessageW(hwnd(), WM_NEXTDLGCTL, 0, 0) };
+        return;
+    }
+    let (is_button, in_setup) = ST
+        .with(|s| {
+            let b = s.try_borrow().ok()?;
+            let st = b.as_ref()?;
+            let pressable = st.ctrls.iter().any(|(c, _)| c.id == id && c.enabled && matches!(c.kind, Kind::Button { .. }));
+            Some((pressable, st.page == PAGE_START))
+        })
+        .unwrap_or((false, false));
+    if is_button {
+        on_command(id, 0);
+    } else if in_setup {
+        on_command(S_NEXT, 0);
     }
 }
 
@@ -1709,6 +2061,7 @@ enum Op {
 /// Incremental update: same structure → update in place; different structure → rebuild.
 fn refresh() {
     let Some(m) = snapshot() else { return };
+    track_practice(&m);
     let mut ops: Vec<Op> = Vec::new();
     let mut need_rebuild = false;
     let mut parent: HWND = std::ptr::null_mut();
@@ -1759,8 +2112,10 @@ fn refresh() {
     });
     if need_rebuild {
         rebuild(false);
+        maybe_arm_advance();
         return;
     }
+    maybe_arm_advance();
     unsafe {
         for op in ops {
             match op {
@@ -1795,6 +2150,7 @@ fn color(t: &Theme, c: C) -> u32 {
         C::Warn => t.warn_fg,
         C::Err => t.err_fg,
         C::Ok => t.ok_fg,
+        C::Working => t.working,
     }
 }
 
@@ -1807,12 +2163,26 @@ fn tone_colors(t: &Theme, tone: Tone) -> (u32, u32, char) {
     }
 }
 
-fn status_chip(m: &SharedUiModel) -> (String, u32) {
+fn status_chip(m: &SharedUiModel, t: &Theme) -> (String, u32) {
+    let rose = rgb(0xE1, 0x1D, 0x48);
     match &m.state {
-        EngineState::Error(e) => (friendly_error(e).short.to_string(), rgb(0xE1, 0x1D, 0x48)),
+        EngineState::Error(e) => (friendly_error(e).short.to_string(), rose),
         EngineState::Disabled => ("Paused".into(), rgb(0x8A, 0x94, 0x90)),
         EngineState::Listening => ("Listening…".into(), rgb(0x10, 0xB9, 0x81)),
-        EngineState::Processing | EngineState::Correcting => ("Transcribing…".into(), rgb(0xF5, 0x9E, 0x0B)),
+        EngineState::Processing | EngineState::Correcting => ("Transcribing…".into(), t.working),
+        // The model download is shown here so it stays visible on every page, not only on the models page.
+        _ if m.download.as_ref().is_some_and(|d| d.is_active()) => {
+            let d = m.download.as_ref().expect("checked above");
+            let label = match (&d.stage, d.fraction()) {
+                (DownloadStage::Verifying, _) => "Verifying model…".to_string(),
+                (_, Some(f)) => format!("Downloading model {}%", (f * 100.0).floor() as u32),
+                _ => "Downloading model…".to_string(),
+            };
+            (label, t.working)
+        }
+        _ if !m.active_model_ready() && m.download.as_ref().is_some_and(|d| matches!(d.stage, DownloadStage::Failed(_))) => {
+            ("Model download failed".into(), rose)
+        }
         _ if !m.active_model_ready() => ("Speech model needed".into(), rgb(0xF5, 0x9E, 0x0B)),
         _ => (format!("Ready · hold {}", m.config.ptt_hotkey.display_name), rgb(0x10, 0xB9, 0x81)),
     }
@@ -1839,7 +2209,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
     // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
     let nav_bottom = s(92 + NAV.len() as i32 * 38);
     if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
-        let (label, dot) = status_chip(&m);
+        let (label, dot) = status_chip(&m, &t);
         let y = rc.bottom - s(52);
         cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, t.surface, 1.0);
         cv.round_rect_stroke(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, 1.0, t.border, 1.0);
@@ -2045,8 +2415,6 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             let (sw, sh) = (s(40) as f32, s(20) as f32);
             let sx = wf - sw - s(2) as f32;
             let sy = (hf - sh) / 2.0;
-            let label = if *on { "On" } else { "Off" };
-            cv.text(label, 0, 0, (sx as i32) - s(10), h, st.fonts.get(F::Body), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
             // amount = 0 fully off .. 1 fully on; between the two only while a slide is running.
             let p = toggle_progress(st, c.id);
             let amount = if *on { p } else { 1.0 - p };
@@ -2175,7 +2543,10 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
     }
     if focus {
         let (x, y, fw, fh, fr) = focus_rect;
-        cv.round_rect_stroke(x, y, fw, fh, fr, 2.0_f32.max(s(2) as f32), t.focus, 1.0);
+        // Emerald ring; on a Primary button (filled with the same emerald) it is drawn in the label colour, one step in.
+        let primary = matches!(c.kind, Kind::Button { style: BtnStyle::Primary, .. });
+        let (ring, inset) = if t.hc { (t.focus, 0.0) } else if primary { (t.on_accent, s(2) as f32) } else { (t.focus_ring, 0.0) };
+        cv.round_rect_stroke(x + inset, y + inset, fw - 2.0 * inset, fh - 2.0 * inset, (fr - inset).max(1.0), 2.0_f32.max(s(2) as f32), ring, 1.0);
     }
     cv.blit_to(di.hdc, di.rc.left, di.rc.top);
 }
@@ -2300,6 +2671,39 @@ fn set_step(step: usize) {
             }
         }
     });
+    maybe_arm_advance();
+}
+
+/// Setup step 3 only reports progress: once the model is ready it shows that for a beat, then moves on by itself.
+fn maybe_arm_advance() {
+    let ready = snapshot().is_some_and(|m| m.active_model_ready());
+    let target = ST.with(|s| {
+        let b = s.try_borrow().ok()?;
+        let st = b.as_ref()?;
+        (st.page == PAGE_START && st.step == 2).then_some(st.hwnd)
+    });
+    if let (true, Some(h)) = (ready, target) {
+        if !ADVANCE_ARMED.with(|c| c.replace(true)) {
+            unsafe { SetTimer(h, IDT_ADVANCE, ADVANCE_MS, None) };
+        }
+    }
+}
+
+/// Remembers why the last practice attempt produced no text, for the hint under the practice box.
+fn track_practice(m: &SharedUiModel) {
+    let note = match &m.state {
+        EngineState::Listening => Some(0),
+        EngineState::Error(_) => Some(3),
+        EngineState::ReadyToPaste => match &m.last_outcome {
+            Some(ReadyOutcome::NothingHeard) => Some(1),
+            Some(o) if o.is_success() => Some(0),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(n) = note {
+        PRACTICE_NOTE.with(|c| c.set(n));
+    }
 }
 
 fn selected_mic_from_combo(id: i32) -> Option<String> {
@@ -2320,9 +2724,22 @@ fn on_command(id: i32, code: u32) {
     const CBN_SELCHANGE: u32 = 1;
     const EN_KILLFOCUS: u32 = 0x0200;
     const EN_SETFOCUS: u32 = 0x0100;
+    const EN_CHANGE: u32 = 0x0300;
     let click = code == BN_CLICKED || code == BN_DOUBLECLICKED;
     if code == EN_SETFOCUS || code == EN_KILLFOCUS {
         unsafe { InvalidateRect(hwnd(), std::ptr::null(), 0) };
+    }
+    if code == EN_KILLFOCUS && is_dict_edit(id) {
+        unsafe { PostMessageW(hwnd(), WM_DICT_COMMIT, 0, 0) };
+        return;
+    }
+    if code == EN_CHANGE && id == S_PRACTICE {
+        // Setup step 4 turns into its success state as soon as the box holds the dictated text.
+        let heard = !read_text(unsafe { GetDlgItem(hwnd(), S_PRACTICE) }).is_empty();
+        if PRACTICE_HEARD.with(|c| c.replace(heard)) != heard {
+            refresh();
+        }
+        return;
     }
     if click && combo_of(id).is_some() {
         open_select(id);
@@ -2399,10 +2816,29 @@ fn on_command(id: i32, code: u32) {
             let v = !c.auto_context_mode;
             commit(|c| c.auto_context_mode = v)
         }
-        (W_VOCAB, _, EN_KILLFOCUS) => {
-            let h = unsafe { GetDlgItem(hwnd(), W_VOCAB) };
-            save_vocab(&read_text(h));
+        (W_VOCAB, true, _) => {
+            vocab_goto(0, false);
+            focus_ctrl(V_TERM);
         }
+        (V_DONE, true, _) => close_vocab(),
+        (V_ADD, true, _) => {
+            harvest_and_commit();
+            let n = dict_len();
+            vocab_goto(n / DICT_ROWS, true);
+            focus_ctrl(V_TERM + (n % DICT_ROWS) as i32);
+        }
+        (V_PREV, true, _) | (V_NEXT, true, _) => {
+            harvest_and_commit();
+            let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+            vocab_goto(if id == V_PREV { page.saturating_sub(1) } else { page + 1 }, VOCAB_DRAFT.with(|v| v.get()));
+            focus_ctrl(V_TERM);
+        }
+        (i, true, _) if (V_DEL..V_DEL + DICT_ROWS as i32).contains(&i) => {
+            harvest_and_commit();
+            let abs = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0) * DICT_ROWS + (i - V_DEL) as usize;
+            commit(|c| remove_dict_entry(&mut c.dictionary, abs));
+        }
+        (MIC_PRIVACY, true, _) => open_url("ms-settings:privacy-microphone"),
         (O_TYPE, true, _) => commit(|c| c.output_mode = OutputMode::DirectTyping),
         (O_CLIP, true, _) => commit(|c| c.output_mode = OutputMode::Clipboard),
         (O_ASK, true, _) => commit(|c| c.output_mode = OutputMode::AskBeforeInserting),
@@ -2487,13 +2923,18 @@ fn on_command(id: i32, code: u32) {
         (S_SKIP, true, _) => finish_setup(false),
         (S_BACK, true, _) => {
             let step = ST.with(|s| s.borrow().as_ref().map(|x| x.step).unwrap_or(0));
-            set_step(step.saturating_sub(1));
+            // The model step moves on by itself once the model is ready, so Back from the practice step skips it.
+            set_step(if step == 3 && m.active_model_ready() { 1 } else { step.saturating_sub(1) });
         }
         (S_NEXT, true, _) => {
             let step = ST.with(|s| s.borrow().as_ref().map(|x| x.step).unwrap_or(0));
             if step >= 3 {
                 finish_setup(true);
             } else {
+                // Welcome: Next is the explicit consent to the one-time download of the speech engine.
+                if step == 0 && !m.active_model_ready() && !m.download.as_ref().is_some_and(|d| d.is_active()) {
+                    model_action(&m, ASR_UI_CATALOG[0].id);
+                }
                 set_step(step + 1);
             }
         }
@@ -2638,6 +3079,22 @@ unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             return r;
         }
     }
+    if is_select == 3 {
+        // The sidebar is a source list: Up and Down move the selection (and with it the page).
+        match msg {
+            WM_GETDLGCODE => return DefSubclassProc(hwnd, msg, wparam, lparam) | DLGC_WANTARROWS as LRESULT,
+            WM_KEYDOWN if wparam == VK_UP || wparam == VK_DOWN => {
+                let cur = GetDlgCtrlID(hwnd) - ID_NAV;
+                let new = if wparam == VK_UP { cur - 1 } else { cur + 1 };
+                if (0..NAV.len() as i32).contains(&new) {
+                    // Posted, not called: switching pages destroys this very control.
+                    PostMessageW(GetParent(hwnd), WM_COMMAND, (ID_NAV + new) as WPARAM, 0);
+                }
+                return 0;
+            }
+            _ => {}
+        }
+    }
     if is_select == 1 {
         let id = GetDlgCtrlID(hwnd);
         match msg {
@@ -2766,6 +3223,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     match msg {
         WM_CREATE => {
             refresh_dark_mode();
+            PRACTICE_HEARD.with(|c| c.set(false));
+            PRACTICE_NOTE.with(|c| c.set(0));
+            ADVANCE_ARMED.with(|c| c.set(false));
+            VOCAB_VIEW.with(|v| v.set(None));
+            VOCAB_DRAFT.with(|v| v.set(false));
             let dpi = window_dpi(hwnd);
             let tooltip = {
                 let cls = to_wide("tooltips_class32");
@@ -2807,6 +3269,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_ERASEBKGND => 1,
+        WM_DICT_COMMIT => {
+            dict_commit_deferred();
+            0
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
@@ -2841,6 +3307,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
+            if id == IDCANCEL as i32 && VOCAB_VIEW.with(|v| v.get()).is_some() {
+                close_vocab(); // Esc leaves the dictionary editor first, not the window
+                return 0;
+            }
             if id == IDCANCEL as i32 {
                 // Esc closes Settings (but not while the user is dictating into the practice box).
                 let listening = snapshot().map(|m| matches!(m.state, EngineState::Listening | EngineState::Processing | EngineState::Correcting)).unwrap_or(false);
@@ -2850,6 +3320,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 return 0;
             }
             if id == IDOK as i32 {
+                on_enter();
                 return 0;
             }
             on_command(id, code);
@@ -2887,6 +3358,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 return 0;
             }
+            if wparam == IDT_ADVANCE {
+                KillTimer(hwnd, IDT_ADVANCE);
+                ADVANCE_ARMED.with(|c| c.set(false));
+                let on_model_step = ST.with(|s| s.try_borrow().ok().and_then(|b| b.as_ref().map(|st| st.page == PAGE_START && st.step == 2))).unwrap_or(false);
+                if on_model_step && snapshot().is_some_and(|m| m.active_model_ready()) {
+                    set_step(3);
+                }
+                return 0;
+            }
             if wparam == IDT_SAVED {
                 KillTimer(hwnd, IDT_SAVED);
                 ST.with(|s| {
@@ -2901,6 +3381,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_DPICHANGED => {
             let dpi = ((wparam >> 16) & 0xFFFF) as u32;
             let rc = &*(lparam as *const RECT);
+            harvest_and_commit();
             ST.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     let _ = harvest_edits(st);
@@ -3001,7 +3482,7 @@ mod tests {
     #[test]
     fn every_page_and_step_fits_the_window_without_overlap() {
         let mut m = model();
-        for variant in 0..3 {
+        for variant in 0..4 {
             match variant {
                 1 => {
                     m.installed_asr_models = vec!["parakeet-tdt-0.6b-v2-int8".into()];
@@ -3011,6 +3492,9 @@ mod tests {
                     m.download = Some(DownloadProgress { model_id: "moonshine-tiny-en-int8".into(), stage: DownloadStage::Downloading, done_bytes: 10, total_bytes: Some(100) });
                     m.config.cloud.encrypted_api_key_b64 = Some("x".into());
                     m.mic_test = MicTestStatus { error: Some("Mic error: x".into()), ..Default::default() };
+                }
+                3 => {
+                    m.mic_test = MicTestStatus { verdict: Some(MicVerdict::Silent), peak_rms: 0.0, device: "Mic".into(), ..Default::default() };
                 }
                 _ => {}
             }
@@ -3110,6 +3594,7 @@ mod tests {
                 ("on_accent/accent_fill", t.on_accent, t.accent_fill), ("on_accent/accent (hover)", t.on_accent, t.accent),
                 ("on_accent/accent_press", t.on_accent, t.accent_press),
                 ("ok", t.ok_fg, t.ok_bg), ("warn", t.warn_fg, t.warn_bg), ("err", t.err_fg, t.err_bg),
+                ("working text/bg", t.working, t.bg), ("working text/surface", t.working, t.surface),
             ];
             for (name, fg, bg) in text_pairs {
                 let r = contrast(fg, bg);
@@ -3118,6 +3603,9 @@ mod tests {
             let ui_pairs = [
                 ("control_border/surface", t.control_border, t.surface), ("control_border/bg", t.control_border, t.bg),
                 ("accent_fill/surface (switch ON)", t.accent_fill, t.surface),
+                ("working dot/sidebar", t.working, t.sidebar),
+                ("focus_ring/bg", t.focus_ring, t.bg), ("focus_ring/surface", t.focus_ring, t.surface),
+                ("focus_ring/sidebar", t.focus_ring, t.sidebar), ("focus_ring/accent_soft", t.focus_ring, t.accent_soft),
             ];
             for (name, fg, bg) in ui_pairs {
                 let r = contrast(fg, bg);
@@ -3125,6 +3613,111 @@ mod tests {
             }
         }
         DARK.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn fits(page: usize, step: usize, m: &SharedUiModel) {
+        let (items, ctrls) = build(page, step, m, false);
+        for c in &ctrls {
+            assert!(rect_ok(&c.r), "page {page} step {step} ctrl {} out of bounds: {:?}", c.id, c.r);
+        }
+        for it in &items {
+            if let Item::Group { r } | Item::Card { r } | Item::Banner { r, .. } = it {
+                assert!(rect_ok(r), "page {page} step {step} item out of bounds: {r:?}");
+            }
+        }
+        let content: Vec<&Ctrl> = ctrls.iter().filter(|c| !matches!(c.kind, Kind::Nav { .. })).collect();
+        for (i, a) in content.iter().enumerate() {
+            for b in content.iter().skip(i + 1) {
+                let overlap = a.r.x < b.r.x + b.r.w && b.r.x < a.r.x + a.r.w && a.r.y < b.r.y + b.r.h && b.r.y < a.r.y + a.r.h;
+                assert!(!overlap, "page {page} step {step}: {} overlaps {}", a.id, b.id);
+            }
+        }
+    }
+
+    #[test]
+    fn dictionary_editor_fits_at_every_size_and_shows_at_most_one_page() {
+        for terms in [0usize, 1, 7, 8, 9, 17, DICT_MAX_TERMS] {
+            let mut m = model();
+            m.config.dictionary.vocabulary = (0..terms).map(|i| format!("Term{i}")).collect();
+            for page in [0usize, 1, 99] {
+                VOCAB_VIEW.with(|v| v.set(Some(page)));
+                fits(PAGE_WRITING, 0, &m);
+                let (_, ctrls) = build(PAGE_WRITING, 0, &m, false);
+                let rows = ctrls.iter().filter(|c| (V_TERM..V_TERM + DICT_ROWS as i32).contains(&c.id)).count();
+                assert!((1..=DICT_ROWS).contains(&rows), "{terms} terms, page {page}: {rows} rows");
+                assert_eq!(ctrls.iter().any(|c| c.id == V_ADD && c.enabled), terms < DICT_MAX_TERMS);
+            }
+        }
+        VOCAB_VIEW.with(|v| v.set(None));
+    }
+
+    #[test]
+    fn setup_practice_step_fits_in_every_state() {
+        let mut m = model();
+        for ready in [false, true] {
+            if ready {
+                m.installed_asr_models = vec!["parakeet-tdt-0.6b-v2-int8".into()];
+            }
+            for state in [EngineState::Idle, EngineState::Listening, EngineState::Processing, EngineState::ReadyToPaste] {
+                m.state = state;
+                for (heard, note) in [(false, 0u8), (true, 0), (false, 1), (false, 3)] {
+                    PRACTICE_HEARD.with(|c| c.set(heard));
+                    PRACTICE_NOTE.with(|c| c.set(note));
+                    fits(PAGE_START, 3, &m);
+                }
+            }
+        }
+        PRACTICE_HEARD.with(|c| c.set(false));
+        PRACTICE_NOTE.with(|c| c.set(0));
+    }
+
+    #[test]
+    fn dictionary_rows_map_terms_to_spellings_without_losing_data() {
+        let mut d = vi_core::PersonalDictionary::default();
+        // A new term with spellings.
+        assert!(apply_dict_row(&mut d, None, " Kubernetes ", "koober netties, cube er nettys"));
+        assert_eq!(d.vocabulary, vec!["Kubernetes".to_string()]);
+        assert_eq!(dict_entries(&d), vec![DictEntry { term: "Kubernetes".into(), sounds: vec!["koober netties".into(), "cube er nettys".into()] }]);
+        assert!(d.enabled);
+        // The same texts again change nothing (this is what a focus change without typing does).
+        assert!(!apply_dict_row(&mut d, Some(0), "Kubernetes", "koober netties, cube er nettys"));
+        // Renaming carries the spellings over; clearing the term text keeps the old term.
+        assert!(apply_dict_row(&mut d, Some(0), "K8s", "koober netties, cube er nettys"));
+        assert!(d.replacements.iter().all(|r| r.written == "K8s"));
+        assert!(!apply_dict_row(&mut d, Some(0), "", "koober netties, cube er nettys"));
+        assert_eq!(d.vocabulary, vec!["K8s".to_string()]);
+        // A duplicate term is refused, an empty blank row adds nothing.
+        assert!(apply_dict_row(&mut d, None, "KeyReed", ""));
+        assert!(!apply_dict_row(&mut d, Some(1), "k8s", ""));
+        assert!(!apply_dict_row(&mut d, None, "  ", "x"));
+        // Emptying the spellings removes their rules only.
+        assert!(apply_dict_row(&mut d, Some(0), "K8s", ""));
+        assert!(d.replacements.is_empty() && d.vocabulary.len() == 2);
+        // A rule written elsewhere still gets a row, and Remove takes the term and its rules.
+        d.upsert_replacement("tea cee pee", "TCP", true);
+        assert_eq!(dict_entries(&d).len(), 3);
+        remove_dict_entry(&mut d, 2);
+        assert!(d.replacements.is_empty());
+        remove_dict_entry(&mut d, 0);
+        remove_dict_entry(&mut d, 0);
+        assert!(d.vocabulary.is_empty() && !d.enabled);
+        // The term limit holds.
+        d.vocabulary = (0..DICT_MAX_TERMS).map(|i| format!("t{i}")).collect();
+        assert!(!apply_dict_row(&mut d, None, "one more", ""));
+    }
+
+    #[test]
+    fn status_chip_uses_the_working_colour_and_shows_the_download() {
+        let t = theme();
+        let mut m = model();
+        m.state = EngineState::Processing;
+        assert_eq!(status_chip(&m, &t), ("Transcribing…".to_string(), t.working));
+        m.state = EngineState::Idle;
+        assert_eq!(status_chip(&m, &t).0, "Speech model needed");
+        m.download = Some(crate::ui::DownloadProgress { model_id: "m".into(), stage: DownloadStage::Downloading, done_bytes: 25, total_bytes: Some(100) });
+        assert_eq!(status_chip(&m, &t), ("Downloading model 25%".to_string(), t.working));
+        m.download = Some(crate::ui::DownloadProgress { model_id: "m".into(), stage: DownloadStage::Failed("x".into()), done_bytes: 0, total_bytes: None });
+        assert_eq!(status_chip(&m, &t).0, "Model download failed");
     }
 
     #[test]

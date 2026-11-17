@@ -173,7 +173,7 @@ impl MicVerdict {
 
     pub fn advice(self) -> &'static str {
         match self {
-            MicVerdict::Silent => "Check the mute switch and Windows Settings › Privacy › Microphone, or pick another device.",
+            MicVerdict::Silent => "Check the mute switch, or turn on \u{201C}Let desktop apps access your microphone\u{201D}.",
             MicVerdict::Low => "KeyReed can hear you. Move closer or raise the input volume for best accuracy.",
             MicVerdict::Good => "Your microphone is ready for dictation.",
             MicVerdict::TooLoud => "Lower the input volume in Windows Sound settings to avoid distortion.",
@@ -342,6 +342,16 @@ pub struct FriendlyError {
     /// Fits the floating listener.
     pub short: &'static str,
     pub message: &'static str,
+    /// Where a click on the error pill should take the user.
+    pub fix: ErrorFix,
+}
+
+/// The Settings page that can resolve an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorFix {
+    None,
+    Microphone,
+    Models,
 }
 
 pub fn friendly_error(raw: &str) -> FriendlyError {
@@ -350,7 +360,8 @@ pub fn friendly_error(raw: &str) -> FriendlyError {
     if has("mic") || has("microphone") || has("audio endpoint") || has("wasapi") || has("capture device") {
         FriendlyError {
             short: "Mic unavailable",
-            message: "KeyReed couldn't open your microphone. Check that it's connected and that Windows allows microphone access. Nothing was recorded.",
+            message: "KeyReed couldn't open your microphone. Check that it's connected and that Windows allows desktop apps to use it. Nothing was recorded.",
+            fix: ErrorFix::Microphone,
         }
     } else if has("not installed")
         || has("not in catalog")
@@ -360,16 +371,19 @@ pub fn friendly_error(raw: &str) -> FriendlyError {
         FriendlyError {
             short: "Model missing",
             message: "The speech model isn't installed or couldn't start. Open Settings › Speech models to download or switch it. This recording was discarded.",
+            fix: ErrorFix::Models,
         }
     } else if has("clipboard") {
         FriendlyError {
             short: "Couldn't copy",
             message: "Windows didn't let KeyReed use the clipboard. Try again in a moment.",
+            fix: ErrorFix::None,
         }
     } else {
         FriendlyError {
             short: "Couldn't transcribe",
             message: "Something went wrong while transcribing, and this recording was discarded. Try again. Details are in the KeyReed log.",
+            fix: ErrorFix::None,
         }
     }
 }
@@ -582,6 +596,9 @@ mod tests {
         let e = friendly_error("Mic error: WASAPI IAudioClient::Initialize failed 0x88890008");
         assert_eq!(e.short, "Mic unavailable");
         assert!(!e.message.contains("0x"));
+        assert_eq!(e.fix, ErrorFix::Microphone);
+        assert_eq!(friendly_error("ASR model 'foo' not in catalog").fix, ErrorFix::Models);
+        assert_eq!(friendly_error("clipboard busy").fix, ErrorFix::None);
         assert_eq!(friendly_error("ASR model 'foo' not in catalog").short, "Model missing");
         assert_eq!(friendly_error("Transcription failed: decoder panic").short, "Couldn't transcribe");
     }
@@ -641,12 +658,13 @@ mod tests {
 pub mod win_gui {
     use super::*;
     use crate::overlay::{
-        fixed_chips, motion, pill_window_width, render_pill, rms_to_level, scaled_icon, PillFrame, PillKind, PillMetrics,
-        TextMask,
+        fixed_chips, motion, pill_window_width, render_pill, scaled_icon, PillFrame, PillKind, PillMetrics, TextMask,
+        WaveSim,
     };
     use once_cell::sync::OnceCell;
     use std::cell::RefCell;
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Instant;
     use vi_core::brand::{OVERLAY_WINDOW_CLASS, PRODUCT_NAME, SETTINGS_WINDOW_CLASS, TRAY_WINDOW_CLASS};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -708,6 +726,8 @@ pub mod win_gui {
         pub(crate) review_buf: Mutex<Option<(crate::composer::ReviewRequest, bool)>>,
         /// Composer open requests and stream events, applied in order on the GUI thread.
         pub(crate) composer_buf: Mutex<Vec<crate::composer::ComposerMsg>>,
+        /// f32 bits of the loudest RMS since the listener last read it (`swap(0)`); set while a capture runs.
+        pub(crate) level_source: Mutex<Option<Arc<AtomicU32>>>,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -845,7 +865,7 @@ pub mod win_gui {
         let badge = match state {
             EngineState::Disabled => Some((0x8Au8, 0x94u8, 0x90u8)),
             EngineState::Listening => Some((0x10, 0xB9, 0x81)),
-            EngineState::Processing | EngineState::Correcting => Some((0xF5, 0x9E, 0x0B)),
+            EngineState::Processing | EngineState::Correcting => Some((0x2D, 0xD4, 0xBF)),
             EngineState::Error(_) => Some((0xE1, 0x1D, 0x48)),
             _ if needs_setup => Some((0xF5, 0x9E, 0x0B)),
             _ => None,
@@ -958,13 +978,17 @@ pub mod win_gui {
         state_since: Instant,
         last_kind: PillKind,
         last_label: String,
-        levels: VecDeque<f32>,
-        tick: u32,
+        /// Meter ballistics of the listening waveform and the wall-clock time of its last step.
+        wave: WaveSim,
+        wave_at: Instant,
+        /// Last non-zero level and how many frames in a row read zero (a frame can fall between audio callbacks).
+        last_rms: f32,
+        dry_frames: u8,
         hovered: bool,
         hover_tracking: bool,
         drag: Option<(i32, i32, bool)>,
         timer_on: bool,
-        /// Interval of the running animation timer (16 ms while Quick Fix moves, 33 ms otherwise).
+        /// Interval of the running animation timer (16 ms while Listening or Quick Fix moves, 33 ms otherwise).
         timer_ms: u32,
         /// Action chips of the Fixed pill: window-relative x range and whether it is Deeper (else Undo).
         chips: Vec<(f32, f32, bool)>,
@@ -978,6 +1002,8 @@ pub mod win_gui {
 
     const TWEEN_MS: f32 = 160.0;
     const FADE_MS: f32 = 140.0;
+    /// A Processing label stays at least this long so a very fast transcription does not flash it.
+    const PROCESSING_MIN_MS: u128 = 200;
 
     fn ease_out_cubic(t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
@@ -1187,7 +1213,24 @@ pub mod win_gui {
         IN_REFRESH.with(|f| f.set(false));
     }
 
-    unsafe fn pill_refresh_inner(hwnd: HWND, from_timer: bool) {
+    /// Names the listener's state for screen readers: window text plus a name-change event. Whether Narrator speaks it
+    /// for a no-activate layered window is unverified; test with Narrator.
+    unsafe fn announce_pill(hwnd: HWND, view: &PillView) {
+        let what = match view.kind {
+            PillKind::Idle | PillKind::IdleHover | PillKind::Disabled => String::new(),
+            PillKind::Listening => "Listening".to_string(),
+            _ => view.label.clone(),
+        };
+        let title = if what.is_empty() { "KeyReed listener".to_string() } else { format!("{PRODUCT_NAME}: {what}") };
+        let w = to_wide(&title);
+        SetWindowTextW(hwnd, w.as_ptr());
+        if !what.is_empty() {
+            // EVENT_OBJECT_NAMECHANGE, OBJID_WINDOW, CHILDID_SELF
+            windows_sys::Win32::UI::Accessibility::NotifyWinEvent(0x800C, hwnd, 0, 0);
+        }
+    }
+
+    unsafe fn pill_refresh_inner(hwnd: HWND, _from_timer: bool) {
         let Some(g) = GUI_GLOBALS.get() else { return };
         let snap = g.model.lock().clone();
         let should_show = snap.config.show_floating_mic;
@@ -1215,10 +1258,18 @@ pub mod win_gui {
             }
             let reduced = reduced_motion();
             let qf = quick_fix_view(&snap, reduced);
-            let view = match &qf {
+            let mut view = match &qf {
                 Some(q) => q.view.clone(),
                 None => pill_view(&snap, pill.hovered && pill.drag.is_none()),
             };
+            // Minimum dwell: a transcription that finishes in a few milliseconds still shows its label long enough to read.
+            let hold = qf.is_none()
+                && pill.last_kind == PillKind::Processing
+                && !matches!(view.kind, PillKind::Processing | PillKind::Listening | PillKind::Error)
+                && pill.state_since.elapsed().as_millis() < PROCESSING_MIN_MS;
+            if hold {
+                view = PillView { kind: PillKind::Processing, label: pill.last_label.clone(), secondary: String::new() };
+            }
             let (tertiary_text, sizing_text, pop, tick, dx, dy, qf_moving) = match &qf {
                 Some(q) => (q.tertiary.clone(), q.sizing_label.clone(), q.pop, q.tick, q.dx, q.dy, q.moving),
                 None => (String::new(), String::new(), 0.0, 1.0, 0.0, 0.0, false),
@@ -1231,23 +1282,51 @@ pub mod win_gui {
                 if view.kind != pill.last_kind {
                     pill.state_since = now;
                     if view.kind == PillKind::Listening {
-                        pill.levels.clear();
+                        // Fresh bars, but the auto level keeps what it learned about this speaker.
+                        pill.wave.restart();
+                        pill.wave_at = now;
+                        pill.last_rms = 0.0;
+                        pill.dry_frames = 0;
+                        if let Some(src) = g.level_source.lock().as_ref() {
+                            src.swap(0, Ordering::Relaxed); // drop whatever was held before this recording
+                        }
                     }
+                    announce_pill(hwnd, &view);
                 }
                 pill.content_since = now;
                 pill.last_kind = view.kind;
                 pill.last_label = change_key;
             }
-            if view.kind == PillKind::Listening && from_timer {
-                pill.tick = pill.tick.wrapping_add(1);
-                // ~15 bars/s: one new measured level every second 33 ms frame.
-                if pill.tick % 2 == 0 {
-                    pill.levels.push_back(rms_to_level(snap.rms_level));
-                    while pill.levels.len() > crate::overlay::WAVE_BARS {
-                        pill.levels.pop_front();
-                    }
+            if view.kind == PillKind::Listening {
+                // Wall-clock dt, so the meter looks the same at any frame rate; sync() and the timer may both land here.
+                let dt = now.duration_since(pill.wave_at).as_secs_f32();
+                if dt >= 0.004 {
+                    let src = g.level_source.lock().clone();
+                    let rms = match src.map(|a| f32::from_bits(a.swap(0, Ordering::Relaxed))) {
+                        Some(v) if v > 0.0 => {
+                            pill.last_rms = v;
+                            pill.dry_frames = 0;
+                            v
+                        }
+                        // No audio callback fell inside this frame: hold the last level briefly instead of reading silence.
+                        Some(_) => {
+                            pill.dry_frames = pill.dry_frames.saturating_add(1);
+                            if pill.dry_frames <= 3 { pill.last_rms } else { 0.0 }
+                        }
+                        // No capture handle (gallery): the level that sync() last reported.
+                        None => snap.rms_level,
+                    };
+                    pill.wave.step(rms, dt);
+                    pill.wave_at = now;
                 }
             }
+            // The tick draws itself over 200 ms on every Done (Quick Fix passes its own curve).
+            let (tick, tick_moving) = if qf.is_none() && view.kind == PillKind::Done && !reduced {
+                let ms = now.duration_since(pill.state_since).as_secs_f32() * 1000.0;
+                (motion::tick(ms), ms < motion::TICK_MS)
+            } else {
+                (tick, false)
+            };
 
             let px = label_px(scale);
             let weight = if matches!(view.kind, PillKind::IdleHover) { 600 } else { 500 };
@@ -1293,7 +1372,7 @@ pub mod win_gui {
             };
             let fade_t =
                 if reduced { 1.0 } else { now.duration_since(pill.content_since).as_secs_f32() * 1000.0 / FADE_MS };
-            let tweening = tween_t < 1.0 || fade_t < 1.0 || qf_moving;
+            let tweening = tween_t < 1.0 || fade_t < 1.0 || qf_moving || tick_moving || hold;
 
             let w = pill.cur_w.round().max(8.0) as usize;
             let h = PillMetrics::for_scale(scale).window_height();
@@ -1310,12 +1389,12 @@ pub mod win_gui {
             } else {
                 Vec::new()
             };
-            let levels: Vec<f32> = pill.levels.iter().copied().collect();
+            let bars = pill.wave.bars();
             let phase = if reduced { 0.35 } else { now.duration_since(pill.state_since).as_secs_f32() };
             let frame = PillFrame {
                 scale,
                 kind: view.kind,
-                levels: &levels,
+                levels: &bars,
                 phase,
                 label: lbl,
                 secondary: sec,
@@ -1355,8 +1434,8 @@ pub mod win_gui {
             }
             let animate = tweening
                 || (needs_frames(view.kind) && !(reduced && matches!(view.kind, PillKind::Processing | PillKind::Fixing)));
-            // 60 frames a second only while Quick Fix moves; the waveform and the width tween stay at 30.
-            let interval = if qf_moving || view.kind == PillKind::Fixing { 16 } else { 33 };
+            // 60 frames a second while the waveform or Quick Fix moves (a 35 ms attack needs it); other motion stays at 30.
+            let interval = if qf_moving || matches!(view.kind, PillKind::Fixing | PillKind::Listening) { 16 } else { 33 };
             if animate && (!pill.timer_on || pill.timer_ms != interval) {
                 SetTimer(hwnd, IDT_PILL_ANIM, interval, None);
                 pill.timer_on = true;
@@ -1613,7 +1692,7 @@ pub mod win_gui {
                 } else if on_fixed {
                     // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {
-                    let (action, ready, is_error, disabled, idle) = {
+                    let (action, ready, is_error, disabled, idle, fix) = {
                         let m = g.model.lock();
                         (
                             m.config.pill_click_action,
@@ -1621,6 +1700,10 @@ pub mod win_gui {
                             matches!(m.state, EngineState::Error(_)),
                             matches!(m.state, EngineState::Disabled),
                             matches!(m.state, EngineState::Idle | EngineState::ReadyToPaste),
+                            match &m.state {
+                                EngineState::Error(e) => friendly_error(e).fix,
+                                _ => ErrorFix::None,
+                            },
                         )
                     };
                     if action == vi_core::PillClickAction::OpenComposer {
@@ -1629,6 +1712,13 @@ pub mod win_gui {
                             send(UiAction::OpenComposer);
                         }
                     } else if action == vi_core::PillClickAction::Nothing {
+                    } else if fix != ErrorFix::None {
+                        // A microphone error opens the Microphone page (with its privacy shortcut); a missing model, Speech models.
+                        crate::settings::open(Some(if fix == ErrorFix::Microphone {
+                            crate::settings::PAGE_AUDIO
+                        } else {
+                            crate::settings::PAGE_MODELS
+                        }));
                     } else if !ready {
                         // Recovery action: take the user straight to the thing that needs fixing.
                         crate::settings::open(Some(crate::settings::PAGE_MODELS));
@@ -1952,6 +2042,14 @@ pub mod win_gui {
             self.post_sync();
         }
 
+        /// Hands the listener the capture's level handle (f32 bits of the loudest RMS since its last `swap(0)`), or clears
+        /// it when the capture ends. Without one the waveform follows the `rms` passed to `sync`.
+        pub fn set_level_source(&self, src: Option<Arc<AtomicU32>>) {
+            if let Some(g) = GUI_GLOBALS.get() {
+                *g.level_source.lock() = src;
+            }
+        }
+
         pub fn set_mic_test(&self, status: MicTestStatus) {
             self.model.lock().mic_test = status;
             self.post_sync();
@@ -2047,6 +2145,7 @@ pub mod win_gui {
             toast_buf: Mutex::new(None),
             review_buf: Mutex::new(None),
             composer_buf: Mutex::new(Vec::new()),
+            level_source: Mutex::new(None),
         });
 
         unsafe {
@@ -2149,8 +2248,10 @@ pub mod win_gui {
                         state_since: now,
                         last_kind: PillKind::Idle,
                         last_label: String::new(),
-                        levels: VecDeque::with_capacity(16),
-                        tick: 0,
+                        wave: WaveSim::new(),
+                        wave_at: now,
+                        last_rms: 0.0,
+                        dry_frames: 0,
                         hovered: false,
                         hover_tracking: false,
                         drag: None,
