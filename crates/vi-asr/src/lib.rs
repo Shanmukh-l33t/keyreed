@@ -480,6 +480,7 @@ impl LocalAsrEngine {
                 cfg.model_config.whisper.language = push_c(lang)?;
                 cfg.model_config.whisper.task = push_c("transcribe")?;
             }
+            AsrArchitecture::GectorTagger => bail!("'{}' is a grammar model, not a speech model", spec.id),
         }
 
         let recognizer = unsafe { (api.create_offline_recognizer)(&cfg) };

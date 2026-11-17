@@ -206,6 +206,7 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
 
     for (name, outcome) in [
         ("pill_07_done_inserted", ReadyOutcome::Inserted),
+        ("pill_07b_done_basic_cleanup", ReadyOutcome::InsertedBasic),
         ("pill_08_done_copied", ReadyOutcome::Copied),
         ("pill_09_review_command", ReadyOutcome::ReviewCommand),
         ("pill_10_discarded", ReadyOutcome::Discarded),

@@ -164,6 +164,8 @@ pub struct MicTestStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadyOutcome {
     Inserted,
+    /// Typed, but cleaned up by rules only because a text job held the language model.
+    InsertedBasic,
     Copied,
     /// Auto Insert fell back to the clipboard (reason code from the typing layer).
     FallbackCopied(String),
@@ -198,6 +200,7 @@ impl ReadyOutcome {
     pub fn pill_label(&self) -> &'static str {
         match self {
             ReadyOutcome::Inserted => "Inserted",
+            ReadyOutcome::InsertedBasic => "Basic cleanup",
             ReadyOutcome::Copied | ReadyOutcome::FallbackCopied(_) => "Copied · Ctrl+V",
             ReadyOutcome::ReviewCommand => "Review · Ctrl+V",
             ReadyOutcome::Discarded => "Discarded",
@@ -209,7 +212,11 @@ impl ReadyOutcome {
     pub fn is_success(&self) -> bool {
         matches!(
             self,
-            ReadyOutcome::Inserted | ReadyOutcome::Copied | ReadyOutcome::FallbackCopied(_) | ReadyOutcome::ReviewCommand
+            ReadyOutcome::Inserted
+                | ReadyOutcome::InsertedBasic
+                | ReadyOutcome::Copied
+                | ReadyOutcome::FallbackCopied(_)
+                | ReadyOutcome::ReviewCommand
         )
     }
 }
@@ -473,6 +480,7 @@ mod tests {
     fn pill_labels_stay_compact() {
         for o in [
             ReadyOutcome::Inserted,
+            ReadyOutcome::InsertedBasic,
             ReadyOutcome::Copied,
             ReadyOutcome::ReviewCommand,
             ReadyOutcome::Discarded,

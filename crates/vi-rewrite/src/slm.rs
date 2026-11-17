@@ -127,6 +127,23 @@ pub struct LlamaServerSupervisor {
     startup_failed_permanently: bool,
     /// Set once /health answered for the current child process.
     healthy: bool,
+    /// Random per-session `--api-key`, so other local processes cannot query the server while
+    /// selected text is in flight.
+    api_key: String,
+    /// Context window (`-c`); a change takes effect at the next start.
+    ctx_size: u32,
+}
+
+/// 128 random bits as hex, from the standard library's OS-seeded hasher keys.
+fn session_api_key() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let part = |salt: u64| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(salt);
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.finish()
+    };
+    format!("{:016x}{:016x}", part(1), part(2))
 }
 
 impl LlamaServerSupervisor {
@@ -173,7 +190,24 @@ impl LlamaServerSupervisor {
             last_used: Instant::now(),
             startup_failed_permanently: false,
             healthy: false,
+            api_key: session_api_key(),
+            ctx_size: 2048,
         }
+    }
+
+    /// Sets the context window for the next start; restarts a running server if it changed.
+    pub fn set_context_size(&mut self, n: u32) {
+        if n != self.ctx_size {
+            self.ctx_size = n;
+            self.stop();
+        }
+    }
+
+    /// Starts the server if needed and returns its chat URL and per-session key for streaming.
+    pub fn chat_endpoint(&mut self) -> Result<(String, String)> {
+        let port = self.ensure_started()?;
+        self.last_used = Instant::now();
+        Ok((format!("http://127.0.0.1:{port}/v1/chat/completions"), self.api_key.clone()))
     }
 
     /// Starts llama-server without waiting for it to become healthy, so its model load overlaps
@@ -191,6 +225,7 @@ impl LlamaServerSupervisor {
             return;
         }
         let port = self.port;
+        let auth = format!("Bearer {}", self.api_key);
         let _ = std::thread::Builder::new()
             .name("keyreed-slm-slot-warmup".to_string())
             .spawn(move || {
@@ -213,7 +248,11 @@ impl LlamaServerSupervisor {
                                 "chat_template_kwargs": { "enable_thinking": false }
                             });
                             let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
-                            let _ = agent.post(&url).set("Content-Type", "application/json").send_json(payload);
+                            let _ = agent
+                                .post(&url)
+                                .set("Content-Type", "application/json")
+                                .set("Authorization", &auth)
+                                .send_json(payload);
                             break;
                         }
                     }
@@ -341,7 +380,7 @@ impl LlamaServerSupervisor {
         // observed on the Windows llama.cpp build (`-np 2` => sched->n_inputs failed).
         let mut args: Vec<String> = [
             "-fit", "off", "-m", &self.gguf_path.to_string_lossy(), "--host", "127.0.0.1", "--port", &port.to_string(),
-            "-c", "2048", "-np", "1", "--reasoning-budget", "0",
+            "-c", &self.ctx_size.to_string(), "-np", "1", "--reasoning-budget", "0", "--api-key", &self.api_key,
         ]
         .iter()
         .map(|s| s.to_string())
@@ -406,7 +445,11 @@ impl LlamaServerSupervisor {
                 .timeout_connect(Duration::from_secs(2))
                 .timeout_read(Duration::from_secs(10))
                 .build();
-            let _ = agent.post(&url).set("Content-Type", "application/json").send_json(payload);
+            let _ = agent
+                .post(&url)
+                .set("Content-Type", "application/json")
+                .set("Authorization", &format!("Bearer {}", self.api_key))
+                .send_json(payload);
             self.last_used = Instant::now();
         }
     }
@@ -472,6 +515,7 @@ impl LlamaServerSupervisor {
         let resp: ChatCompletionResp = agent
             .post(&url)
             .set("Content-Type", "application/json")
+            .set("Authorization", &format!("Bearer {}", self.api_key))
             .send_json(payload)
             .context("llama-server completion call failed")?
             .into_json()?;
@@ -507,7 +551,15 @@ impl Drop for LlamaServerSupervisor {
 
 #[cfg(test)]
 mod gpu_tests {
-    use super::pick_discrete_gpu;
+    use super::{pick_discrete_gpu, session_api_key};
+
+    #[test]
+    fn session_keys_are_long_and_differ() {
+        let (a, b) = (session_api_key(), session_api_key());
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
 
     #[test]
     fn picks_discrete_gpu_never_integrated_or_tiny() {
