@@ -7,7 +7,7 @@
 //! | Idle         | KeyReed mark only                                | 36 x 36            |
 //! | Idle + hover | mark + writing mode + shortcut                   | text-sized         |
 //! | Listening    | mark + 11-bar waveform of *measured* mic levels  | 98 x 36            |
-//! | Processing   | mark + "Transcribing" with a moving sheen        | text-sized         |
+//! | Processing   | mark + "Transcribing" (teal) with a moving sheen | text-sized         |
 //! | Done         | mark + check + "Inserted" / "Copied"             | text-sized         |
 //! | Error        | mark + alert + short plain-language reason       | text-sized         |
 //! | Fixing       | mark + "Fixing", one band of light sweeping      | text-sized         |
@@ -18,6 +18,9 @@
 //! final alpha is exact (GDI cannot write alpha into layered windows).
 
 use crate::icon_data::{KEYREED_ICON_64, KEYREED_ICON_SIZE};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Logical (96-DPI) capsule height. Every other dimension derives from it.
 pub const PILL_HEIGHT: f32 = 36.0;
@@ -60,6 +63,9 @@ pub mod palette {
     pub const ROSE: (u8, u8, u8) = (0xFB, 0x71, 0x85);
     pub const ROSE_TEXT: (u8, u8, u8) = (0xFE, 0xCD, 0xD3);
     pub const AMBER_TEXT: (u8, u8, u8) = (0xFD, 0xE6, 0x8A);
+    /// "Working" (Processing, Fixing): a cool teal, so amber stays reserved for "needs your attention".
+    pub const WORKING: (u8, u8, u8) = (0x2D, 0xD4, 0xBF);
+    pub const WORKING_TEXT: (u8, u8, u8) = (0x99, 0xF6, 0xE4);
     /// Slightly lifted circle behind the mark so the keycap's dark body keeps its silhouette.
     pub const WELL: (u8, u8, u8) = (0x1B, 0x29, 0x23);
 }
@@ -131,7 +137,7 @@ pub struct PillFrame<'a> {
     /// DPI scale (1.0 = 96 DPI).
     pub scale: f32,
     pub kind: PillKind,
-    /// Measured input levels, oldest first, each in `0.0..=1.0`. Only used while listening.
+    /// Bar heights, oldest first, each in `0.0..=1.0` and already shaped (see `WaveSim::bars`). Only used while listening.
     pub levels: &'a [f32],
     /// Seconds since the state began; drives the processing sheen only.
     pub phase: f32,
@@ -254,6 +260,109 @@ pub fn rms_to_level(rms: f32) -> f32 {
     ((db + 55.0) / 40.0).clamp(0.0, 1.0)
 }
 
+/// Meter ballistics for the listening waveform: pure and unit-testable, fed with the loudest RMS seen since the
+/// previous step. The constants follow a studied reference (35 ms attack, 95 ms decay) and the level is auto-ranged
+/// to the speaker (peak and room tracking), so a quiet laptop microphone still lights the bars. It reacts to
+/// measured audio only: with no input the bars rest at the floor.
+#[derive(Debug, Clone)]
+pub struct WaveSim {
+    peak: f32,
+    room: f32,
+    level: f32,
+    hist: [f32; WAVE_BARS],
+    acc: f32,
+}
+
+impl Default for WaveSim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WaveSim {
+    pub const fn new() -> Self {
+        Self { peak: -30.0, room: -55.0, level: 0.0, hist: [0.0; WAVE_BARS], acc: 0.0 }
+    }
+
+    fn follow(v: &mut f32, target: f32, tau: f32, dt: f32) {
+        *v += (target - *v) * (1.0 - (-dt / tau.max(1e-3)).exp());
+    }
+
+    /// Clears the bars and the smoothed level but keeps `peak` and `room`, so the auto level remembers the speaker.
+    pub fn restart(&mut self) {
+        self.level = 0.0;
+        self.hist = [0.0; WAVE_BARS];
+        self.acc = 0.0;
+    }
+
+    /// `rms`: hold-max RMS (linear, 0..1) since the previous call. `dt`: wall-clock seconds since the previous call.
+    pub fn step(&mut self, rms: f32, dt: f32) {
+        let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
+        let rms = if rms.is_finite() { rms.clamp(0.0, 1.0) } else { 0.0 };
+        let db = 20.0 * (rms + 1e-6).log10();
+        let room_tau = if db < self.room { 0.3 } else { 6.0 };
+        Self::follow(&mut self.room, db, room_tau, dt);
+        let floor = self.room.max(-60.0);
+        let lowest = floor + 16.0;
+        if db > self.peak {
+            Self::follow(&mut self.peak, db, 0.04, dt);
+        } else {
+            Self::follow(&mut self.peak, lowest, 3.0, dt);
+        }
+        self.peak = self.peak.max(lowest);
+        let low = (floor + 5.0).max(self.peak - 24.0);
+        let raw = ((db - low) / (self.peak - low).max(1.0)).clamp(0.0, 1.0);
+        let level_tau = if raw > self.level { 0.035 } else { 0.095 };
+        Self::follow(&mut self.level, raw, level_tau, dt);
+        self.acc += dt;
+        while self.acc >= 1.0 / 30.0 {
+            self.acc -= 1.0 / 30.0;
+            self.hist.rotate_left(1);
+            self.hist[WAVE_BARS - 1] = self.level;
+        }
+    }
+
+    /// Bar heights, oldest first. Loudness reads as its square root, so ordinary speech visibly moves the bars.
+    pub fn bars(&self) -> [f32; WAVE_BARS] {
+        self.hist.map(f32::sqrt)
+    }
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let m = |x: u8, y: u8| lerp(x as f32, y as f32, t).round().clamp(0.0, 255.0) as u8;
+    (m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
+}
+
+/// Resting grey to emerald as a bar rises, with a bright mint core on loud peaks (no hard threshold).
+fn bar_color(v: f32) -> (u8, u8, u8) {
+    let base = mix_rgb(palette::TEXT_3, palette::EMERALD_2, smoothstep(0.03, 0.14, v));
+    if v > 0.7 {
+        mix_rgb(base, palette::MINT, (0.6 * (v - 0.7) / 0.3).min(0.6))
+    } else {
+        base
+    }
+}
+
+thread_local! {
+    static ICON_CACHE: RefCell<HashMap<usize, Rc<Vec<u32>>>> = RefCell::new(HashMap::new());
+}
+
+/// `scaled_icon` memoised per size: the listener repaints every 16 ms while listening and the mark never changes.
+fn cached_icon(n: usize) -> Rc<Vec<u32>> {
+    ICON_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 8 {
+            c.clear();
+        }
+        c.entry(n).or_insert_with(|| Rc::new(scaled_icon(n))).clone()
+    })
+}
+
 /// Box-filters the 64px brand mark to `n` px (premultiplied BGRA).
 pub fn scaled_icon(n: usize) -> Vec<u32> {
     let src_n = KEYREED_ICON_SIZE;
@@ -314,12 +423,12 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         PillKind::IdleHover => (palette::MINT, 0.30, palette::SURFACE_HOVER),
         PillKind::Disabled => (palette::TEXT_3, 0.18, palette::SURFACE),
         PillKind::Listening => (palette::EMERALD, 0.85, palette::SURFACE),
-        PillKind::Processing => (palette::WARN, 0.55, palette::SURFACE),
+        PillKind::Processing => (palette::WORKING, 0.55, palette::SURFACE),
         PillKind::Done => (palette::EMERALD_2, 0.70, palette::SURFACE),
         PillKind::Notice => (palette::TEXT_2, 0.35, palette::SURFACE),
         PillKind::Attention => (palette::WARN, 0.75, palette::SURFACE),
         PillKind::Error => (palette::ROSE, 0.80, palette::SURFACE),
-        PillKind::Fixing => (palette::EMERALD_2, 0.55, palette::SURFACE),
+        PillKind::Fixing => (palette::WORKING, 0.55, palette::SURFACE),
         PillKind::Fixed => (palette::EMERALD_2, 0.70, palette::SURFACE),
     };
     let body_alpha = 0.96f32;
@@ -374,12 +483,12 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
 
     // 2) Brand mark in the left well (centred in a circle of diameter cap_h).
     let icon_n = m.icon.min(cap_h as usize);
-    let icon = scaled_icon(icon_n);
+    let icon = cached_icon(icon_n);
     let icon_alpha = if f.kind == PillKind::Disabled { 0.45 } else { 1.0 } * opacity;
     fill_circle(&mut px, width, height, left_cx, cy, radius - 3.0 * f.scale, palette::WELL, opacity);
     let ix0 = (left_cx - icon_n as f32 / 2.0).round() as isize;
     let iy0 = (cy - icon_n as f32 / 2.0).round() as isize;
-    blit_premul(&mut px, width, height, &icon, icon_n, icon_n, ix0, iy0, icon_alpha);
+    blit_premul(&mut px, width, height, icon.as_slice(), icon_n, icon_n, ix0, iy0, icon_alpha);
 
 
     if matches!(f.kind, PillKind::Idle | PillKind::Disabled) {
@@ -394,13 +503,18 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
             let max_half = cap_h * 0.30;
             let min_half = 1.2 * f.scale;
             let n = f.levels.len();
+            // Newest sample on the right; missing history renders as the floor.
+            let bar = |i: usize| if n >= WAVE_BARS - i { f.levels[n - (WAVE_BARS - i)].clamp(0.0, 1.0) } else { 0.0 };
+            // One soft capsule behind the bars, a little brighter the louder it is (no blur needed).
+            let mean = (0..WAVE_BARS).map(bar).sum::<f32>() / WAVE_BARS as f32;
+            let pad = 2.0 * f.scale;
+            let (gx, gy) = (content_x - pad, cy - max_half - pad);
+            fill_hcapsule(&mut px, width, height, gx, gy, m.wave_width() as f32 + 2.0 * pad, 2.0 * (max_half + pad), palette::EMERALD, (0.04 + 0.12 * mean) * opacity);
             for i in 0..WAVE_BARS {
-                // Newest sample on the right; missing history renders as the floor.
-                let lvl = if n >= WAVE_BARS - i { f.levels[n - (WAVE_BARS - i)] } else { 0.0 };
-                let half = min_half + (max_half - min_half) * lvl.clamp(0.0, 1.0);
+                let lvl = bar(i);
+                let half = min_half + (max_half - min_half) * lvl;
                 let bx = content_x + i as f32 * (m.bar_w + m.bar_gap);
-                let c = if lvl > 0.04 { palette::EMERALD_2 } else { palette::TEXT_3 };
-                fill_round_rect(&mut px, width, height, bx, cy - half, m.bar_w, half * 2.0, c, opacity);
+                fill_round_rect(&mut px, width, height, bx, cy - half, m.bar_w, half * 2.0, bar_color(lvl), opacity);
             }
         }
         PillKind::Done | PillKind::Error | PillKind::Attention | PillKind::Fixed => {
@@ -438,7 +552,7 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
         }
         PillKind::Fixing => {
             if let Some(t) = f.label {
-                blend_text(&mut px, width, height, &t, content_x, cy, palette::MINT, None, opacity);
+                blend_text(&mut px, width, height, &t, content_x, cy, palette::WORKING_TEXT, None, opacity);
             }
         }
         PillKind::Processing => {
@@ -453,7 +567,7 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                     &t,
                     content_x,
                     cy,
-                    palette::WARN,
+                    palette::WORKING_TEXT,
                     Some((band_x, 18.0 * f.scale)),
                     opacity,
                 );
@@ -720,12 +834,12 @@ fn blend_text(
             let mut a = cov;
             if let Some((bx, bw)) = sheen {
                 let k = (1.0 - ((dx as f32 - bx).abs() / bw)).clamp(0.0, 1.0);
-                // Base text at 72%, the sheen lifts toward warm white.
+                // Base text at 72%, the sheen lifts toward a cool white.
                 a = cov * (0.72 + 0.28 * k);
                 col = (
-                    lerp(c.0 as f32, 255.0, 0.35 * k) as u8,
-                    lerp(c.1 as f32, 245.0, 0.35 * k) as u8,
-                    lerp(c.2 as f32, 225.0, 0.35 * k) as u8,
+                    lerp(c.0 as f32, 236.0, 0.35 * k) as u8,
+                    lerp(c.1 as f32, 253.0, 0.35 * k) as u8,
+                    lerp(c.2 as f32, 245.0, 0.35 * k) as u8,
                 );
             }
             let i = dy as usize * w + dx as usize;
@@ -794,6 +908,93 @@ mod tests {
         let a = render_pill(w, h, &f2);
         f2.phase = 9.7;
         assert_eq!(a, render_pill(w, h, &f2));
+    }
+
+    /// Feeds a constant level for `secs` seconds in steps of `dt`.
+    fn run(sim: &mut WaveSim, db: f32, secs: f32, dt: f32) {
+        let rms = 10f32.powf(db / 20.0);
+        for _ in 0..(secs / dt).round() as usize {
+            sim.step(rms, dt);
+        }
+    }
+
+    #[test]
+    fn wave_sim_silence_stays_at_the_floor() {
+        let mut sim = WaveSim::new();
+        for _ in 0..300 {
+            sim.step(0.0, 1.0 / 60.0);
+        }
+        assert_eq!(sim.level, 0.0);
+        assert_eq!(sim.bars().len(), WAVE_BARS);
+        assert!(sim.bars().iter().all(|b| *b == 0.0));
+    }
+
+    #[test]
+    fn wave_sim_burst_rises_fast_and_decays() {
+        let mut sim = WaveSim::new();
+        run(&mut sim, -55.0, 5.0, 1.0 / 60.0);
+        run(&mut sim, -30.0, 0.1, 1.0 / 60.0);
+        assert!(sim.level > 0.8, "level after 100 ms burst {}", sim.level);
+        run(&mut sim, -120.0, 0.6, 1.0 / 60.0);
+        assert!(sim.level < 0.2, "level 600 ms after the burst {}", sim.level);
+    }
+
+    #[test]
+    fn wave_sim_adapts_to_a_constant_hum() {
+        let mut sim = WaveSim::new();
+        run(&mut sim, -20.0, 15.0, 1.0 / 60.0);
+        assert!(sim.level < 0.1, "a constant hum must not read as speech, got {}", sim.level);
+    }
+
+    #[test]
+    fn wave_sim_lights_up_for_a_quiet_speaker() {
+        let mut sim = WaveSim::new();
+        run(&mut sim, -60.0, 10.0, 1.0 / 60.0);
+        run(&mut sim, -45.0, 0.3, 1.0 / 60.0);
+        assert!(sim.level > 0.7, "quiet speech should still fill the bars, got {}", sim.level);
+    }
+
+    #[test]
+    fn wave_sim_is_frame_rate_independent() {
+        let (mut fast, mut slow) = (WaveSim::new(), WaveSim::new());
+        run(&mut fast, -40.0, 1.0, 1.0 / 240.0);
+        run(&mut slow, -40.0, 1.0, 1.0 / 20.0);
+        assert!((fast.level - slow.level).abs() <= 0.03, "{} vs {}", fast.level, slow.level);
+    }
+
+    #[test]
+    fn wave_sim_bars_are_square_rooted_and_restart_keeps_the_room() {
+        let mut sim = WaveSim::new();
+        sim.hist[WAVE_BARS - 1] = 0.25;
+        assert_eq!(sim.bars()[WAVE_BARS - 1], 0.5);
+        run(&mut sim, -40.0, 2.0, 1.0 / 60.0);
+        let (peak, room) = (sim.peak, sim.room);
+        sim.restart();
+        assert!(sim.bars().iter().all(|b| *b == 0.0) && sim.level == 0.0);
+        assert_eq!((sim.peak, sim.room), (peak, room));
+    }
+
+    #[test]
+    fn bar_colour_blends_continuously_from_grey_to_emerald_to_mint() {
+        assert_eq!(bar_color(0.0), palette::TEXT_3);
+        assert_eq!(bar_color(0.14), palette::EMERALD_2);
+        assert_ne!(bar_color(0.08), bar_color(0.0));
+        assert_ne!(bar_color(0.08), bar_color(0.14));
+        assert_ne!(bar_color(1.0), palette::EMERALD_2);
+    }
+
+    #[test]
+    fn working_is_teal_and_distinct_from_attention() {
+        let mask = vec![255u8; 20 * 10];
+        let t = TextMask { width: 20, height: 10, coverage: &mask };
+        let h = PillMetrics::for_scale(1.0).window_height();
+        let w = pill_window_width(1.0, PillKind::Error, 20, 0, 0);
+        let working = render_pill(w, h, &frame(PillKind::Processing, &[], Some(t)));
+        let attention = render_pill(w, h, &frame(PillKind::Attention, &[], Some(t)));
+        assert_ne!(working, attention);
+        // The capsule border is teal: its blue channel is higher than the amber border's.
+        let at = (h / 2) * w + w - PillMetrics::for_scale(1.0).margin - 1;
+        assert!((working[at] & 0xFF) > (attention[at] & 0xFF));
     }
 
     #[test]
