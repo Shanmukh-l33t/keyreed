@@ -2,6 +2,7 @@ pub mod cloud_llm;
 pub mod guards;
 pub mod paragraphs;
 pub mod slm;
+pub mod stream;
 pub mod symbols;
 pub mod tier0;
 
@@ -62,6 +63,12 @@ impl RewriteEngine {
                 s.warm_up_slot(mode);
             }
         }
+    }
+
+    /// Chat URL and per-session key of the local language model, starting it if needed;
+    /// `None` when no local model is installed.
+    pub fn chat_endpoint(&mut self) -> Option<anyhow::Result<(String, String)>> {
+        self.slm.as_mut().map(|s| s.chat_endpoint())
     }
 
     pub fn maybe_unload_idle(&mut self, idle_secs: u64) -> bool {
