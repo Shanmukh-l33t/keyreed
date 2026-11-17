@@ -11,6 +11,15 @@
 use anyhow::{bail, Result};
 use std::time::Duration;
 
+/// The input and clipboard gate: one lock serialises every clipboard transaction and every burst of
+/// synthetic input across threads, so a dictation delivered during a Quick Fix restore cannot
+/// collide with it. Not re-entrant: take it at the outermost call site only.
+static INPUT_GATE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+pub fn input_gate() -> parking_lot::MutexGuard<'static, ()> {
+    INPUT_GATE.lock()
+}
+
 pub fn normalize_windows_newlines(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 8);
     let mut prev_cr = false;

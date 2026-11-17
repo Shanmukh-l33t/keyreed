@@ -3,6 +3,7 @@ pub mod config;
 pub mod dictionary;
 pub mod history;
 pub mod ptt;
+pub mod textjob;
 pub mod types;
 
 pub use config::{AppConfig, CloudSettings, PrivacySettings};

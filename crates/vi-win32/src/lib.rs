@@ -11,7 +11,7 @@ pub mod settings;
 pub mod typing;
 pub mod ui;
 
-pub use clipboard::{normalize_windows_newlines, read_clipboard_unicode, write_clipboard_unicode};
+pub use clipboard::{input_gate, normalize_windows_newlines, read_clipboard_unicode, write_clipboard_unicode};
 pub use context::{capture_foreground_context, classify_application, is_private_browsing_title};
 pub use hotkey::{is_spec_physically_down, GlobalHotkeyEngine, HotkeyEvent, ModifierState};
 pub use overlay::{render_pill, PillFrame, PillKind};
