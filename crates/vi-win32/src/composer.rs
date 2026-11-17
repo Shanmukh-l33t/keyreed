@@ -13,7 +13,7 @@ mod bar;
 pub use bar::{app_label, apply, ComposerMsg, ComposerRequest, COMPOSER_WINDOW_CLASS};
 /// The Composer bar (plan F2): open, stream, deliver.
 pub mod composer_bar {
-    pub use super::bar::{close, hwnd, set_state_for_test, submit_for_test};
+    pub use super::bar::{click_point, close, hwnd, set_state_for_test, submit_for_test};
 }
 
 use crate::canvas::{text_width, Canvas, DT_LEFT, DT_SINGLELINE};

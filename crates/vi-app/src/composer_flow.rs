@@ -31,9 +31,9 @@ struct Session {
 }
 
 impl Session {
-    /// A new request runs on the kept selection, or on nothing.
-    fn submit_source(&self, selection: Option<&str>, use_selection: bool) -> String {
-        selection.filter(|_| use_selection).unwrap_or_default().to_string()
+    /// A new request runs on the kept selection, else on the draft typed into the bar, else on nothing.
+    fn submit_source(&self, selection: Option<&str>, use_selection: bool, draft: Option<String>) -> String {
+        selection.filter(|_| use_selection).map(str::to_string).or(draft).unwrap_or_default()
     }
 
     /// A follow-up runs on the latest result; there is nothing to follow up before the first answer.
@@ -93,17 +93,18 @@ impl ComposerFlow {
         self.open
     }
 
-    /// A preset or typed instruction: the selection when the user kept it, otherwise a blank draft.
+    /// A preset or typed instruction: the selection when the user kept it, the draft typed into the bar, or nothing.
     pub fn submit(
         &mut self,
         cfg: &AppConfig,
         instruction: Instruction,
         use_selection: bool,
+        draft: Option<String>,
         jobs: &Sender<JobRequest>,
         engine: &SharedEngine,
         style: &StyleStore,
     ) {
-        let source = self.session.submit_source(self.captured.as_ref().map(|c| c.text.as_str()), use_selection);
+        let source = self.session.submit_source(self.captured.as_ref().map(|c| c.text.as_str()), use_selection, draft);
         self.start(cfg, instruction, source, jobs, engine, style);
     }
 
@@ -267,11 +268,13 @@ mod tests {
     }
 
     #[test]
-    fn a_request_runs_on_the_selection_only_when_it_is_kept() {
+    fn a_request_runs_on_the_selection_when_kept_else_on_the_typed_draft() {
         let s = Session::default();
-        assert_eq!(s.submit_source(Some("selected"), true), "selected");
-        assert_eq!(s.submit_source(Some("selected"), false), "");
-        assert_eq!(s.submit_source(None, true), "");
+        assert_eq!(s.submit_source(Some("selected"), true, None), "selected");
+        assert_eq!(s.submit_source(Some("selected"), true, Some("draft".into())), "selected", "the selection wins");
+        assert_eq!(s.submit_source(Some("selected"), false, Some("draft".into())), "draft", "selection removed: the draft");
+        assert_eq!(s.submit_source(Some("selected"), false, None), "");
+        assert_eq!(s.submit_source(None, true, None), "");
     }
 
     #[test]
@@ -292,14 +295,14 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let engine: SharedEngine = Arc::new(parking_lot::Mutex::new(RewriteEngine::new(None)));
         let mut f = flow();
-        f.submit(&AppConfig::default(), Instruction::Improve, true, &tx, &engine, &StyleStore::default());
+        f.submit(&AppConfig::default(), Instruction::Improve, true, None, &tx, &engine, &StyleStore::default());
         let (job, _) = rx.try_recv().expect("a job");
         assert_eq!((job.kind, job.instruction), (TextJobKind::Compose, Instruction::Improve));
         assert_eq!(job.source, "", "no selection was captured");
         assert_eq!(job.max_output_tokens, compose::token_limit(&ComposeJob::new(Instruction::Improve, "")));
         assert!(job.cloud.is_none(), "the local route carries no cloud target");
         // A second submit while one runs is dropped.
-        f.submit(&AppConfig::default(), Instruction::Shorter, true, &tx, &engine, &StyleStore::default());
+        f.submit(&AppConfig::default(), Instruction::Shorter, true, None, &tx, &engine, &StyleStore::default());
         assert!(rx.try_recv().is_err());
     }
 
@@ -310,7 +313,7 @@ mod tests {
         let mut style = StyleStore::default();
         assert!(style.set_locked("dialect", Scope::Everywhere, "british", 1));
         let mut f = flow();
-        f.submit(&AppConfig::default(), Instruction::Fix, true, &tx, &engine, &style);
+        f.submit(&AppConfig::default(), Instruction::Fix, true, None, &tx, &engine, &style);
         let (job, _) = rx.try_recv().expect("a job");
         assert!(job.style_block.as_deref().is_some_and(|b| b.contains("British")), "the spelling habit is in the prompt");
     }
@@ -328,7 +331,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let engine: SharedEngine = Arc::new(parking_lot::Mutex::new(RewriteEngine::new(None)));
         let mut f = flow();
-        f.submit(&AppConfig::default(), Instruction::Fix, true, &tx, &engine, &StyleStore::default());
+        f.submit(&AppConfig::default(), Instruction::Fix, true, None, &tx, &engine, &StyleStore::default());
         let (job, _) = rx.try_recv().expect("a job");
         match f.handle(TextJobEvent::Failed { id: job.id, reason: JobFailure::NoWritingModel }) {
             Some(ComposerMsg::Failed { message, settings }) => {
