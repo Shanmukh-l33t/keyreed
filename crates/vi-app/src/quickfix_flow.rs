@@ -67,6 +67,7 @@ impl QuickFixFlow {
             max_output_tokens: 0,
             terms: if cfg.dictionary.enabled { cfg.dictionary.vocabulary.clone() } else { Vec::new() },
             cancel: Default::default(),
+            cloud: None,
         };
         if jobs.send((job, engine.clone())).is_err() {
             return refuse(gui, "Quick Fix isn't available right now.");

@@ -38,6 +38,27 @@ pub struct TextJob {
     /// Personal-dictionary terms Quick Fix never changes.
     pub terms: Vec<String>,
     pub cancel: Arc<AtomicBool>,
+    /// The cloud endpoint to run on, set only when the route rule chose it (never under Maximum Privacy).
+    pub cloud: Option<CloudTarget>,
+}
+
+/// A cloud endpoint for a text job. Built by `route::Route::target` only, which keeps the offline profile off it.
+#[derive(Clone)]
+pub struct CloudTarget {
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: String,
+}
+
+/// The API key is redacted: a job is occasionally formatted into a log line, and the text never is.
+impl std::fmt::Debug for CloudTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudTarget")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Why a text job failed. A closed list, so the UI can say each in one plain sentence.

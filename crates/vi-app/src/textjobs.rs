@@ -53,25 +53,33 @@ fn run_job(job: &TextJob, engine: &SharedEngine, events: &Sender<TextJobEvent>) 
         TextJobKind::QuickFix => failed(JobFailure::Unavailable),
         TextJobKind::DeepFix | TextJobKind::Compose | TextJobKind::VoiceCommand => {
             let _ = events.send(TextJobEvent::Stage { id, stage: "waiting_for_model" });
-            let mut eng = engine.lock();
-            let (url, key) = match eng.chat_endpoint() {
-                None => return failed(JobFailure::NoWritingModel),
-                Some(Err(e)) => {
-                    log::warn!("text job {id}: local model failed to start: {e:#}");
-                    return failed(JobFailure::ModelFailed);
-                }
-                Some(Ok(ep)) => ep,
+            // The local model's lock is held for the whole job, so dictation falls back to rules meanwhile.
+            let mut local = job.cloud.is_none().then(|| engine.lock());
+            let (url, key, model) = match &job.cloud {
+                Some(c) => (c.endpoint.clone(), Some(c.api_key.clone()), Some(c.model.clone())),
+                None => match local.as_mut().expect("locked above").chat_endpoint() {
+                    None => return failed(JobFailure::NoWritingModel),
+                    Some(Err(e)) => {
+                        log::warn!("text job {id}: local model failed to start: {e:#}");
+                        return failed(JobFailure::ModelFailed);
+                    }
+                    Some(Ok((url, key))) => (url, Some(key), None),
+                },
             };
             let _ = events.send(TextJobEvent::Stage { id, stage: "writing" });
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "messages": job_messages(job),
                 "temperature": 0.2,
                 "max_tokens": job.max_output_tokens,
                 "cache_prompt": true,
                 "chat_template_kwargs": { "enable_thinking": false }
             });
+            // A cloud endpoint picks the model by name; llama-server serves the one it was started with.
+            if let Some(model) = model {
+                body["model"] = serde_json::Value::String(model);
+            }
             let max_chars = job.max_output_tokens as usize * 6;
-            let res = stream_chat(&url, Some(&key), body, max_chars, Duration::from_secs(60), &job.cancel, |t| {
+            let res = stream_chat(&url, key.as_deref(), body, max_chars, Duration::from_secs(60), &job.cancel, |t| {
                 let _ = events.send(TextJobEvent::Token { id, text: t.to_string() });
             });
             match res {
@@ -158,6 +166,7 @@ mod tests {
             max_output_tokens: 64,
             terms: Vec::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+            cloud: None,
         }
     }
 

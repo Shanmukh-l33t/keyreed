@@ -6,6 +6,7 @@ pub mod editwatch;
 pub mod habits;
 pub mod history;
 pub mod ptt;
+pub mod route;
 pub mod shortcut;
 pub mod style;
 pub mod textjob;

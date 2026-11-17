@@ -2,6 +2,8 @@
 // A console is attached only when a flag is present, so closing a terminal does not end the tray app.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
+mod composer_flow;
+#[cfg(windows)]
 mod gallery;
 mod quickfix_flow;
 mod textjobs;
@@ -1877,6 +1879,26 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
     Ok(())
 }
 
+/// The route rule's answer for this configuration (plan P3.5). A writing model counts only when its
+/// weight file is on disk, so an uninstalled one reports as unavailable instead of failing at submit.
+#[cfg(windows)]
+fn route_for(cfg: &AppConfig) -> vi_core::route::Route {
+    let installed = !RuntimePaths::discover(cfg).find_gguf_candidates(&cfg.local_llm_model).is_empty();
+    let local = installed.then_some(cfg.local_llm_model.as_str());
+    vi_core::route::route(cfg.processing_profile, cfg.text_jobs_allow_cloud, &cfg.cloud, local)
+}
+
+/// The cloud target a text job carries, or `None` when the route is local. The key is only decrypted
+/// when the route already chose the cloud.
+#[cfg(windows)]
+fn job_cloud(cfg: &AppConfig, route: &vi_core::route::Route) -> Option<vi_core::textjob::CloudTarget> {
+    if !route.cloud {
+        return None;
+    }
+    let key = cfg.cloud.encrypted_api_key_b64.as_deref().and_then(|b| dpapi_decrypt_from_b64(b).ok()).unwrap_or_default();
+    route.target(&cfg.cloud, key)
+}
+
 #[cfg(windows)]
 fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     harden_and_init_process();
@@ -1959,8 +1981,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut captured_fg_ctx = ForegroundContext::default();
             let mut last_external_fg_ctx = ForegroundContext::default();
             let mut last_completed_text = String::new();
-            // The selection the open Composer works on (memory only; dropped when the Composer closes).
-            let mut composer_target: Option<vi_win32::selection::Captured> = None;
+            let mut composer = composer_flow::ComposerFlow::default();
             let mut quick_fix = quickfix_flow::QuickFixFlow::default();
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
@@ -2044,22 +2065,25 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     // Never copy from KeyReed's own windows or where the selection service refuses.
                                     let allowed = ctx.process_id != std::process::id()
                                         && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
-                                    composer_target = if allowed {
+                                    let captured = if allowed {
                                         vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
                                     } else {
                                         None
                                     };
+                                    // One rule decides the route, for the label and for the job (plan P3.5).
+                                    let route = route_for(&cfg);
+                                    let selection = captured.as_ref().map(|c| c.text.clone());
+                                    composer.open(captured, ctx.clone(), job_cloud(&cfg, &route));
                                     gui_for_worker.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
-                                        selection: composer_target.as_ref().map(|c| c.text.clone()),
+                                        selection,
                                         app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
-                                        // The writing model and the route rule come in P3.5 and P3.6.
-                                        route: "On this PC · built-in model".into(),
-                                        cloud: false,
-                                        unavailable: false,
+                                        route: route.label,
+                                        cloud: route.cloud,
+                                        unavailable: !route.allowed,
                                     }));
                                 }
                             }
-                            Ok(UiAction::ComposerClosed) => drop(composer_target.take()),
+                            Ok(UiAction::ComposerClosed) => composer.close(),
                             Ok(UiAction::SavePillPosition(x, y)) => {
                                 cfg.floating_pill_pos = Some((x, y));
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2390,14 +2414,20 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 let _ = cfg.save_atomic(&cfg_path);
                             }
                             // The deeper pass is not in this build: the pill shows no Deeper chip.
-                            Ok(UiAction::QuickFixDeeper)
-                            // Composer actions: wired to the text-job worker and delivery in P3.3 and P3.4.
-                            | Ok(UiAction::ComposerSubmit { .. })
-                            | Ok(UiAction::ComposerFollowUp(_))
-                            | Ok(UiAction::ComposerRegenerate)
-                            | Ok(UiAction::ComposerCancel)
-                            | Ok(UiAction::ComposerDeliver { .. })
-                            | Ok(UiAction::ComposerDictate) => {}
+                            Ok(UiAction::QuickFixDeeper) => {}
+                            // Voice input into the Composer arrives with P3.7.
+                            Ok(UiAction::ComposerDictate) => {}
+                            Ok(UiAction::ComposerSubmit { instruction, use_selection }) => {
+                                composer.submit(&cfg, instruction, use_selection, &job_tx, &supervisor.rewrite);
+                            }
+                            Ok(UiAction::ComposerFollowUp(instruction)) => {
+                                composer.follow_up(&cfg, instruction, &job_tx, &supervisor.rewrite);
+                            }
+                            Ok(UiAction::ComposerRegenerate) => {
+                                composer.regenerate(&cfg, &job_tx, &supervisor.rewrite);
+                            }
+                            Ok(UiAction::ComposerCancel) => composer.cancel(),
+                            Ok(UiAction::ComposerDeliver { how, text }) => composer.deliver(how, &text, &cfg, &gui_for_worker),
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);
@@ -2413,9 +2443,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         }
                     }
                     recv(job_ev_rx) -> ev => {
-                        // Composer events join in P3.4.
                         if let Ok(ev) = ev {
-                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
+                            // Both flows see every event and ignore the jobs that are not theirs.
+                            quick_fix.on_job_event(ev.clone(), &cfg, &gui_for_worker);
+                            composer.on_job_event(ev, &gui_for_worker);
                         }
                     }
                     recv(ticker) -> _ => {
