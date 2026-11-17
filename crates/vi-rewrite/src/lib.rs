@@ -1,4 +1,5 @@
 pub mod cloud_llm;
+pub mod compose;
 pub mod gector;
 pub mod guards;
 pub mod paragraphs;

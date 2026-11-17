@@ -69,7 +69,7 @@ const ABBREVIATIONS: &[&str] = &["mr.", "mrs.", "ms.", "dr.", "prof.", "e.g.", "
 
 const EMOTICONS: &[&str] = &[":)", ":-)", ":(", ":-(", ";)", ";-)", ":D", ":P", ":p", "xD", "XD"];
 
-fn dialect_words() -> &'static (HashSet<&'static str>, HashSet<&'static str>) {
+pub(crate) fn dialect_words() -> &'static (HashSet<&'static str>, HashSet<&'static str>) {
     static SETS: OnceLock<(HashSet<&'static str>, HashSet<&'static str>)> = OnceLock::new();
     SETS.get_or_init(|| (SPELLINGS.iter().map(|p| p.0).collect(), SPELLINGS.iter().map(|p| p.1).collect()))
 }
