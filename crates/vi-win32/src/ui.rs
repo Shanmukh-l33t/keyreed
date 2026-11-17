@@ -646,9 +646,12 @@ mod tests {
     }
 
     #[test]
-    fn asr_catalog_ui_has_six_models_and_one_recommendation() {
-        assert_eq!(ASR_UI_CATALOG.len(), 6);
+    fn asr_catalog_ui_lists_every_model_once_with_one_recommendation() {
         assert_eq!(ASR_UI_CATALOG.iter().filter(|m| m.recommended).count(), 1);
+        for m in ASR_UI_CATALOG.iter() {
+            assert!(asr_ui_info(m.id).is_some(), "{} has no info entry", m.id);
+            assert_eq!(ASR_UI_CATALOG.iter().filter(|o| o.id.eq_ignore_ascii_case(m.id)).count(), 1, "{} listed twice", m.id);
+        }
         assert!(asr_ui_info("PARAKEET-TDT-0.6B-V2-INT8").is_some());
     }
 

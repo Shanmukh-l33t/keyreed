@@ -135,6 +135,13 @@ pub struct AppConfig {
     pub privacy: PrivacySettings,
     pub cloud: CloudSettings,
     pub dictionary: PersonalDictionary,
+    /// Text jobs (Quick Fix, Composer, voice commands) may use the configured cloud endpoint. Never used under the
+    /// Maximum Privacy profile (plan P3.5).
+    #[serde(default)]
+    pub text_jobs_allow_cloud: bool,
+    /// Learn words and habits from the corrections the user makes to KeyReed's own text (plan F3, P4.2).
+    #[serde(default = "default_true")]
+    pub learn_from_edits: bool,
 }
 
 impl Default for AppConfig {
@@ -171,6 +178,8 @@ impl Default for AppConfig {
             privacy: PrivacySettings::default(),
             cloud: CloudSettings::default(),
             dictionary: PersonalDictionary::default(),
+            text_jobs_allow_cloud: false,
+            learn_from_edits: true,
         }
     }
 }
@@ -314,6 +323,10 @@ mod tests {
         assert_eq!(cfg.output_mode, OutputMode::DirectTyping);
         assert_eq!(cfg.processing_profile, ProcessingProfile::MaxPrivacyOffline);
         assert_eq!(cfg.local_asr_model, "parakeet-tdt-0.6b-v2-int8");
+        // New 2.1 keys: cloud stays off for text jobs, learning stays on, and an older file keeps both defaults.
+        assert!(!cfg.text_jobs_allow_cloud && cfg.learn_from_edits);
+        let (old, dropped) = AppConfig::parse_lenient(r#"{"processing_profile": "max_privacy_offline"}"#);
+        assert!(dropped.is_empty() && !old.text_jobs_allow_cloud && old.learn_from_edits);
     }
 
     #[test]

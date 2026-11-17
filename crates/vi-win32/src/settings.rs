@@ -689,8 +689,10 @@ struct St {
     practice_text: String,
     key_draft: String,
     last_page: usize,
-    /// Logical scroll offset of the content column (non-zero only when the work area is too short).
+    /// Logical scroll offset of the content column (non-zero only when the layout is taller than the view).
     scroll: i32,
+    /// Logical height of the current page's content (some pages, e.g. eight speech models, are taller than the window).
+    content_h: i32,
     /// Logical client height.
     view_h: i32,
     /// Toggles sliding to a new state: (control id, start). Empty unless a switch was just flipped.
@@ -2006,6 +2008,24 @@ fn on_enter() {
 }
 
 /// Full rebuild of page controls (page switch / DPI change / structure change).
+/// The logical bottom of a page: the lowest control or item, never less than the window.
+fn content_height(items: &[Item], ctrls: &[Ctrl]) -> i32 {
+    let items_bottom = items.iter().map(|it| match it {
+        Item::Text { r, .. }
+        | Item::Meter { r, .. }
+        | Item::Progress { r, .. }
+        | Item::Glyph { r, .. }
+        | Item::Steps { r, .. }
+        | Item::Banner { r, .. }
+        | Item::Group { r }
+        | Item::Card { r } => r.y + r.h,
+        Item::Badge { y, .. } | Item::Keycap { y, .. } => y + 22,
+        Item::Divider { y, .. } => *y,
+    });
+    let ctrls_bottom = ctrls.iter().map(|c| c.r.y + c.r.h);
+    items_bottom.chain(ctrls_bottom).max().unwrap_or(WIN_H).max(WIN_H) + 24
+}
+
 fn rebuild(focus_first: bool) {
     let Some(m) = snapshot() else { return };
     // Phase 1: compute under the borrow and take ownership of the old controls.
@@ -2015,6 +2035,7 @@ fn rebuild(focus_first: bool) {
         let saved = st.saved_at.map(|t| t.elapsed().as_millis() < 1800).unwrap_or(false);
         let (items, ctrls) = build(st.page, st.step, &m, saved);
         let old: Vec<(Ctrl, HWND)> = st.ctrls.drain(..).collect();
+        st.content_h = content_height(&items, &ctrls);
         st.items = items;
         Some((ctrls, old, ctx_of(st), st.page))
     });
@@ -2560,7 +2581,7 @@ fn scroll_by(delta: i32) {
     let moved = ST.with(|s| {
         let mut sb = s.borrow_mut();
         let st = sb.as_mut()?;
-        let max = (WIN_H - st.view_h).max(0);
+        let max = (st.content_h - st.view_h).max(0);
         let new = (st.scroll + delta).clamp(0, max);
         if new == st.scroll {
             return None;
@@ -3260,6 +3281,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     key_draft: String::new(),
                     last_page: page,
                     scroll: 0,
+                    content_h: WIN_H,
                     view_h: WIN_H,
                     anims: Vec::new(),
                 })
@@ -3331,7 +3353,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             ST.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     st.view_h = (h_px as f32 * 96.0 / st.dpi as f32).round() as i32;
-                    st.scroll = st.scroll.clamp(0, (WIN_H - st.view_h).max(0));
+                    st.scroll = st.scroll.clamp(0, (st.content_h - st.view_h).max(0));
                 }
             });
             0
@@ -3475,8 +3497,10 @@ mod tests {
         }
     }
 
+    /// Horizontally on screen and below the top. Taller pages scroll (see `content_height`), so a control
+    /// may sit past the window's bottom edge.
     fn rect_ok(rr: &R) -> bool {
-        rr.x >= 0 && rr.y >= 0 && rr.x + rr.w <= WIN_W && rr.y + rr.h <= WIN_H
+        rr.x >= 0 && rr.y >= 0 && rr.x + rr.w <= WIN_W && rr.y + rr.h <= WIN_H * 2
     }
 
     #[test]
@@ -3546,11 +3570,14 @@ mod tests {
             Kind::Button { label, .. } => label.clone(),
             _ => unreachable!(),
         };
+        // Button ids follow the catalogue order, so look the models up instead of hardcoding an index.
+        let idx = |id: &str| M_ACT + ASR_UI_CATALOG.iter().position(|m| m.id.eq_ignore_ascii_case(id)).expect("in the catalogue") as i32;
         assert_eq!(label(M_ACT), "In use");
-        assert_eq!(label(M_ACT + 2), "Use");
-        assert_eq!(label(M_ACT + 5), "Cancel");
-        assert_eq!(label(M_ACT + 3), "Download");
-        assert!(!ctrls.iter().find(|c| c.id == M_ACT + 3).unwrap().enabled, "one download at a time");
+        assert_eq!(label(idx("moonshine-base-en-int8")), "Use");
+        assert_eq!(label(idx("whisper-small.en-int8")), "Cancel");
+        let idle = idx("sense-voice-small-int8");
+        assert_eq!(label(idle), "Download");
+        assert!(!ctrls.iter().find(|c| c.id == idle).unwrap().enabled, "one download at a time");
     }
 
     #[test]
