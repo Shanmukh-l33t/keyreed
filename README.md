@@ -13,7 +13,7 @@
   </p>
   <p>
     <a href="https://keyreed-website.vercel.app"><strong>Website</strong></a> ·
-    <a href="https://github.com/Shanmukh-l33t/keyreed/releases/latest"><strong>Download</strong></a> ·
+    <a href="https://github.com/Shanmukh-l33t/keyreed/releases"><strong>Download</strong></a> ·
     <a href="docs/installation.md"><strong>Install guide</strong></a> ·
     <a href="docs/architecture.md"><strong>Architecture</strong></a> ·
     <a href="docs/troubleshooting.md"><strong>Troubleshooting</strong></a> ·
@@ -37,7 +37,7 @@ Select text in any application and press **Ctrl + Win + G**. KeyReed proposes sp
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`24.2 MB`) from the [latest release](https://github.com/Shanmukh-l33t/keyreed/releases/latest).
+1. Download **`KeyReed-Setup-x64.exe`** (`24.2 MB`) from the [2.0.0-beta.1 pre-release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.0.0-beta.1). The newest stable release is [0.5.1](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v0.5.1).
 2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
