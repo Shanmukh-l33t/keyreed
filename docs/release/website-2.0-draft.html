@@ -1,0 +1,145 @@
+<!--
+  KeyReed 2.0 website sections: DRAFT by lane B. Not part of the site.
+
+  How to use: each block below is written in the markup and class names of website/index.html (.sec, .sec-head,
+  .feat, .facts, .fact, .cmp, .cmp-foot, .fine) so it can be pasted in place. website/ itself was not edited.
+
+  Every claim carries a visible "[confirm before publishing]" tag and a data-confirm attribute naming what to check.
+  Rules for the main builder:
+    1. Delete any block, row or sentence whose feature did not ship.
+    2. Replace each [bracket] with a measured figure or remove the sentence.
+    3. Delete every "[confirm before publishing]" tag once the claim has been checked against the release build.
+  Also needed when publishing (not drafted here): the version number (0.5.1 -> 2.0.x) in the JSON-LD, download links,
+  file names and sizes, and the page title and description if they should mention fixing and writing.
+  The claims come from plan sections A, B, C1, C2 and C3 only.
+-->
+
+<!-- ===== 1. Hero line (replace the sub-heading under the existing h1, or use as the strip text) ===== -->
+<p class="hero-sub" data-confirm="positioning line from plan section A">
+  Speak it, fix it, write it. On your PC. <mark>[confirm before publishing]</mark>
+</p>
+
+<!-- ===== 2. Features: add these articles inside <section id="features">, after the existing ones ===== -->
+
+<article class="feat" data-reveal data-confirm="Quick Fix shipped; shortcut; Review panel; Undo">
+  <div class="feat-copy">
+    <p class="eyebrow sm">Quick Fix</p>
+    <h3>Select it. Fix it. See what changed.</h3>
+    <p>Select text in almost any app and press the Quick Fix shortcut [default: confirm]. KeyReed corrects typos, missing apostrophes, doubled words and common slips, and shows every changed word in a small review panel before anything is replaced. Enter replaces, Esc leaves your text alone. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">It fixes; it does not rewrite. Links, e-mail addresses, file paths, numbers, names, code and shell commands are left exactly as you typed them. After a fix, Undo stays on the pill for a few seconds. English only for now. <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis">
+    <!-- Screenshot slot: Review panel, from --ui-gallery. Replace with a real capture. -->
+    <figure class="shot"><img src="assets/screenshots/review-panel.png" alt="The Quick Fix review panel with each changed word underlined" loading="lazy"><figcaption class="fine">Capture needed from the release build.</figcaption></figure>
+  </div>
+</article>
+
+<article class="feat flip" data-reveal data-confirm="Quick Fix works offline; model name and size; time per paragraph">
+  <div class="feat-copy">
+    <p class="eyebrow sm">Offline correction</p>
+    <h3>Correction that does not need the internet.</h3>
+    <p>Quick Fix uses the Windows spell checker, KeyReed's own rules and a small grammar model that runs on your CPU. The model is a one-time download of about [112 MB, confirm], checked against a size and SHA-256 before it loads. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">Honest limits: it catches common slips, not every error, and it is built to leave correct text alone rather than guess. A second, closer look ("Deeper") asks a language model and always shows its answer for review; it never replaces text by itself. [State where Deeper runs: on this PC, or cloud only with the cloud switch on.] <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis">
+    <div class="models lit" data-stagger data-confirm="figures must come from the release gate run">
+      <div class="models-head"><span>Gate</span><span>Result</span></div>
+      <div class="model"><div><b>Correct sentences changed</b><small>everyday / technical</small></div><span>[x percent / y percent]</span></div>
+      <div class="model"><div><b>Protected tokens changed</b><small>links, paths, numbers, commands</small></div><span>[0]</span></div>
+      <p class="models-foot">Figures from KeyReed's own test set, published with the source. [Fill in from the release run or delete this card.] <mark>[confirm before publishing]</mark></p>
+    </div>
+  </div>
+</article>
+
+<article class="feat" data-reveal data-confirm="Composer shipped; presets; streaming; route label; model options">
+  <div class="feat-copy">
+    <p class="eyebrow sm">The Composer</p>
+    <h3>A small writing window, beside your text.</h3>
+    <p>Click the KeyReed pill. If you had text selected, a chip says exactly what will be used ("Using selection, 412 characters from Outlook") and you can remove it. Choose Fix, Improve, Shorter, Change tone, Summarise, or type your own instruction. The answer streams in as it is written; Esc stops it. Then Insert, Replace, Copy or Regenerate. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">The window always says where the work runs: "On this PC, model name" or "Cloud, host, model". Nothing is sent anywhere before you press Submit. Cloud is its own switch, off by default, and agreeing to cloud dictation does not send a selected email. <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis">
+    <figure class="shot"><img src="assets/screenshots/composer.png" alt="The Composer window with a selection chip, six actions and a streaming answer" loading="lazy"><figcaption class="fine">Capture needed from the release build.</figcaption></figure>
+  </div>
+</article>
+
+<article class="feat flip" data-reveal data-confirm="Qwen3.5 2B and 4B download; sizes; licence; bundled model default">
+  <div class="feat-copy">
+    <p class="eyebrow sm">Your model, your choice</p>
+    <h3>Start small. Go bigger if your PC can.</h3>
+    <p>The Composer works with the small model KeyReed already ships. For better writing you can download Qwen3.5 2B (about 1.3 GB) or 4B (about 2.7 GB), both Apache-2.0, and KeyReed suggests one that fits your PC's memory and processor. Only one is loaded at a time, and every file is verified before it is used. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">Nothing downloads unless you ask. [Say which one is suggested for which PC, as shipped.] <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis"></div>
+</article>
+
+<article class="feat" data-reveal data-confirm="voice instruction on a selection; dictation key inside the Composer">
+  <div class="feat-copy">
+    <p class="eyebrow sm">Speak your instruction</p>
+    <h3>Say what you want done to the selection.</h3>
+    <p>The dictation key works inside the Composer. A separate shortcut [confirm it shipped] takes a spoken instruction ("make this shorter and friendlier") and applies it to your selection, with the result shown for review. <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis"></div>
+</article>
+
+<article class="feat flip" data-reveal data-confirm="My style: words, habits, Style Card, controls, browsers off">
+  <div class="feat-copy">
+    <p class="eyebrow sm">My style</p>
+    <h3>It learns your words, and shows you what it learned.</h3>
+    <p>Correct "cooper netties" to "Kubernetes" once and KeyReed notices. The second time, the word goes into your dictionary, which also helps the speech recogniser, and the pill says so once, with Undo. A correction seen once waits in a Suggestions list. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">KeyReed also counts habits, such as British or American spelling, contractions, serial commas and short-message full stops, from text you hand to Fix or Improve and from samples you paste in. It keeps counts, never the text. The Style Card lists each habit with its evidence; Keep, Edit or Remove any of them, and anything you set yourself is never overridden. Quick Fix leaves alone habits you hold, and writing requests get a short style note. <mark>[confirm before publishing]</mark></p>
+    <p class="muted">Pause, Reset, Export and Delete everything are in Settings; one switch turns learning from your edits off. Learned data is a plain JSON file beside your history, never sent anywhere. <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis">
+    <div class="ctx lit" data-stagger data-confirm="Style Card wording and example figures must match the shipped screen">
+      <div class="ctx-head"><span>Habit</span><span>Evidence</span></div>
+      <div class="ctx-row"><span>British spelling</span><i></i><em>[41 of 44 sentences]</em></div>
+      <div class="ctx-row"><span>Uses contractions</span><i></i><em>[Chat only]</em></div>
+      <div class="ctx-row"><span>Serial comma</span><i></i><em>[Set by you]</em></div>
+      <p class="ctx-foot">Example only. [Replace with a real capture.] <mark>[confirm before publishing]</mark></p>
+    </div>
+  </div>
+</article>
+
+<article class="feat" data-reveal data-confirm="pill click action setting; performance profile">
+  <div class="feat-copy">
+    <p class="eyebrow sm">Light on low-end PCs</p>
+    <h3>Dictation stays as fast as it was.</h3>
+    <p>A performance profile (Auto, Standard, Light) keeps KeyReed small on PCs with four or fewer logical processors or 8 GB of memory or less: the small grammar model, fewer threads, and no reading of browser windows. Dictation is unchanged. [Add the benchmark comparison against 0.5.1 if it shipped.] <mark>[confirm before publishing]</mark></p>
+    <p class="muted">Clicking the pill now opens the Composer. "When I click the pill" in Settings lets you keep the old click (start dictation) or turn it off. <mark>[confirm before publishing]</mark></p>
+  </div>
+  <div class="feat-vis"></div>
+</article>
+
+<!-- ===== 3. Privacy: add one fact card to <div class="facts"> in <section id="privacy"> ===== -->
+
+<div class="fact" data-confirm="C1 privacy sentence, verbatim from the plan; keep only if learning shipped as described">
+  <h3>What you correct stays here</h3>
+  <p>What you say, write and correct stays on this PC. KeyReed never logs keystrokes and never captures the screen. To learn your words it re-checks the text box it just typed into, for up to a minute, compares in memory and keeps only the corrected words. One switch turns that off. <mark>[confirm before publishing]</mark></p>
+</div>
+
+<!-- Also in privacy: replace the sub-heading's "audio" wording only if the main builder wants text covered too, and
+     add this fact so the clipboard is explained honestly. -->
+<div class="fact" data-confirm="clipboard behaviour of Quick Fix, from plan C2 and the P2.3/P2.4 code">
+  <h3>How Quick Fix uses the clipboard</h3>
+  <p>To read your selection, KeyReed copies it through the Windows clipboard, so the copy can show in clipboard history or a clipboard manager. KeyReed saves what was on your clipboard first and puts it back afterwards, and stops with a message if it cannot put it back. <mark>[confirm before publishing]</mark></p>
+</div>
+
+<!-- Also add to the "Network, precisely" fact, only if true in the release: "Not needed for Quick Fix, the Composer
+     with a local model, or learning, once the models are installed." -->
+
+<!-- ===== 4. Comparison: extra rows for the <tbody> of table#cmp (KeyReed vs Wispr Flow) ===== -->
+<!-- Wispr Flow claims below come from plan section A and C1 (its Command Mode and Context Awareness docs). Re-read
+     docs.wisprflow.ai and wisprflow.ai/pricing the day you publish; the site's footnote already says "checked in
+     November 2026" and the date must be updated. -->
+<tr data-confirm="Quick Fix shipped"><th scope="row">Fix selected text</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Select, press a shortcut, review the changes. Offline, free <mark>[confirm before publishing]</mark></td><td>Command Mode: select text, hold a key, speak, the selection is replaced. Paid feature, needs the cloud</td></tr>
+<tr data-confirm="Composer shipped"><th scope="row">Rewrite or draft with an instruction</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>The Composer, on this PC by default; cloud only through its own switch <mark>[confirm before publishing]</mark></td><td>Command Mode, in Wispr's cloud</td></tr>
+<tr data-confirm="learning shipped; Wispr Context Awareness wording from its docs"><th scope="row">What it learns about you</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Your corrected words and writing habits, in a file you can read and edit; the text box is compared in memory and never sent <mark>[confirm before publishing]</mark></td><td>Context Awareness is on by default and can send textbox contents with a dictation, per its docs</td></tr>
+<tr class="theirs" data-confirm="only if the limit still holds at release"><th scope="row">Correction quality</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Catches common slips and leaves correct text alone; not a full grammar checker [confirm] <mark>[confirm before publishing]</mark></td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Cloud models with broader edits</td></tr>
+
+<!-- Footer sentence for .cmp-foot: keep "KeyReed does not claim feature parity", and change "The last three rows" to
+     match the final count of rows where Wispr Flow is ahead. -->
+
+<!-- ===== 5. FAQ: new questions for <div class="faq" id="faq-list"> (use the next free ids; also add both to the JSON-LD FAQPage) ===== -->
+<div class="qa" data-confirm="C1 promise"><h3><button type="button" aria-expanded="false" aria-controls="a11" id="q11">Does KeyReed read what I type?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a11" role="region" aria-labelledby="q11"><div><p>Not in general. KeyReed never logs keystrokes and never captures the screen. After it types into a text box, it re-checks that one box for up to a minute to see which words you corrected, compares in memory, and keeps only the corrected words. It skips password fields, terminals, password managers, private-browsing and administrator windows, and any app you exclude, and it does not read browser windows in this version. One switch turns it off. <mark>[confirm before publishing]</mark></p></div></div></div>
+<div class="qa" data-confirm="Quick Fix restrictions"><h3><button type="button" aria-expanded="false" aria-controls="a12" id="q12">Where does Quick Fix not work?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a12" role="region" aria-labelledby="q12"><div><p>Not in administrator windows, password fields or terminals. If your selection has links, tables or lists that replacing would flatten, KeyReed tells you and opens the review panel instead of replacing it. English only for now. <mark>[confirm before publishing]</mark></p></div></div></div>
