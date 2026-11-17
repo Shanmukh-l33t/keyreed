@@ -1,0 +1,6 @@
+{
+  "note": "Sentences where the int8 model gives a different label through the shipped ONNX Runtime 1.28.2 than through the Python reference's onnxruntime 1.32.0 (borderline labels: the probability of the changed label is 0.53 against 0.41 for keep). With the fp32 model (no quantisation) all 475 sentences are identical. 'edits' is what ONNX Runtime 1.28.2 gives; the test fails if this list goes stale (the reference and this build agree) or grows.",
+  "cases": [
+    { "input": "The shared recorder have one owner and a generation counter (main.py).", "edits": [] }
+  ]
+}

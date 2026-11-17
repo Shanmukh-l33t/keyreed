@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "_comment": "Which edit classes Quick Fix may apply silently. silent = replaced without asking; review_only = shown in the Review panel first; off = never produced. A class is silent only where the gate sets show G1, G2 and G5 within target; 'gate' records the evidence (candidate edits and how many were wrong, over bench/typed_gate.jsonl, an extended set of 1,606 cases built from KeyReed's own docs and correction references, and lane B's bench/quickfix_gate.jsonl, scored by bench/score_typed.py and bench/score_quickfix.py, 17 November 2026). A class's 'contexts' replace its policy in single app categories; the top-level 'contexts' cap every class in an app category (the lower of the two wins). Shipping default is review everything: quick_fix_always_review is on, so silent here only means the user can switch silent replacement on for that class.",
+  "unknown_class": "review_only",
+  "contexts": { "terminal": "off", "password_protected": "off", "code_editor": "review_only" },
+  "classes": {
+    "spelling": { "policy": "review_only", "gate": "Windows spell checker + word-list and one-suggestion filter: 90 edits, 6 wrong (technical terms such as uipi, onnx; companys -> company in a gold that keeps it); G1 everyday 0.69% against 0.3%, so review only" },
+    "rule_pronoun_i": { "policy": "review_only", "gate": "15 edits, 1 wrong; too few to prove G2" },
+    "rule_esl": { "policy": "review_only", "gate": "35 edits, 1 wrong (at the earliest -> as soon as possible is a rewording)" },
+    "capitalisation": {
+      "policy": "review_only",
+      "contexts": { "email": "silent", "document": "silent", "chat": "off", "notes": "off", "code_editor": "off" },
+      "gate": "email and document: 25 edits, 0 wrong; chat 23 of 23 wrong, notes 4 of 9 wrong, code 3 of 5 wrong (lower-case text is deliberate there)"
+    },
+    "capitalisation_upper": { "policy": "off", "gate": "the model turned im into IM; whole-word upper case is never wanted" },
+    "doubled_word": { "policy": "silent", "gate": "24 edits, 0 wrong, in chat, document, email and notes; G1 0 on all clean sets" },
+    "article": { "policy": "review_only", "gate": "15 edits, 0 wrong; too few to prove G2" },
+    "punctuation": { "policy": "review_only", "gate": "no edit of this class survived the guards in any set" },
+    "agreement": { "policy": "review_only", "gate": "242 edits, 8 wrong; G1 technical 0.11% (1 of 878), G2 0.83% on 600 seeded sentences but 6.7% on lane B's 30 agreement cases" },
+    "confusable": { "policy": "review_only", "gate": "48 edits, 3 wrong, 2 of them in chat" },
+    "inflection": { "policy": "off", "gate": "70 edits, 66 wrong: noun number and verb -s changes without a cue (plan C2 restriction)" },
+    "inflection_cued": { "policy": "review_only", "gate": "2 edits, 1 wrong; too few to prove G2" },
+    "insertion": { "policy": "review_only", "gate": "none produced" },
+    "deletion": { "policy": "review_only", "gate": "none produced" },
+    "replacement": { "policy": "off", "gate": "15 edits, 13 wrong: multi-word rewrites (are process -> is processing)" },
+    "merged": { "policy": "review_only", "gate": "4 edits, 2 wrong" }
+  }
+}

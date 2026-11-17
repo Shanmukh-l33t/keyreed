@@ -12,7 +12,11 @@ pub mod security;
 pub mod selection;
 #[cfg(windows)]
 pub mod settings;
+#[cfg(windows)]
+pub mod spell;
 pub mod typing;
+#[cfg(windows)]
+pub mod uia;
 pub mod ui;
 
 pub use clipboard::{input_gate, normalize_windows_newlines, read_clipboard_unicode, write_clipboard_unicode};
