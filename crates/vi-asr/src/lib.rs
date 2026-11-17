@@ -306,6 +306,69 @@ mod stream_tests {
     }
 
     #[test]
+    fn runtime_version_gate_for_hotword_decoding() {
+        assert!(version_at_least("2.0.1", MIN_HOTWORD_RUNTIME));
+        assert!(version_at_least("v1.12.24", MIN_HOTWORD_RUNTIME));
+        assert!(version_at_least("1.13.0", MIN_HOTWORD_RUNTIME));
+        assert!(!version_at_least("1.12.23", MIN_HOTWORD_RUNTIME));
+        assert!(!version_at_least("1.9.30", MIN_HOTWORD_RUNTIME));
+        assert!(!version_at_least("unknown", MIN_HOTWORD_RUNTIME));
+        assert!(!version_at_least("", MIN_HOTWORD_RUNTIME));
+        assert!(version_at_least("2.0.1-dev", MIN_HOTWORD_RUNTIME));
+    }
+
+    #[test]
+    fn bpe_vocab_uses_the_first_field_of_each_token_line() {
+        let tokens = "<unk> 0\n\u{2581}t 1\n\n\u{2581}th 2\n  \n<blk> 3\n";
+        assert_eq!(bpe_vocab_from_tokens(tokens), "<unk>\t-1.0\n\u{2581}t\t-1.0\n\u{2581}th\t-1.0\n<blk>\t-1.0\n");
+        assert_eq!(bpe_vocab_from_tokens(""), "");
+        // deterministic
+        assert_eq!(bpe_vocab_from_tokens(tokens), bpe_vocab_from_tokens(tokens));
+    }
+
+    fn tone(amp: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| amp * (i as f32 * 0.3).sin()).collect()
+    }
+
+    fn gate(samples: &[f32]) -> bool {
+        let mut m = LevelMeter::default();
+        // fed in odd pieces: windows must not depend on how the audio is batched
+        for piece in samples.chunks(777) {
+            m.push(piece);
+        }
+        m.passes()
+    }
+
+    #[test]
+    fn level_gate_keeps_quiet_speech_and_drops_silence() {
+        assert!(!gate(&[]));
+        assert!(!gate(&vec![0.0; 32_000]));
+        // a constant offset has no energy once the DC is removed
+        assert!(!gate(&vec![0.2; 32_000]));
+        // loud enough outright (-30 dBFS peak tone)
+        assert!(gate(&tone(0.03, 16_000)));
+        // quiet mic: speech about -60 dBFS RMS over a -80 dBFS floor, 70% silence; the old clip average fell under 0.0012
+        let mut clip = tone(0.0001, 16_000 * 2);
+        clip.extend(tone(0.0014, 16_000 / 2));
+        clip.extend(tone(0.0001, 16_000 * 2));
+        assert!(gate(&clip));
+        // steady hiss with no stretch above its own floor
+        assert!(!gate(&tone(0.0006, 16_000 * 3)));
+    }
+
+    #[test]
+    fn level_gate_run_bridges_one_quiet_window_only() {
+        let (q, l) = (-80.0f32, -62.0f32);
+        let mut levels = vec![q; 20];
+        levels.extend([l, l, l, q, l, l, l]);
+        assert!(level_gate_passes(&levels));
+        let mut levels = vec![q; 20];
+        levels.extend([l, l, l, q, q, l, l, l]);
+        assert!(!level_gate_passes(&levels));
+        assert!(level_gate_passes(&[-40.0]));
+    }
+
+    #[test]
     fn pauses_come_from_token_times() {
         let toks: Vec<String> = [" It", " works", ".", " Next", " one", "."].iter().map(|s| s.to_string()).collect();
         let ts = [0.1, 0.4, 0.7, 2.2, 2.5, 2.8];
@@ -323,6 +386,143 @@ impl Drop for SileroVad {
     }
 }
 
+/// One level window: 30 ms at 16 kHz.
+const LEVEL_WINDOW: usize = 480;
+/// Digital silence or a constant offset reads as this level.
+const LEVEL_FLOOR_DB: f32 = -120.0;
+/// A clip whose loudest window reaches this level is speech enough for the detector.
+const GATE_LOUDEST_DB: f32 = -50.0;
+/// A quiet clip also passes on a run this far above its own noise floor ...
+const GATE_MARGIN_DB: f32 = 12.0;
+/// ... when that run is at least this loud ...
+const GATE_RELATIVE_FLOOR_DB: f32 = -66.0;
+/// ... and this many windows long (180 ms).
+const GATE_RUN_WINDOWS: usize = 6;
+
+/// Measures a recording as it arrives: the DC-removed RMS level (dBFS) of each 30 ms window.
+/// Thirty minutes is 60,000 floats, so memory stays bounded.
+#[derive(Default)]
+struct LevelMeter {
+    levels: Vec<f32>,
+    n: usize,
+    sum: f64,
+    sum_sq: f64,
+}
+
+impl LevelMeter {
+    fn push(&mut self, samples: &[f32]) {
+        for &s in samples {
+            let s = s as f64;
+            self.sum += s;
+            self.sum_sq += s * s;
+            self.n += 1;
+            if self.n == LEVEL_WINDOW {
+                self.close_window();
+            }
+        }
+    }
+
+    fn close_window(&mut self) {
+        let n = self.n as f64;
+        let mean = self.sum / n;
+        let var = (self.sum_sq / n - mean * mean).max(0.0);
+        self.levels.push(((20.0 * var.sqrt().max(1e-6).log10()) as f32).max(LEVEL_FLOOR_DB));
+        (self.n, self.sum, self.sum_sq) = (0, 0.0, 0.0);
+    }
+
+    /// Whether the clip is worth the speech detector's attention (a short last window counts).
+    fn passes(&mut self) -> bool {
+        if self.n > 0 {
+            self.close_window();
+        }
+        level_gate_passes(&self.levels)
+    }
+}
+
+/// Hex's level gate: the loudest window reaches -50 dBFS, or a run of 6 windows sits 12 dB over
+/// the clip's own noise floor (10th percentile window, ignoring digital silence) and above -66 dBFS.
+fn level_gate_passes(levels: &[f32]) -> bool {
+    if levels.iter().copied().fold(LEVEL_FLOOR_DB, f32::max) >= GATE_LOUDEST_DB {
+        return true;
+    }
+    let mut audible: Vec<f32> = levels.iter().copied().filter(|&l| l > LEVEL_FLOOR_DB).collect();
+    if audible.is_empty() {
+        return false;
+    }
+    audible.sort_by(f32::total_cmp);
+    let threshold = (audible[(audible.len() - 1) / 10] + GATE_MARGIN_DB).max(GATE_RELATIVE_FLOOR_DB);
+    // One quiet window between loud ones is bridged but not counted; two in a row end the run.
+    let (mut run, mut bridged) = (0usize, false);
+    for &l in levels {
+        if l >= threshold {
+            run += 1;
+            bridged = false;
+            if run >= GATE_RUN_WINDOWS {
+                return true;
+            }
+        } else if run == 0 {
+            bridged = false;
+        } else if bridged {
+            run = 0;
+            bridged = false;
+        } else {
+            bridged = true;
+        }
+    }
+    false
+}
+
+/// Oldest sherpa-onnx whose NeMo transducer supports `modified_beam_search` with hotwords. An older
+/// runtime would call `exit(-1)` on the unknown decoding method, so it is never asked.
+const MIN_HOTWORD_RUNTIME: (u32, u32, u32) = (1, 12, 24);
+const HOTWORDS_SCORE: f32 = 2.0;
+const HOTWORD_BEAM_PATHS: i32 = 4;
+/// Decode chunks shorter than this get trailing zeros on Parakeet-style models.
+const MIN_DECODE_SAMPLES: usize = 16_000;
+
+/// `true` when a version string such as "2.0.1" or "v1.12.24" is at least `min`.
+pub fn version_at_least(version: &str, min: (u32, u32, u32)) -> bool {
+    let mut parts = version.trim().trim_start_matches('v').split('.').map(|p| {
+        let digits: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse::<u32>().ok()
+    });
+    match (parts.next().flatten(), parts.next().flatten(), parts.next().flatten()) {
+        (Some(a), Some(b), Some(c)) => (a, b, c) >= min,
+        _ => false,
+    }
+}
+
+/// The `bpe.vocab` text sherpa needs to encode hotwords: the first field of every non-blank
+/// `tokens.txt` line, then a tab and `-1.0` (equal scores give longest-match encoding). Same
+/// derivation as the official Parakeet hotwords example, which the release does not ship.
+pub fn bpe_vocab_from_tokens(tokens_txt: &str) -> String {
+    let mut out = String::with_capacity(tokens_txt.len());
+    for line in tokens_txt.split('\n').filter(|l| !l.trim().is_empty()) {
+        out.push_str(line.split(' ').next().unwrap_or(""));
+        out.push_str("\t-1.0\n");
+    }
+    out
+}
+
+/// Writes the derived vocab to `<cache_dir>/<model_id>.bpe.vocab` unless it is already identical.
+/// It lives outside the pinned model directory, so integrity checks and installs never see it.
+fn write_bpe_vocab(cache_dir: &Path, model_id: &str, tokens_path: &Path) -> Result<PathBuf> {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let text = bpe_vocab_from_tokens(&fs::read_to_string(tokens_path)?);
+    let dest = cache_dir.join(format!("{model_id}.bpe.vocab"));
+    if fs::read_to_string(&dest).map(|t| t == text).unwrap_or(false) {
+        return Ok(dest);
+    }
+    fs::create_dir_all(cache_dir)?;
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = cache_dir.join(format!("{model_id}.bpe.vocab.{}-{seq}.tmp", std::process::id()));
+    fs::write(&tmp, &text)?;
+    fs::rename(&tmp, &dest).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })?;
+    Ok(dest)
+}
+
 /// State of one recording being recognised incrementally.
 #[derive(Default)]
 struct StreamState {
@@ -330,7 +530,7 @@ struct StreamState {
     audio: Vec<f32>,
     base: usize,
     fed: usize,
-    energy: f64,
+    levels: LevelMeter,
     pending: Vec<(usize, usize)>,
     /// End of the last decoded speech span (absolute), for pauses and padding.
     last_end: Option<usize>,
@@ -345,6 +545,10 @@ pub struct LocalAsrEngine {
     recognizer: *const SherpaOnnxOfflineRecognizer,
     vad: Option<SileroVad>,
     spec: &'static AsrModelSpec,
+    /// Beam search with hotwords is active (otherwise greedy, and hotwords are ignored).
+    hotword_decoding: bool,
+    /// Hotword decoding was asked for at load (it may still be off, e.g. an old runtime).
+    hotword_requested: bool,
     _owned_cstrings: Vec<CString>,
     stream: StreamState,
     policy: ChunkPolicy,
@@ -400,6 +604,21 @@ impl LocalAsrEngine {
         num_threads: usize,
         language: &str,
     ) -> Result<Self> {
+        Self::load_with_hotwords(sherpa_lib_dir, model_dir, model_id, silero_vad_path, num_threads, language, None)
+    }
+
+    /// Like `load`. With `hotword_cache_dir` the recognizer uses `modified_beam_search` so personal
+    /// vocabulary biases decoding; this only happens for models that support hotwords and a runtime
+    /// that is new enough, otherwise it stays on greedy search. See `hotword_decoding`.
+    pub fn load_with_hotwords(
+        sherpa_lib_dir: &Path,
+        model_dir: &Path,
+        model_id: &str,
+        silero_vad_path: Option<&Path>,
+        num_threads: usize,
+        language: &str,
+        hotword_cache_dir: Option<&Path>,
+    ) -> Result<Self> {
         let api = Arc::new(
             SherpaApi::load_from_dir(sherpa_lib_dir)
                 .with_context(|| format!("failed to load sherpa-onnx from {}", sherpa_lib_dir.display()))?,
@@ -416,7 +635,27 @@ impl LocalAsrEngine {
         // Hash required files against compile-time pins before any ONNX parse.
         crate::integrity::verify_model_dir(model_dir, spec.id)?;
 
-        let mut cstrings: Vec<CString> = Vec::with_capacity(12);
+        let tokens_path = pin_file(model_dir, spec.id, |n| n == "tokens.txt" || n.ends_with("-tokens.txt"))?;
+        let hotword_requested = hotword_cache_dir.is_some()
+            && spec.supports_hotwords
+            && spec.architecture == AsrArchitecture::NemoTransducer;
+        let mut hotword_vocab: Option<PathBuf> = None;
+        if let (true, Some(dir)) = (hotword_requested, hotword_cache_dir) {
+            let version = unsafe {
+                let p = (api.get_version)();
+                if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
+            };
+            if !version_at_least(&version, MIN_HOTWORD_RUNTIME) {
+                log::warn!("sherpa-onnx '{version}' is too old for hotword decoding; using greedy search");
+            } else {
+                match write_bpe_vocab(dir, spec.id, &tokens_path) {
+                    Ok(p) => hotword_vocab = Some(p),
+                    Err(e) => log::warn!("hotword vocab could not be written ({e:#}); using greedy search"),
+                }
+            }
+        }
+
+        let mut cstrings: Vec<CString> = Vec::with_capacity(14);
         let mut push_c = |s: &str| -> Result<*const std::ffi::c_char> {
             let cs = CString::new(s)?;
             let ptr = cs.as_ptr();
@@ -437,8 +676,14 @@ impl LocalAsrEngine {
         cfg.model_config.debug = 0;
         cfg.decoding_method = push_c("greedy_search")?;
 
-        let tokens_path = pin_file(model_dir, spec.id, |n| n == "tokens.txt" || n.ends_with("-tokens.txt"))?;
         cfg.model_config.tokens = push_c(&tokens_path.to_string_lossy())?;
+        if let Some(vocab) = &hotword_vocab {
+            cfg.decoding_method = push_c("modified_beam_search")?;
+            cfg.max_active_paths = HOTWORD_BEAM_PATHS;
+            cfg.hotwords_score = HOTWORDS_SCORE;
+            cfg.model_config.modeling_unit = push_c("bpe")?;
+            cfg.model_config.bpe_vocab = push_c(&vocab.to_string_lossy())?;
+        }
 
         match spec.architecture {
             AsrArchitecture::NemoTransducer => {
@@ -505,6 +750,8 @@ impl LocalAsrEngine {
             recognizer,
             vad,
             spec,
+            hotword_decoding: hotword_vocab.is_some(),
+            hotword_requested,
             _owned_cstrings: cstrings,
             stream: StreamState::default(),
             policy: ChunkPolicy::default(),
@@ -522,6 +769,16 @@ impl LocalAsrEngine {
         }
     }
 
+    /// True when hotwords really bias this engine (beam search is on).
+    pub fn hotword_decoding(&self) -> bool {
+        self.hotword_decoding
+    }
+
+    /// True when the engine was loaded with hotword decoding requested, whether or not it took effect.
+    pub fn hotword_requested(&self) -> bool {
+        self.hotword_requested
+    }
+
     pub fn model_spec(&self) -> &'static AsrModelSpec {
         self.spec
     }
@@ -534,7 +791,7 @@ impl LocalAsrEngine {
     ) -> Result<(String, Option<String>, Vec<String>, Vec<f32>)> {
         unsafe {
             let hw_c = match hotwords {
-                Some(h) if !h.trim().is_empty() && self.spec.supports_hotwords => {
+                Some(h) if !h.trim().is_empty() && self.hotword_decoding => {
                     Some(CString::new(h)?)
                 }
                 _ => None,
@@ -604,7 +861,7 @@ impl LocalAsrEngine {
         let st = &mut self.stream;
         st.audio.extend_from_slice(samples_16k);
         st.fed += samples_16k.len();
-        st.energy += samples_16k.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>();
+        st.levels.push(samples_16k);
         if let Some(vad) = &mut self.vad {
             let t = Instant::now();
             vad.accept(samples_16k, &mut st.pending);
@@ -620,9 +877,8 @@ impl LocalAsrEngine {
     /// Ends the recording: decodes whatever is left and returns the whole transcript.
     pub fn stream_finish(&mut self, hotwords: Option<&str>) -> Result<TranscriptionOutput> {
         let fed = self.stream.fed;
-        // Fast RMS gate: pure digital silence or a near-zero floor (< -58 dBFS) is never speech.
-        let rms = if fed == 0 { 0.0 } else { (self.stream.energy / fed as f64).sqrt() };
-        if rms >= 0.0012 {
+        // Level gate: digital silence or a clip with no louder stretch than its own floor is never speech.
+        if self.stream.levels.passes() {
             match &mut self.vad {
                 Some(vad) => {
                     let t = Instant::now();
@@ -654,7 +910,16 @@ impl LocalAsrEngine {
             let from = first.0.saturating_sub(PAD_PRE).max(st.last_end.unwrap_or(0)).max(st.base);
             let to = (last.1 + PAD_POST).min(st.fed);
             let t = Instant::now();
-            let (text, lang, tokens, times) = self.decode_single_chunk(&st.audio[from - st.base..to - st.base], hotwords)?;
+            let audio = &st.audio[from - st.base..to - st.base];
+            // Parakeet is unreliable on under a second of audio: end the chunk with silence.
+            let mut padded = Vec::new();
+            if audio.len() < MIN_DECODE_SAMPLES && self.spec.architecture == AsrArchitecture::NemoTransducer {
+                padded.extend_from_slice(audio);
+                padded.resize(MIN_DECODE_SAMPLES, 0.0);
+            }
+            let res = self.decode_single_chunk(if padded.is_empty() { audio } else { &padded }, hotwords);
+            padded.zeroize();
+            let (text, lang, tokens, times) = res?;
             let st = &mut self.stream;
             st.out.decode_ms += t.elapsed().as_secs_f64() * 1000.0;
             st.out.chunks += 1;

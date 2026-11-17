@@ -31,6 +31,40 @@ pub struct PersonalDictionary {
     pub app_mode_overrides: BTreeMap<String, WritingMode>,
 }
 
+/// Most terms handed to the decoder (Hex's cap for Parakeet).
+pub const MAX_HOTWORDS: usize = 64;
+const MAX_HOTWORD_CHARS: usize = 64;
+
+/// One term in a form sherpa's hotword parser accepts, or None when it would break the format or
+/// is not a spoken name: over 64 characters, a newline, `/` (the phrase separator), `:` (the score
+/// marker), a path or an address (`\\`, `@`, `opencode.ai`).
+pub fn sanitize_hotword(term: &str) -> Option<String> {
+    if term.contains(['\n', '\r', '/', '\\', ':', '@']) || term.chars().any(char::is_control) {
+        return None;
+    }
+    let t = term.split_whitespace().collect::<Vec<_>>().join(" ");
+    let dotted_domain = t.split(' ').any(|w| {
+        let c: Vec<char> = w.chars().collect();
+        c.windows(3).any(|x| x[1] == '.' && x[0].is_alphabetic() && x[2].is_alphabetic())
+    });
+    (!t.is_empty() && t.chars().count() <= MAX_HOTWORD_CHARS && !dotted_domain).then_some(t)
+}
+
+/// Cleans a vocabulary for hotword decoding: each term through `sanitize_hotword`, duplicates
+/// (any case) dropped, at most `MAX_HOTWORDS` kept in list order.
+pub fn sanitize_hotwords(vocabulary: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in vocabulary.iter().filter_map(|t| sanitize_hotword(t)) {
+        if out.len() == MAX_HOTWORDS {
+            break;
+        }
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(&t)) {
+            out.push(t);
+        }
+    }
+    out
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -71,17 +105,13 @@ impl PersonalDictionary {
         }
     }
 
-    /// Exports sherpa-onnx hotwords lines (uppercase tokens for BPE transducers).
+    /// Exports sherpa-onnx hotwords, one cleaned term per line in the case the user typed it
+    /// (the BPE hotword encoder is case sensitive). Empty when the dictionary is off or has nothing usable.
     pub fn to_sherpa_hotwords(&self) -> String {
         if !self.enabled {
             return String::new();
         }
-        self.vocabulary
-            .iter()
-            .filter(|t| !t.trim().is_empty())
-            .map(|t| t.trim().to_uppercase())
-            .collect::<Vec<_>>()
-            .join("\n")
+        sanitize_hotwords(&self.vocabulary).join("\n")
     }
 
     /// Compact glossary snippet injected into the rewrite prompt when enabled.
@@ -96,5 +126,34 @@ impl PersonalDictionary {
             .map(|s| s.as_str())
             .collect();
         format!("Preferred spelling glossary: {}.", terms.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotwords_keep_the_users_case_and_drop_what_breaks_the_format() {
+        let d = PersonalDictionary {
+            enabled: true,
+            vocabulary: ["  Phoebe ", "Don   Quixote", "a/b", "C:\\x", "x:3", "line\nbreak", "me@x.io", "opencode.ai", "", "phoebe", &"z".repeat(65), &"y".repeat(64)]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ..Default::default()
+        };
+        let hw = d.to_sherpa_hotwords();
+        let lines: Vec<&str> = hw.lines().collect();
+        assert_eq!(lines, vec!["Phoebe", "Don Quixote", &"y".repeat(64)]);
+    }
+
+    #[test]
+    fn hotwords_are_empty_when_off_and_capped_at_64() {
+        let mut d = PersonalDictionary { enabled: false, vocabulary: vec!["Phoebe".into()], ..Default::default() };
+        assert!(d.to_sherpa_hotwords().is_empty());
+        d.enabled = true;
+        d.vocabulary = (0..100).map(|i| format!("term{}", "x".repeat(i % 5) + &i.to_string())).collect();
+        assert_eq!(d.to_sherpa_hotwords().lines().count(), MAX_HOTWORDS);
     }
 }

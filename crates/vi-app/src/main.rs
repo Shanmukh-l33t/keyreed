@@ -249,6 +249,13 @@ fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
     hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
 }
 
+/// Whether the speech engine should decode with hotword biasing: the model supports it and the
+/// personal dictionary is on and has at least one usable term.
+fn wants_hotword_decoding(cfg: &AppConfig) -> bool {
+    find_model_spec(&cfg.local_asr_model).is_some_and(|s| s.supports_hotwords)
+        && !cfg.dictionary.to_sherpa_hotwords().is_empty()
+}
+
 fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngine> {
     let spec = find_model_spec(&cfg.local_asr_model)
         .with_context(|| format!("ASR model '{}' not in catalog", cfg.local_asr_model))?;
@@ -270,13 +277,16 @@ fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngi
     } else {
         None
     };
-    let mut engine = LocalAsrEngine::load(
+    // The derived bpe.vocab lives here, outside the integrity-pinned model folder.
+    let hotword_cache = AppConfig::default_data_dir().join("cache");
+    let mut engine = LocalAsrEngine::load_with_hotwords(
         &paths.sherpa_lib_dir,
         &model_dir,
         spec.id,
         vad_opt,
         cfg.inference_threads.max(1),
         &cfg.preferred_language,
+        wants_hotword_decoding(cfg).then_some(hotword_cache.as_path()),
     )?;
     engine.warm_up();
     Ok(engine)
@@ -325,7 +335,8 @@ impl InferenceSupervisor {
 
     /// Non-blocking harvest of background ASR/SLM preparation threads during idle ticks.
     fn poll_background_ready(&mut self, cfg: &AppConfig) {
-        if let Some((id, rx)) = &self.pending_asr {
+        // Not during a live session: its engine comes back afterwards and must not overwrite a newer one.
+        if let (Some((id, rx)), None) = (&self.pending_asr, &self.live_asr) {
             if let Ok(res) = rx.try_recv() {
                 let id_owned = id.clone();
                 self.pending_asr = None;
@@ -434,7 +445,13 @@ impl InferenceSupervisor {
         }
     }
 
+    /// Loaded for this model and for the decoding mode the dictionary calls for.
     fn asr_ready(&self, cfg: &AppConfig) -> bool {
+        self.asr_usable(cfg) && self.asr.as_ref().is_some_and(|e| e.hotword_requested() == wants_hotword_decoding(cfg))
+    }
+
+    /// Loaded for this model, whatever its decoding mode (still fine to dictate with).
+    fn asr_usable(&self, cfg: &AppConfig) -> bool {
         self.asr.is_some() && self.loaded_asr_id == cfg.local_asr_model
     }
 
@@ -468,7 +485,7 @@ impl InferenceSupervisor {
     fn begin_live_session(&mut self, cfg: &AppConfig) {
         self.cancel_live_session();
         self.poll_background_ready(cfg);
-        self.session_cold_model = !self.asr_ready(cfg);
+        self.session_cold_model = !self.asr_usable(cfg);
         let use_cloud = cfg.processing_profile == vi_core::ProcessingProfile::MaxAccuracy
             && cfg.cloud.encrypted_api_key_b64.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
         if use_cloud {
@@ -476,7 +493,12 @@ impl InferenceSupervisor {
         }
         let hotwords = cfg.dictionary.to_sherpa_hotwords();
         let model_id = cfg.local_asr_model.clone();
-        let live_res = if self.asr_ready(cfg) {
+        // The dictionary switched hotword decoding on or off: dictate with the loaded engine now and
+        // reload in the background (harvested after this session).
+        if self.asr_usable(cfg) && !self.asr_ready(cfg) {
+            self.prewarm_asr(cfg);
+        }
+        let live_res = if self.asr_usable(cfg) {
             let eng = self.asr.take().unwrap();
             vi_asr::live::LiveAsr::start(move || Ok(eng), hotwords)
         } else if self.pending_asr.as_ref().map(|p| p.0 == model_id).unwrap_or(false) {
