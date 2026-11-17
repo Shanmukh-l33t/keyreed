@@ -207,7 +207,11 @@ pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w
     let content = match kind {
         PillKind::Idle | PillKind::Disabled => return m.cap_h + 2 * m.margin,
         PillKind::Listening => m.wave_width(),
-        PillKind::Done | PillKind::Error | PillKind::Attention => m.glyph + m.gap + label_w,
+        PillKind::Done | PillKind::Attention => m.glyph + m.gap + label_w,
+        // An error pill carries an action chip only when the failure has a fix (e.g. the missing grammar model).
+        PillKind::Error => {
+            m.glyph + m.gap + label_w + if secondary_w > 0 { (m.gap as f32 + chip_width(scale, secondary_w)).ceil() as usize } else { 0 }
+        }
         PillKind::IdleHover => label_w + if secondary_w > 0 { m.gap + secondary_w } else { 0 },
         PillKind::Processing | PillKind::Notice | PillKind::Fixing => label_w,
         PillKind::Fixed => {
@@ -219,7 +223,11 @@ pub fn pill_window_width(scale: f32, kind: PillKind, label_w: usize, secondary_w
             m.glyph + m.gap + label_w + chips.ceil() as usize
         }
     };
-    let tail = if kind == PillKind::Fixed && secondary_w + tertiary_w > 0 { chip_inset(scale).round() as usize } else { m.pad_right };
+    let tail = if matches!(kind, PillKind::Fixed | PillKind::Error) && secondary_w + tertiary_w > 0 {
+        chip_inset(scale).round() as usize
+    } else {
+        m.pad_right
+    };
     m.content_x + content + tail + m.margin
 }
 
@@ -537,16 +545,21 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                 let tx = content_x + g + m.gap as f32;
                 blend_text(&mut px, width, height, &t, tx, cy, c, None, opacity);
             }
-            if f.kind == PillKind::Fixed {
+            if matches!(f.kind, PillKind::Fixed | PillKind::Error) {
                 let label_w = f.label.map_or(0, |t| t.width);
                 let texts = [f.secondary, f.tertiary];
                 let widths = [texts[0].map_or(0, |t| t.width), texts[1].map_or(0, |t| t.width)];
                 let ch = chip_height(f.scale);
+                let (tint, ink) = if f.kind == PillKind::Fixed {
+                    (palette::EMERALD, palette::MINT)
+                } else {
+                    (palette::ROSE, palette::ROSE_TEXT)
+                };
                 let mut spans = fixed_chips(f.scale, label_w, widths).into_iter();
                 for t in texts.into_iter().flatten().filter(|t| t.width > 0) {
                     let Some((x0, x1)) = spans.next() else { break };
-                    fill_hcapsule(&mut px, width, height, x0, cy - ch / 2.0, x1 - x0, ch, palette::EMERALD, 0.18 * opacity);
-                    blend_text(&mut px, width, height, &t, x0 + (x1 - x0 - t.width as f32) / 2.0, cy, palette::MINT, None, opacity);
+                    fill_hcapsule(&mut px, width, height, x0, cy - ch / 2.0, x1 - x0, ch, tint, 0.18 * opacity);
+                    blend_text(&mut px, width, height, &t, x0 + (x1 - x0 - t.width as f32) / 2.0, cy, ink, None, opacity);
                 }
             }
         }
@@ -988,6 +1001,9 @@ mod tests {
         let mask = vec![255u8; 20 * 10];
         let t = TextMask { width: 20, height: 10, coverage: &mask };
         let h = PillMetrics::for_scale(1.0).window_height();
+        // A fixable failure gets one chip, so its pill is wider than a bare error pill.
+        let plain = pill_window_width(1.0, PillKind::Error, 20, 0, 0);
+        assert!(pill_window_width(1.0, PillKind::Error, 20, 60, 0) > plain);
         let w = pill_window_width(1.0, PillKind::Error, 20, 0, 0);
         let working = render_pill(w, h, &frame(PillKind::Processing, &[], Some(t)));
         let attention = render_pill(w, h, &frame(PillKind::Attention, &[], Some(t)));

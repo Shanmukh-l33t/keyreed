@@ -282,8 +282,9 @@ pub enum QuickFixStage {
     LooksGood,
     /// A neutral one-line outcome, for example "Spelling only" or "English only for now".
     Notice(String),
-    /// A refusal or failure with its one sentence short form; the pill shakes twice.
-    Refused(String),
+    /// A refusal or failure with its one sentence short form; the pill shakes twice. `settings` adds an
+    /// "Open Settings" chip for a failure the user can fix there (the missing grammar model).
+    Refused { text: String, settings: bool },
     /// The fix was undone: the tick unwinds and the count rolls back down.
     Undone { changes: u32 },
     /// A correction was learned: "Learned: Kubernetes" with an Undo chip (plan F3). Shares the Fixed layout.
@@ -1092,6 +1093,8 @@ pub mod win_gui {
         Undo,
         Deeper,
         LearningUndo,
+        /// Opens Settings at the Speech models page, where the grammar model is installed.
+        Settings,
     }
 
     /// What the listener should show for the current model.
@@ -1230,7 +1233,13 @@ pub mod win_gui {
                 ..plain(PillKind::Fixed, "")
             },
             QuickFixStage::Notice(text) => plain(PillKind::Notice, text),
-            QuickFixStage::Refused(text) => QuickFixView { dx: motion::shake(ms), moving, ..plain(PillKind::Error, text) },
+            QuickFixStage::Refused { text, settings } => {
+                let mut v = plain(PillKind::Error, text);
+                if *settings {
+                    v.view.secondary = "Open Settings".into();
+                }
+                QuickFixView { dx: motion::shake(ms), moving, ..v }
+            }
         })
     }
 
@@ -1389,7 +1398,7 @@ pub mod win_gui {
             } else {
                 with_mask(&view.label, px, weight, |m| (m.w, m.h, m.cov.clone()))
             };
-            let sec_weight = if view.kind == PillKind::Fixed { 600 } else { 400 };
+            let sec_weight = if matches!(view.kind, PillKind::Fixed | PillKind::Error) { 600 } else { 400 };
             let (sw, sh, scov) = if view.secondary.is_empty() {
                 (0, 0, Vec::new())
             } else {
@@ -1439,6 +1448,12 @@ pub mod win_gui {
                     .into_iter()
                     .enumerate()
                     .map(|(i, (x0, x1))| (x0, x1, if i == 1 { ChipAction::Deeper } else { undo }))
+                    .collect()
+            } else if view.kind == PillKind::Error && sw > 0 {
+                // A failure the user can fix in Settings carries one chip there.
+                fixed_chips(scale, lw, [sw, 0])
+                    .into_iter()
+                    .map(|(x0, x1)| (x0, x1, ChipAction::Settings))
                     .collect()
             } else {
                 Vec::new()
@@ -1742,11 +1757,12 @@ pub mod win_gui {
                     save_pill_anchor(hwnd);
                     pill_refresh(hwnd, false);
                 } else if let Some(action) = chip {
-                    send(match action {
-                        ChipAction::Deeper => UiAction::QuickFixDeeper,
-                        ChipAction::LearningUndo => UiAction::LearningUndo,
-                        ChipAction::Undo => UiAction::QuickFixUndo,
-                    });
+                    match action {
+                        ChipAction::Settings => crate::settings::open(Some(crate::settings::PAGE_MODELS)),
+                        ChipAction::Deeper => send(UiAction::QuickFixDeeper),
+                        ChipAction::LearningUndo => send(UiAction::LearningUndo),
+                        ChipAction::Undo => send(UiAction::QuickFixUndo),
+                    }
                 } else if on_fixed {
                     // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {

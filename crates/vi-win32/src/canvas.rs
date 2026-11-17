@@ -6,8 +6,8 @@
 use windows_sys::Win32::Foundation::{RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, DrawTextW, GetTextExtentPoint32W,
-    SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
-    HFONT, HGDIOBJ, SRCCOPY, TRANSPARENT,
+    IntersectClipRect, SelectClipRgn, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS, HBITMAP, HDC, HFONT, HGDIOBJ, SRCCOPY, TRANSPARENT,
 };
 
 pub const DT_LEFT: u32 = 0x0;
@@ -33,6 +33,8 @@ fn colorref_to_px(c: u32) -> u32 {
 pub struct Canvas {
     pub w: i32,
     pub h: i32,
+    /// (x0, y0, x1, y1) in pixels: drawing outside it is dropped, text included (see `set_clip`).
+    clip: (i32, i32, i32, i32),
     dc: HDC,
     bmp: HBITMAP,
     old: HGDIOBJ,
@@ -64,7 +66,26 @@ impl Canvas {
         }
         let old = SelectObject(dc, bmp as _);
         SetBkMode(dc, TRANSPARENT as i32);
-        Some(Canvas { w, h, dc, bmp, old, bits: bits as *mut u32 })
+        Some(Canvas { w, h, clip: (0, 0, w, h), dc, bmp, old, bits: bits as *mut u32 })
+    }
+
+    /// Narrows every later draw (GDI text too) to `x, y, w, h`; `clear_clip` restores the whole canvas.
+    pub fn set_clip(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        let x0 = x.clamp(0, self.w);
+        let y0 = y.clamp(0, self.h);
+        let x1 = (x + w).clamp(0, self.w);
+        let y1 = (y + h).clamp(0, self.h);
+        self.clip = (x0, y0, x1, y1);
+        unsafe {
+            IntersectClipRect(self.dc, x0, y0, x1, y1);
+        }
+    }
+
+    pub fn clear_clip(&mut self) {
+        self.clip = (0, 0, self.w, self.h);
+        unsafe {
+            SelectClipRgn(self.dc, std::ptr::null_mut());
+        }
     }
 
     pub fn dc(&self) -> HDC {
@@ -83,11 +104,11 @@ impl Canvas {
     /// Pixel-aligned solid rectangle.
     pub fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u32) {
         let p = colorref_to_px(c);
-        let (cw, ch) = (self.w, self.h);
-        let x0 = x.clamp(0, cw);
-        let x1 = (x + w).clamp(0, cw);
-        let y0 = y.clamp(0, ch);
-        let y1 = (y + h).clamp(0, ch);
+        let (cw, clip) = (self.w, self.clip);
+        let x0 = x.clamp(clip.0, clip.2);
+        let x1 = (x + w).clamp(clip.0, clip.2);
+        let y0 = y.clamp(clip.1, clip.3);
+        let y1 = (y + h).clamp(clip.1, clip.3);
         let buf = self.px();
         for yy in y0..y1 {
             let row = (yy * cw) as usize;
@@ -123,10 +144,10 @@ impl Canvas {
 
     /// Anti-aliased filled rounded rectangle (`alpha` 0..1).
     pub fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: u32, alpha: f32) {
-        let x0 = (x - 1.0).floor().max(0.0) as i32;
-        let y0 = (y - 1.0).floor().max(0.0) as i32;
-        let x1 = ((x + w + 1.0).ceil() as i32).min(self.w);
-        let y1 = ((y + h + 1.0).ceil() as i32).min(self.h);
+        let x0 = (x - 1.0).floor().max(self.clip.0 as f32) as i32;
+        let y0 = (y - 1.0).floor().max(self.clip.1 as f32) as i32;
+        let x1 = ((x + w + 1.0).ceil() as i32).min(self.clip.2);
+        let y1 = ((y + h + 1.0).ceil() as i32).min(self.clip.3);
         for yy in y0..y1 {
             for xx in x0..x1 {
                 let d = Self::sd_round_rect(xx as f32 + 0.5, yy as f32 + 0.5, x, y, w, h, r);
@@ -141,10 +162,10 @@ impl Canvas {
     /// Anti-aliased rounded-rectangle outline of width `t`, drawn inside the rectangle.
     #[allow(clippy::too_many_arguments)]
     pub fn round_rect_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, t: f32, c: u32, alpha: f32) {
-        let x0 = (x - 1.0).floor().max(0.0) as i32;
-        let y0 = (y - 1.0).floor().max(0.0) as i32;
-        let x1 = ((x + w + 1.0).ceil() as i32).min(self.w);
-        let y1 = ((y + h + 1.0).ceil() as i32).min(self.h);
+        let x0 = (x - 1.0).floor().max(self.clip.0 as f32) as i32;
+        let y0 = (y - 1.0).floor().max(self.clip.1 as f32) as i32;
+        let x1 = ((x + w + 1.0).ceil() as i32).min(self.clip.2);
+        let y1 = ((y + h + 1.0).ceil() as i32).min(self.clip.3);
         for yy in y0..y1 {
             for xx in x0..x1 {
                 let d = Self::sd_round_rect(xx as f32 + 0.5, yy as f32 + 0.5, x, y, w, h, r);
@@ -174,10 +195,10 @@ impl Canvas {
             maxx = maxx.max(x);
             maxy = maxy.max(y);
         }
-        let x0 = (minx - half - 1.0).floor().max(0.0) as i32;
-        let y0 = (miny - half - 1.0).floor().max(0.0) as i32;
-        let x1 = ((maxx + half + 1.0).ceil() as i32).min(self.w);
-        let y1 = ((maxy + half + 1.0).ceil() as i32).min(self.h);
+        let x0 = (minx - half - 1.0).floor().max(self.clip.0 as f32) as i32;
+        let y0 = (miny - half - 1.0).floor().max(self.clip.1 as f32) as i32;
+        let x1 = ((maxx + half + 1.0).ceil() as i32).min(self.clip.2);
+        let y1 = ((maxy + half + 1.0).ceil() as i32).min(self.clip.3);
         for yy in y0..y1 {
             for xx in x0..x1 {
                 let (px, py) = (xx as f32 + 0.5, yy as f32 + 0.5);
@@ -256,5 +277,28 @@ pub fn text_height(s: &str, font: HFONT, width: i32) -> i32 {
         SelectObject(dc, old);
         DeleteDC(dc);
         rc.bottom - rc.top
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn px(cv: &Canvas, x: i32, y: i32) -> u32 {
+        unsafe { *cv.bits.add((y * cv.w + x) as usize) }
+    }
+
+    #[test]
+    fn a_clip_keeps_shapes_inside_it() {
+        let mut cv = unsafe { Canvas::new(20, 10) }.expect("canvas");
+        cv.fill(rgb(0x10, 0x10, 0x10));
+        cv.set_clip(5, 2, 4, 3);
+        cv.rect(0, 0, 20, 10, rgb(0xFF, 0, 0));
+        assert_eq!(px(&cv, 6, 3), colorref_to_px(rgb(0xFF, 0, 0)), "inside the clip is painted");
+        assert_eq!(px(&cv, 4, 3), colorref_to_px(rgb(0x10, 0x10, 0x10)), "left of the clip is untouched");
+        assert_eq!(px(&cv, 6, 6), colorref_to_px(rgb(0x10, 0x10, 0x10)), "below the clip is untouched");
+        cv.clear_clip();
+        cv.rect(0, 0, 20, 10, rgb(0, 0xFF, 0));
+        assert_eq!(px(&cv, 0, 9), colorref_to_px(rgb(0, 0xFF, 0)), "clearing the clip restores the whole canvas");
     }
 }

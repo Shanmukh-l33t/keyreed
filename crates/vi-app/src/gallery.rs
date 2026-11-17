@@ -310,14 +310,21 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.gui.quick_fix(QuickFixStage::Notice("Spelling only".into()));
     pump_for(400);
     g.shot_pill("pill_24_spelling_only", "Grammar model missing: spelling and rules only")?;
-    g.gui.quick_fix(QuickFixStage::Refused("Select some text first".into()));
+    g.gui.quick_fix(QuickFixStage::Refused { text: "Select some text first".into(), settings: false });
     pump_for(60);
     g.shot_pill("pill_25a_refused_shake", "Refusal, mid shake")?;
     pump_for(400);
     g.shot_pill("pill_25b_refused", "Refusal, at rest")?;
-    g.gui.quick_fix(QuickFixStage::Refused("Administrator window".into()));
+    g.gui.quick_fix(QuickFixStage::Refused { text: "Administrator window".into(), settings: false });
     pump_for(400);
     g.shot_pill("pill_25c_refused_admin", "Refusal: administrator window")?;
+    // The one refusal with a fix: the grammar model is missing, so the pill offers Settings.
+    g.gui.quick_fix(QuickFixStage::Refused {
+        text: "The grammar model isn't installed; install it in Settings › Speech models.".into(),
+        settings: true,
+    });
+    pump_for(400);
+    g.shot_pill("pill_25d_refused_grammar", "Grammar model missing: one sentence and an Open Settings chip")?;
     pump_for(1800);
     g.shot_pill("pill_26_quick_fix_gone", "Everything returns to idle by itself; the animation timer is off")?;
 
@@ -452,6 +459,27 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // The Speech models page is taller than the window: the scrolled view must stay inside the content column,
+    // and the Quick Fix grammar row sits at its end.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);
+    vi_win32::settings::scroll_to_for_test(400);
+    pump_for(500);
+    g.shot_settings("settings_06_models_scrolled", "Speech models page scrolled: no overlap with the header or sidebar")?;
+    g.gui.set_download(
+        Some(DownloadProgress {
+            model_id: "gector-bert-en-int8".into(),
+            stage: DownloadStage::Downloading,
+            done_bytes: 24 * 1024 * 1024,
+            total_bytes: Some(70 * 1024 * 1024),
+        }),
+        None,
+    );
+    pump_for(400);
+    g.shot_settings("settings_11_grammar_downloading", "Quick Fix grammar row: download in progress")?;
+    g.gui.set_download(None, Some(installed.clone()));
+    vi_win32::settings::scroll_to_for_test(0);
+    pump_for(200);
+
     // Shortcut capture field (P2.7) on the Dictation page.
     vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
     pump_for(400);
