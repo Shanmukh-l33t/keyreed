@@ -161,6 +161,7 @@ pub enum ShortcutRole {
     Dictation,
     QuickFix,
     Composer,
+    VoiceCommand,
 }
 
 impl ShortcutRole {
@@ -169,6 +170,7 @@ impl ShortcutRole {
             ShortcutRole::Dictation => "push-to-talk",
             ShortcutRole::QuickFix => "Quick Fix",
             ShortcutRole::Composer => "Composer",
+            ShortcutRole::VoiceCommand => "voice command",
         }
     }
 }
@@ -190,6 +192,7 @@ impl AppConfig {
             ShortcutRole::Dictation => &self.ptt_hotkey,
             ShortcutRole::QuickFix => &self.quick_fix_hotkey,
             ShortcutRole::Composer => &self.composer_hotkey,
+            ShortcutRole::VoiceCommand => &self.voice_command_hotkey,
         }
     }
 
@@ -218,6 +221,7 @@ impl AppConfig {
             (ShortcutRole::Dictation.name(), &self.ptt_hotkey, Some(ShortcutRole::Dictation)),
             (ShortcutRole::QuickFix.name(), &self.quick_fix_hotkey, Some(ShortcutRole::QuickFix)),
             (ShortcutRole::Composer.name(), &self.composer_hotkey, Some(ShortcutRole::Composer)),
+            (ShortcutRole::VoiceCommand.name(), &self.voice_command_hotkey, Some(ShortcutRole::VoiceCommand)),
             ("mode-cycle", &self.mode_cycle_hotkey, None),
             ("cancel", &self.cancel_hotkey, None),
         ];
@@ -315,7 +319,7 @@ mod tests {
         let warns = |role, s: &HotkeySpec| cfg.shortcut_problem(role, s).is_some_and(|p| !p.blocks);
         use ShortcutRole::*;
         // The defaults are clean.
-        for r in [Dictation, QuickFix, Composer] {
+        for r in [Dictation, QuickFix, Composer, VoiceCommand] {
             assert_eq!(cfg.shortcut_problem(r, cfg.shortcut(r)), None, "{r:?}");
         }
         // Reserved editing chords and typing keys.
@@ -336,6 +340,8 @@ mod tests {
         assert!(blocks(QuickFix, &cfg.composer_hotkey));
         assert!(blocks(Composer, &cfg.mode_cycle_hotkey));
         assert!(!blocks(QuickFix, &cfg.quick_fix_hotkey), "its own chord is not a conflict");
+        assert!(blocks(QuickFix, &cfg.voice_command_hotkey), "the voice command chord is KeyReed's too");
+        assert!(!blocks(VoiceCommand, &cfg.voice_command_hotkey));
         // Prefix conflicts warn, both ways round.
         let mut c2 = cfg.clone();
         c2.ptt_hotkey = HotkeySpec::default(); // Ctrl + Win

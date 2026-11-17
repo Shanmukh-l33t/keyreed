@@ -70,6 +70,8 @@ pub struct ComposerFlow {
     cloud: Option<CloudTarget>,
     /// The running job and its cancel flag.
     job: Option<u64>,
+    /// True while the bar is on screen: its microphone has somewhere to put dictated words.
+    open: bool,
     cancel: Option<Arc<AtomicBool>>,
     next_id: u64,
 }
@@ -77,13 +79,18 @@ pub struct ComposerFlow {
 impl ComposerFlow {
     /// The Composer opened: hold the selection, the window and the route it will run on.
     pub fn open(&mut self, captured: Option<Captured>, ctx: ForegroundContext, cloud: Option<CloudTarget>) {
-        *self = Self { captured, ctx, cloud, next_id: self.next_id, ..Self::default() };
+        *self = Self { captured, ctx, cloud, open: true, next_id: self.next_id, ..Self::default() };
     }
 
     /// The Composer closed: stop a running request and forget the selection.
     pub fn close(&mut self) {
         self.cancel();
         *self = Self { next_id: self.next_id, ..Self::default() };
+    }
+
+    /// Whether the bar is open (a closed Composer has nowhere to take a dictated transcript).
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
     /// A preset or typed instruction: the selection when the user kept it, otherwise a blank draft.
@@ -246,6 +253,16 @@ mod tests {
         let mut f = ComposerFlow::default();
         f.open(None, ForegroundContext::default(), None);
         f
+    }
+
+    #[test]
+    fn the_bar_is_open_only_between_open_and_close() {
+        let mut f = ComposerFlow::default();
+        assert!(!f.is_open(), "a closed Composer takes no dictation");
+        f.open(None, ForegroundContext::default(), None);
+        assert!(f.is_open());
+        f.close();
+        assert!(!f.is_open());
     }
 
     #[test]

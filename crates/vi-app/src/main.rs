@@ -8,7 +8,9 @@ mod gallery;
 mod learning;
 mod quickfix_flow;
 mod textjobs;
+mod voice;
 
+use crate::voice::CaptureTarget;
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{select, tick};
 use parking_lot::Mutex;
@@ -250,9 +252,13 @@ fn with_engine_or_rules<R>(
 }
 
 /// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
-/// Registers the Quick Fix chord with the hook. The Composer chord is left out of beta.1 (the bar is not wired).
+/// Registers the Quick Fix and voice-command chords with the hook. The Composer chord is left out of beta.1
+/// (the bar is not wired).
 fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
-    hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
+    hk.set_extra_chords(vec![
+        (cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection),
+        (cfg.voice_command_hotkey.clone(), ChordAction::VoiceCommand),
+    ]);
 }
 
 /// The learning switch is a setting (setup and My style both edit it) while the store is what records, so the
@@ -2024,6 +2030,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut last_completed_text = String::new();
             let mut composer = composer_flow::ComposerFlow::default();
             let mut quick_fix = quickfix_flow::QuickFixFlow::default();
+            // Where this capture's transcript goes (plan P3.7); ordinary dictation delivers it.
+            let mut capture_target = CaptureTarget::Deliver;
             // The word the pill just announced, so its Undo chip can take it back.
             let mut learned_undo: Option<UndoToken> = None;
             let mut saw_physical_key_down = false;
@@ -2065,10 +2073,27 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
                                 }
                             }
-                            // The Composer chord and voice commands arrive with P3.4 and P3.7.
-                            Ok(HotkeyEvent::OpenComposer)
-                            | Ok(HotkeyEvent::VoiceCommandDown)
-                            | Ok(HotkeyEvent::VoiceCommandUp) => {}
+                            // The Composer chord is not wired in beta.1.
+                            Ok(HotkeyEvent::OpenComposer) => {}
+                            // The voice-command chord: capture the selection on press, record while it is held, run the
+                            // spoken words on the selection on release. Without a selection nothing records.
+                            Ok(HotkeyEvent::VoiceCommandDown) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    let armed = quick_fix.arm_voice(&cfg, &gui_for_worker);
+                                    if voice::may_record(CaptureTarget::VoiceCommand, true, armed) {
+                                        capture_target = CaptureTarget::VoiceCommand;
+                                        pending_action = ptt.on_floating_mic_click(now_ms());
+                                    }
+                                }
+                            }
+                            Ok(HotkeyEvent::VoiceCommandUp) => {
+                                if capture_target == CaptureTarget::VoiceCommand && ptt.is_recording() {
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                } else {
+                                    // The press never started a recording (refused, or a dictation was running).
+                                    quick_fix.cancel_voice();
+                                }
+                            }
                             Ok(HotkeyEvent::CycleMode) => {
                                 cfg.default_writing_mode = cfg.default_writing_mode.next();
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2126,7 +2151,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     }));
                                 }
                             }
-                            Ok(UiAction::ComposerClosed) => composer.close(),
+                            Ok(UiAction::ComposerClosed) => {
+                                composer.close();
+                                // A dictation into a closing Composer has nowhere to go: stop it and deliver nothing.
+                                if capture_target == CaptureTarget::Composer {
+                                    pending_action = ptt.on_emergency_cancel("composer_closed");
+                                }
+                            }
                             Ok(UiAction::SavePillPosition(x, y)) => {
                                 cfg.floating_pill_pos = Some((x, y));
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2473,8 +2504,18 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             // The deeper pass is not in this build: the pill shows no Deeper chip.
                             Ok(UiAction::QuickFixDeeper) => {}
-                            // Voice input into the Composer arrives with P3.7.
-                            Ok(UiAction::ComposerDictate) => {}
+                            // The Composer's microphone: dictate into the bar instead of the target app.
+                            Ok(UiAction::ComposerDictate) => {
+                                if capture_target == CaptureTarget::Composer && ptt.is_recording() {
+                                    // A second click finishes the dictation and puts it in the bar.
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                } else if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste)
+                                    && voice::may_record(CaptureTarget::Composer, composer.is_open(), true)
+                                {
+                                    capture_target = CaptureTarget::Composer;
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                }
+                            }
                             Ok(UiAction::ComposerSubmit { instruction, use_selection }) => {
                                 composer.submit(&cfg, instruction, use_selection, &job_tx, &supervisor.rewrite, &style);
                             }
@@ -2617,6 +2658,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Err(e) => {
                                 timing_mark("mic_error");
+                                // No capture runs, so a voice command's held selection is let go unread.
+                                capture_target = CaptureTarget::Deliver;
+                                quick_fix.cancel_voice();
                                 let msg = format!("Mic error: {}", e);
                                 log::error!("{msg}");
                                 ptt.transition_to_error(&msg);
@@ -2631,6 +2675,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         if let Some(m) = active_mic.take() {
                             m.cancel_and_zeroize();
                         }
+                        // Escape, a disabled app or a closed Composer: nothing is transcribed and nothing is taken.
+                        capture_target = CaptureTarget::Deliver;
+                        quick_fix.cancel_voice();
                         supervisor.cancel_live_session();
                         busy_flag.store(false, Ordering::Relaxed);
                         gui_for_worker.sync(ptt.state().clone(), 0.0, None);
@@ -2643,6 +2690,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         let cold = supervisor.session_cold_model && !supervisor.asr_ready(&cfg) && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy;
                         gui_for_worker.set_processing_note(if cold { Some("Loading model") } else { None });
                         gui_for_worker.sync(EngineState::Processing, 0.0, None);
+                        let taken = std::mem::take(&mut capture_target);
+                        // A voice command is transcribed in Exact mode: the spoken words are the instruction,
+                        // not a draft to polish. Neither it nor the Composer delivers anything.
+                        let mode_override = (taken == CaptureTarget::VoiceCommand).then_some(WritingMode::Exact);
                         if let Some(m) = active_mic.take() {
                             supervisor.session_first_frame_ms = m.first_frame_ms();
                             let t_fin = Instant::now();
@@ -2658,10 +2709,25 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 samples,
                                 &cfg,
                                 &captured_fg_ctx,
-                                None,
-                                true,
+                                mode_override,
+                                taken == CaptureTarget::Deliver,
                                 Some(&on_corr),
                             ) {
+                                Ok(res) if !res.final_text.is_empty() && taken != CaptureTarget::Deliver => {
+                                    match voice::route(taken, composer.is_open(), &res.final_text) {
+                                        voice::Transcript::Composer(text) => {
+                                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Dictated(text.to_string()));
+                                        }
+                                        voice::Transcript::VoiceCommand(instruction) => {
+                                            quick_fix.run_voice(instruction, &cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                        }
+                                        // Dictation is delivered below; a closed Composer or silence puts it nowhere.
+                                        _ => {}
+                                    }
+                                    play_subtle_earcon(cfg.audio_cues_enabled, false);
+                                    ptt.transition_to_idle();
+                                    gui_for_worker.sync(EngineState::Idle, 0.0, None);
+                                }
                                 Ok(res) if !res.final_text.is_empty() => {
                                     timing_mark(&format!(
                                         "clipboard_ready asr_ms={:.1} rewrite_ms={:.1} output_ms={:.2} total_ms={:.1} tier={}",

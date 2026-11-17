@@ -91,6 +91,7 @@ const D_TOGGLE: i32 = 303;
 const D_PTT: i32 = 304;
 const D_QF_KEY: i32 = 305;
 const D_QF_REVIEW: i32 = 306;
+const D_VOICE_KEY: i32 = 307;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
 /// The "Edit" button of the personal dictionary row on the Writing page.
@@ -1327,6 +1328,7 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
         .unwrap_or_else(|| "Your own shortcut. Click the field and press new keys to change it.".into());
     b.shortcut_row(D_HOTKEY, "Push-to-talk shortcut", &note, c, ShortcutRole::Dictation);
     b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
+    b.shortcut_row(D_VOICE_KEY, "Voice command shortcut", "Hold it with text selected, then say what to do with it.", c, ShortcutRole::VoiceCommand);
     b.toggle_row(D_QF_REVIEW, "Review Quick Fix changes first", "Shows every change before anything is replaced. Turning this off lets KeyReed replace spelling fixes it is sure about, with Undo.", c.quick_fix_always_review, true);
     b.toggle_row(D_PTT, "Listen for the shortcuts", "When off, start dictation from the floating listener instead (its right-click menu, or a click if you set that in General).", c.ptt_enabled, true);
     b.end_group();
@@ -2980,7 +2982,7 @@ fn on_command(id: i32, code: u32) {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
         }
-        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) => start_capture(id),
+        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) | (D_VOICE_KEY, true, _) => start_capture(id),
         (D_HOTKEY, _, CBN_SELCHANGE) | (S_HOTKEY, _, CBN_SELCHANGE) => {
             if let Some((spec, _)) = hotkey_presets().get(combo_sel(id)) {
                 let spec = spec.clone();
@@ -3286,6 +3288,7 @@ fn end_capture(id: i32, chord: Option<HotkeySpec>) {
                 ShortcutRole::Dictation => c.ptt_hotkey = spec,
                 ShortcutRole::QuickFix => c.quick_fix_hotkey = spec,
                 ShortcutRole::Composer => c.composer_hotkey = spec,
+                ShortcutRole::VoiceCommand => c.voice_command_hotkey = spec,
             }),
         }
     }
