@@ -26,6 +26,20 @@ pub enum UiAction {
     ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
     /// The first-use screen of the Review panel was dismissed.
     QuickFixIntroSeen,
+    /// Composer (plan F2): run `instruction`, on the captured selection when `use_selection`.
+    ComposerSubmit { instruction: vi_core::textjob::Instruction, use_selection: bool },
+    /// A follow-up preset on the latest result.
+    ComposerFollowUp(vi_core::textjob::Instruction),
+    /// Run the last request again.
+    ComposerRegenerate,
+    /// Stop the running request; the prompt stays.
+    ComposerCancel,
+    /// Put the result (as shown, including the user's edits) into the target app or on the clipboard. Never logged.
+    ComposerDeliver { how: DeliverHow, text: String },
+    /// The microphone button: dictate into the Composer input.
+    ComposerDictate,
+    /// The Composer closed without delivering.
+    ComposerClosed,
     SetActivationMode(ActivationMode),
     SetOutputMode(OutputMode),
     SetWritingMode(WritingMode),
@@ -53,6 +67,16 @@ pub enum UiAction {
 }
 
 /// How the Review panel was closed.
+/// How the Composer hands over its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverHow {
+    /// Replace the selection it was opened with.
+    Replace,
+    /// Insert at the cursor (no selection was used).
+    Insert,
+    Copy,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewChoice {
     Replace,
@@ -644,6 +668,7 @@ pub mod win_gui {
     pub const WM_SYNC_UI: u32 = WM_USER + 41;
     pub const WM_SHOW_TOAST: u32 = WM_USER + 42;
     pub const WM_SHOW_REVIEW: u32 = WM_USER + 44;
+    pub const WM_COMPOSER: u32 = WM_USER + 45;
     pub const WM_ALREADY_RUNNING: u32 = vi_core::brand::ALREADY_RUNNING_MSG;
     const WM_MOUSEHOVER_U: u32 = 0x02A1;
     const WM_MOUSELEAVE_U: u32 = 0x02A3;
@@ -674,6 +699,8 @@ pub mod win_gui {
         pub(crate) pill_hwnd: Mutex<isize>,
         pub(crate) toast_buf: Mutex<Option<(String, String, bool)>>,
         pub(crate) review_buf: Mutex<Option<(crate::composer::ReviewRequest, bool)>>,
+        /// Composer open requests and stream events, applied in order on the GUI thread.
+        pub(crate) composer_buf: Mutex<Vec<crate::composer::ComposerMsg>>,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -1764,6 +1791,13 @@ pub mod win_gui {
                 }
                 0
             }
+            WM_COMPOSER => {
+                let msgs = GUI_GLOBALS.get().map(|g| std::mem::take(&mut *g.composer_buf.lock())).unwrap_or_default();
+                for m in msgs {
+                    crate::composer::apply(m);
+                }
+                0
+            }
             WM_SHOW_REVIEW => {
                 if let Some(g) = GUI_GLOBALS.get() {
                     if let Some((req, first_use)) = g.review_buf.lock().take() {
@@ -1925,6 +1959,16 @@ pub mod win_gui {
             }
         }
 
+        /// Opens the Composer, or feeds it a streamed token, the final text or a failure (in order).
+        pub fn composer(&self, msg: crate::composer::ComposerMsg) {
+            if let Some(g) = GUI_GLOBALS.get() {
+                g.composer_buf.lock().push(msg);
+            }
+            unsafe {
+                let _ = PostMessageW(self.tray_hwnd as HWND, WM_COMPOSER, 0, 0);
+            }
+        }
+
         /// Opens the Review panel with `request`; `first_use` shows the one-time explanation first.
         pub fn show_review(&self, request: crate::composer::ReviewRequest, first_use: bool) {
             if let Some(g) = GUI_GLOBALS.get() {
@@ -1982,6 +2026,7 @@ pub mod win_gui {
             pill_hwnd: Mutex::new(0),
             toast_buf: Mutex::new(None),
             review_buf: Mutex::new(None),
+            composer_buf: Mutex::new(Vec::new()),
         });
 
         unsafe {

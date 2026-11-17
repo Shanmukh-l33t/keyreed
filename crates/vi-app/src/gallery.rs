@@ -163,6 +163,21 @@ impl Gallery {
         Ok(())
     }
 
+    fn shot_composer(&mut self, name: &str, note: &str) -> Result<()> {
+        let cls: Vec<u16> = "KeyreedComposerClass".encode_utf16().chain(std::iter::once(0)).collect();
+        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+        anyhow::ensure!(!h.is_null(), "Composer not found");
+        let rc = window_rect(h);
+        capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "composer",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
     fn shot_review(&mut self, name: &str, note: &str) -> Result<()> {
         let cls: Vec<u16> = "KeyreedReviewClass\0".encode_utf16().collect();
         let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
@@ -359,6 +374,62 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.shot_review("review_07_first_use", "First use: what Quick Fix does, the clipboard, privacy, undo")?;
     vi_win32::composer::close();
     pump_for(150);
+
+    // ---- Composer (plan F2 and F4) ----
+    use vi_win32::composer::{composer_bar, ComposerMsg, ComposerRequest};
+    let local = |selection: Option<&str>| ComposerRequest {
+        selection: selection.map(String::from),
+        app: "Outlook".into(),
+        route: "On this PC · Qwen3.5 2B".into(),
+        cloud: false,
+        unavailable: false,
+    };
+    let selected = "Hi team, the release moved to Thursday because the installer still needs signing. Sorry for the late notice.";
+    g.gui.composer(ComposerMsg::Open(local(Some(selected))));
+    pump_for(70);
+    g.shot_composer("composer_01_bloom_mid", "Opening: the bar grows out of the pill, content revealed in place")?;
+    pump_for(500);
+    g.shot_composer("composer_02_selection", "At rest with a selection: context chip, route, input, presets")?;
+    composer_bar::set_state_for_test(Some("Make it warmer and mention the new date"), None, false);
+    pump_for(150);
+    g.shot_composer("composer_03_typed", "A custom instruction typed")?;
+    composer_bar::set_state_for_test(Some(""), Some(1), false);
+    pump_for(150);
+    g.shot_composer("composer_04_chip_focus", "Keyboard focus on the Improve chip (Tab)")?;
+    composer_bar::submit_for_test(1);
+    let reply = "Hi team, a quick update: the release is now on Thursday. The installer still needs to be signed, so we moved it by two days. Thanks for your patience, and sorry for the short notice.";
+    let words: Vec<&str> = reply.split_inclusive(' ').collect();
+    for w in &words[..12] {
+        g.gui.composer(ComposerMsg::Token((*w).to_string()));
+        pump_for(25);
+    }
+    g.shot_composer("composer_05_streaming", "Streaming: words rise and fade in; Esc stops")?;
+    for w in &words[12..] {
+        g.gui.composer(ComposerMsg::Token((*w).to_string()));
+        pump_for(10);
+    }
+    g.gui.composer(ComposerMsg::Done(reply.to_string()));
+    pump_for(400);
+    g.shot_composer("composer_06_result", "Result: Replace (Enter), Copy (Ctrl+Enter), Again (Ctrl+R); presets act on the result")?;
+    composer_bar::set_state_for_test(None, None, true);
+    pump_for(200);
+    g.shot_composer("composer_07_editing", "The result as a native edit box after a click")?;
+    g.gui.composer(ComposerMsg::Open(ComposerRequest { cloud: true, route: "Cloud · api.groq.com · gpt-oss-20b".into(), ..local(None) }));
+    pump_for(500);
+    g.shot_composer("composer_08_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
+    g.gui.composer(ComposerMsg::Open(ComposerRequest { unavailable: true, ..local(None) }));
+    pump_for(400);
+    composer_bar::set_state_for_test(Some("Draft a thank-you note"), None, false);
+    composer_bar::submit_for_test(usize::MAX);
+    pump_for(300);
+    g.shot_composer("composer_09_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
+    composer_bar::close();
+    pump_for(30);
+    // Mid-fold is a 140 ms window; on a busy machine (debug build) the fold may already be over.
+    if !composer_bar::hwnd().is_null() {
+        g.shot_composer("composer_10_folding", "Closing: folding back into the pill")?;
+    }
+    pump_for(400);
 
     // ---- Settings pages ----
     vi_win32::settings::open(Some(vi_win32::settings::PAGE_GENERAL));

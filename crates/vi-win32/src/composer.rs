@@ -9,6 +9,13 @@
 
 #![cfg(windows)]
 
+mod bar;
+pub use bar::{apply, ComposerMsg, ComposerRequest, COMPOSER_WINDOW_CLASS};
+/// The Composer bar (plan F2): open, stream, deliver.
+pub mod composer_bar {
+    pub use super::bar::{close, hwnd, set_state_for_test, submit_for_test};
+}
+
 use crate::canvas::{text_width, Canvas, DT_LEFT, DT_SINGLELINE};
 use crate::settings::{refresh_dark_mode, theme, Fonts, Theme, F};
 use crate::ui::win_gui::{dpi_override, reduced_motion, send, to_wide};
@@ -623,6 +630,7 @@ fn window_dpi(hwnd: HWND) -> u32 {
 }
 
 pub unsafe fn register_class() {
+    bar::register_class();
     let hinst = GetModuleHandleW(std::ptr::null());
     let cls = to_wide(REVIEW_WINDOW_CLASS);
     let wc = WNDCLASSEXW {

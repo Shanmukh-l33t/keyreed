@@ -2230,7 +2230,15 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(UiAction::QuickFixUndo)
                             | Ok(UiAction::QuickFixDeeper)
                             | Ok(UiAction::ReviewDone { .. })
-                            | Ok(UiAction::QuickFixIntroSeen) => {}
+                            | Ok(UiAction::QuickFixIntroSeen)
+                            // Composer actions: wired to the text-job worker and delivery in P3.3 and P3.4.
+                            | Ok(UiAction::ComposerSubmit { .. })
+                            | Ok(UiAction::ComposerFollowUp(_))
+                            | Ok(UiAction::ComposerRegenerate)
+                            | Ok(UiAction::ComposerCancel)
+                            | Ok(UiAction::ComposerDeliver { .. })
+                            | Ok(UiAction::ComposerDictate)
+                            | Ok(UiAction::ComposerClosed) => {}
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);
