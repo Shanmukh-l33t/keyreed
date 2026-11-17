@@ -35,8 +35,8 @@ pub enum UiAction {
     ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
     /// The first-use screen of the Review panel was dismissed.
     QuickFixIntroSeen,
-    /// Composer (plan F2): run `instruction`, on the captured selection when `use_selection`.
-    ComposerSubmit { instruction: vi_core::textjob::Instruction, use_selection: bool },
+    /// Composer (plan F2): run `instruction`, on the captured selection when `use_selection`, else on `draft`.
+    ComposerSubmit { instruction: vi_core::textjob::Instruction, use_selection: bool, draft: Option<String> },
     /// A follow-up preset on the latest result.
     ComposerFollowUp(vi_core::textjob::Instruction),
     /// Run the last request again.

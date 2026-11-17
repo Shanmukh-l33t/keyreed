@@ -41,6 +41,15 @@ pub fn release(armed: bool, held_ms: u64) -> Option<ChordRelease> {
     Some(if held_ms < TAP_MS { ChordRelease::OpenComposer } else { ChordRelease::Speak })
 }
 
+/// How long the Composer's microphone records before it stops by itself: one instruction, not a document.
+/// A second click on the mic cancels sooner, as Esc does.
+pub const DICTATE_CAP_MS: u64 = 15_000;
+
+/// Whether a Composer dictation that started at `started_ms` has reached its cap and should stop and transcribe.
+pub fn dictate_expired(started_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(started_ms) >= DICTATE_CAP_MS
+}
+
 /// Whether a capture for `target` may start: a closed Composer has nowhere to put the words, and a voice
 /// command needs the selection it will rewrite.
 pub fn may_record(target: CaptureTarget, composer_open: bool, has_selection: bool) -> bool {
@@ -127,6 +136,14 @@ mod tests {
         // Nothing was captured (no selection, or a running dictation): the release does nothing at all.
         assert_eq!(release(false, 0), None);
         assert_eq!(release(false, 4_000), None);
+    }
+
+    #[test]
+    fn a_composer_dictation_stops_by_itself_at_the_cap() {
+        assert!(!dictate_expired(1_000, 1_000), "a click starts it");
+        assert!(!dictate_expired(1_000, 1_000 + DICTATE_CAP_MS - 1), "still recording just before the cap");
+        assert!(dictate_expired(1_000, 1_000 + DICTATE_CAP_MS), "the cap stops it and the words are kept");
+        assert!(!dictate_expired(1_000, 900), "a clock that went backwards does not stop it early");
     }
 
     #[test]

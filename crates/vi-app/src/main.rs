@@ -2198,6 +2198,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut capture_target = CaptureTarget::Deliver;
             // When the voice-command chord went down: a tap opens the Composer, a hold speaks.
             let mut voice_pressed_ms: Option<u64> = None;
+            // When the Composer's microphone started: the dictation stops by itself at the cap.
+            let mut composer_dictate_ms: Option<u64> = None;
             // The word the pill just announced, so its Undo chip can take it back.
             let mut learned_undo: Option<UndoToken> = None;
             let mut saw_physical_key_down = false;
@@ -2254,7 +2256,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 }
                             }
                             Ok(HotkeyEvent::OpenComposer) => {
-                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                // With the bar already open this press is a click outside it: never reopen (that would
+                                // throw away a typed draft), only open a bar that is not there.
+                                if !composer.is_open() && matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
                                     open_composer(&cfg, &mut composer, &gui_for_worker, None);
                                 }
                             }
@@ -2331,12 +2335,13 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 }
                             }
                             Ok(UiAction::OpenComposer) => {
-                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                if !composer.is_open() && matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
                                     open_composer(&cfg, &mut composer, &gui_for_worker, None);
                                 }
                             }
                             Ok(UiAction::ComposerClosed) => {
                                 composer.close();
+                                composer_dictate_ms = None;
                                 // A dictation into a closing Composer has nowhere to go: stop it and deliver nothing.
                                 if capture_target == CaptureTarget::Composer {
                                     pending_action = ptt.on_emergency_cancel("composer_closed");
@@ -2700,20 +2705,22 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             // The deeper pass is not in this build: the pill shows no Deeper chip.
                             Ok(UiAction::QuickFixDeeper) => {}
-                            // The Composer's microphone: dictate into the bar instead of the target app.
+                            // The Composer's microphone: one click dictates into the bar. It stops by itself at the
+                            // cap (voice::DICTATE_CAP_MS); a second click cancels, as Esc does.
                             Ok(UiAction::ComposerDictate) => {
                                 if capture_target == CaptureTarget::Composer && ptt.is_recording() {
-                                    // A second click finishes the dictation and puts it in the bar.
-                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                    pending_action = ptt.on_emergency_cancel("composer_dictate_cancelled");
                                 } else if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste)
                                     && voice::may_record(CaptureTarget::Composer, composer.is_open(), true)
                                 {
                                     capture_target = CaptureTarget::Composer;
+                                    composer_dictate_ms = Some(now_ms());
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(true));
                                     pending_action = ptt.on_floating_mic_click(now_ms());
                                 }
                             }
-                            Ok(UiAction::ComposerSubmit { instruction, use_selection }) => {
-                                composer.submit(&cfg, instruction, use_selection, &job_tx, &supervisor.rewrite, &style);
+                            Ok(UiAction::ComposerSubmit { instruction, use_selection, draft }) => {
+                                composer.submit(&cfg, instruction, use_selection, draft, &job_tx, &supervisor.rewrite, &style);
                             }
                             Ok(UiAction::ComposerFollowUp(instruction)) => {
                                 composer.follow_up(&cfg, instruction, &job_tx, &supervisor.rewrite, &style);
@@ -2782,6 +2789,12 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
 
+                        // The Composer's dictation stops by itself: the words are kept, not thrown away.
+                        if let Some(started) = composer_dictate_ms {
+                            if capture_target == CaptureTarget::Composer && ptt.is_recording() && voice::dictate_expired(started, now_ms()) {
+                                pending_action = ptt.on_floating_mic_click(now_ms());
+                            }
+                        }
                         if pending_action == PttAction::None {
                             pending_action = ptt.on_tick(now_ms());
                         }
@@ -2891,6 +2904,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Err(e) => {
                                 timing_mark("mic_error");
                                 // No capture runs, so a voice command's held selection is let go unread.
+                                if capture_target == CaptureTarget::Composer {
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                                }
+                                composer_dictate_ms = None;
                                 capture_target = CaptureTarget::Deliver;
                                 quick_fix.cancel_voice();
                                 let msg = format!("Mic error: {}", e);
@@ -2908,6 +2925,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             m.cancel_and_zeroize();
                         }
                         // Escape, a disabled app or a closed Composer: nothing is transcribed and nothing is taken.
+                        if capture_target == CaptureTarget::Composer {
+                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                        }
+                        composer_dictate_ms = None;
                         capture_target = CaptureTarget::Deliver;
                         quick_fix.cancel_voice();
                         supervisor.cancel_live_session();
@@ -2923,6 +2944,10 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         gui_for_worker.set_processing_note(if cold { Some("Loading model") } else { None });
                         gui_for_worker.sync(EngineState::Processing, 0.0, None);
                         let taken = std::mem::take(&mut capture_target);
+                        composer_dictate_ms = None;
+                        if taken == CaptureTarget::Composer {
+                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                        }
                         // A voice command is transcribed in Exact mode: the spoken words are the instruction,
                         // not a draft to polish. Neither it nor the Composer delivers anything.
                         let mode_override = (taken == CaptureTarget::VoiceCommand).then_some(WritingMode::Exact);

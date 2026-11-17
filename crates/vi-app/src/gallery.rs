@@ -53,6 +53,23 @@ fn window_rect(h: HWND) -> RECT {
     rc
 }
 
+/// The Composer bar window, if it is open.
+fn composer_hwnd() -> HWND {
+    let cls: Vec<u16> = "KeyreedComposerClass".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) }
+}
+
+/// A real mouse click in screen pixels: the same path a person's click takes.
+fn click_at(x: i32, y: i32) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    unsafe {
+        SetCursorPos(x, y);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
+}
+
 /// Visible frame (excludes Windows 11's invisible resize borders and shadow).
 fn frame_rect(h: HWND) -> RECT {
     let mut rc: RECT = unsafe { std::mem::zeroed() };
@@ -421,20 +438,100 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     composer_bar::set_state_for_test(None, None, true);
     pump_for(200);
     g.shot_composer("composer_07_editing", "The result as a native edit box after a click")?;
+    // ---- Real clicks, the way a person clicks: focus, presets while typing, the listening mic, outside clicks ----
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    // The input takes the caret from a click, then the draft is typed; the presets now have text to work on.
+    let (ix, iy) = composer_bar::click_point(None).expect("input point");
+    click_at(ix, iy);
+    composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
+    pump_for(250);
+    g.shot_composer(
+        "composer_08_typed_focus",
+        "Nothing selected, a draft typed, the input focused: the presets act on the draft, so they are live",
+    )?;
+    // A real click on a preset while the input had the caret: it submits, and the presets dim while it runs.
+    let (cx, cy) = composer_bar::click_point(Some(0)).expect("chip point");
+    click_at(cx, cy);
+    pump_for(300);
+    g.shot_composer(
+        "composer_09_preset_click_while_typing",
+        "A real click on Fix with the input focused submitted the draft; the presets are dimmed while it runs",
+    )?;
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    g.gui.composer(ComposerMsg::Listening(true));
+    pump_for(200);
+    g.shot_composer(
+        "composer_10_listening",
+        "The microphone is recording into the bar: the mic chip shows the listening state; a second click cancels",
+    )?;
+    // A click outside an empty bar closes it.
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    let rc = window_rect(composer_hwnd());
+    click_at(rc.left - 140, rc.top + 30);
+    // The desktop needs a moment to repaint where the layered window was.
+    pump_for(800);
+    let closed = composer_bar::hwnd().is_null();
+    capture(rc.left - 20, rc.top - 20, (rc.right - rc.left) + 40, (rc.bottom - rc.top) + 40, &g.dir.join("composer_11_after_outside_click.bmp"), None)?;
+    g.report.push(serde_json::json!({
+        "shot": "composer_11_after_outside_click",
+        "kind": "composer",
+        "note": "A real click outside an empty bar: the bar folded away, leaving the desktop",
+        "bar_closed": closed,
+    }));
+    anyhow::ensure!(closed, "a click outside an empty bar closes it");
+    // A click outside a bar with a draft keeps it: Esc is the way out, so nothing typed is lost.
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
+    pump_for(150);
+    let rc = window_rect(composer_hwnd());
+    click_at(rc.left - 140, rc.top + 30);
+    pump_for(350);
+    let kept = !composer_bar::hwnd().is_null();
+    g.shot_composer(
+        "composer_12_outside_click_keeps_draft",
+        "A click outside with a draft on screen keeps the bar (Esc closes it): typed text is never thrown away",
+    )?;
+    anyhow::ensure!(kept, "a click outside keeps a draft");
+    // A drag: the window moves, and the resting rectangle follows it, so a later update cannot snap it back.
+    let before = window_rect(composer_hwnd());
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+        SetWindowPos(composer_hwnd(), std::ptr::null_mut(), before.left + 60, (before.top - 40).max(0), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    pump_for(150);
+    // Any later message resizes the bar from its resting rectangle: that is what used to snap it back.
+    composer_bar::set_state_for_test(None, Some(1), false);
+    pump_for(200);
+    let after = window_rect(composer_hwnd());
+    let moved = (after.left, after.top);
+    g.shot_composer(
+        "composer_13_after_move",
+        &format!(
+            "After a move of (+60,-40) and a later update: the bar stayed at {moved:?} with its content whole, not offset or torn"
+        ),
+    )?;
+    anyhow::ensure!(
+        after.left == before.left + 60 && after.top == (before.top - 40).max(0),
+        "the bar keeps the spot it was dragged to"
+    );
     g.gui.composer(ComposerMsg::Open(ComposerRequest { cloud: true, route: "Cloud · api.groq.com · gpt-oss-20b".into(), ..local(None) }));
     pump_for(500);
-    g.shot_composer("composer_08_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
+    g.shot_composer("composer_14_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
     g.gui.composer(ComposerMsg::Open(ComposerRequest { unavailable: true, ..local(None) }));
     pump_for(400);
     composer_bar::set_state_for_test(Some("Draft a thank-you note"), None, false);
     composer_bar::submit_for_test(usize::MAX);
     pump_for(300);
-    g.shot_composer("composer_09_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
+    g.shot_composer("composer_15_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
     composer_bar::close();
     pump_for(30);
     // Mid-fold is a 140 ms window; on a busy machine (debug build) the fold may already be over.
     if !composer_bar::hwnd().is_null() {
-        g.shot_composer("composer_10_folding", "Closing: folding back into the pill")?;
+        g.shot_composer("composer_16_folding", "Closing: folding back into the pill")?;
     }
     pump_for(400);
 
