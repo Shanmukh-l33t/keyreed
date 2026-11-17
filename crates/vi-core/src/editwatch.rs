@@ -419,7 +419,7 @@ fn diff_hunks(a: &[Tok], b: &[Tok]) -> Option<Vec<Hunk>> {
     let mut hunks: Vec<Hunk> = Vec::new();
     let (mut i, mut j) = (0, 0);
     let mut open: Option<(usize, usize)> = None;
-    let mut close = |open: &mut Option<(usize, usize)>, i: usize, j: usize, hunks: &mut Vec<Hunk>| {
+    let close = |open: &mut Option<(usize, usize)>, i: usize, j: usize, hunks: &mut Vec<Hunk>| {
         if let Some((oi, oj)) = open.take() {
             hunks.push(Hunk { old: pre + oi..pre + i, new: pre + oj..pre + j });
         }
