@@ -444,6 +444,8 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         (vi_win32::settings::PAGE_PROCESSING, "settings_07_processing"),
         (vi_win32::settings::PAGE_PRIVACY, "settings_08_privacy"),
         (vi_win32::settings::PAGE_ABOUT, "settings_09_about"),
+        // Added after the 2.0 shots so the existing names keep their meaning: the learned-habits page.
+        (vi_win32::settings::PAGE_MYSTYLE, "settings_10_mystyle"),
     ];
     for (p, name) in pages {
         vi_win32::settings::show_page_for_test(p, 0);
