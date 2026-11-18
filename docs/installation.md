@@ -45,7 +45,7 @@ Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256
 For release 2.1.0:
 
 ```text
-7ad5fdbbbe0d97b93eb09c7bb562346aef6844ec5cb5fea2bc427e382c52bcd1  KeyReed-Setup-x64.exe
+e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd  KeyReed-Setup-x64.exe
 ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c  keyreed-2.1.0-windows-x86_64-portable.zip
 5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0  gector-bert-en-int8.tar.bz2
 ```
