@@ -223,8 +223,32 @@ fn send_chord(modifier: u16, key: u16) {
     };
     let inputs = [input(modifier, 0), input(key, 0), input(key, KEYEVENTF_KEYUP), input(modifier, KEYEVENTF_KEYUP)];
     unsafe {
+        wait_until_modifiers_are_up(MODIFIER_RELEASE_WAIT);
         release_active_modifiers_cleanly();
         SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// How long to wait for the person to let go of the shortcut's modifiers before the copy or paste chord is sent.
+const MODIFIER_RELEASE_WAIT: Duration = Duration::from_millis(1000);
+
+/// Waits (up to `limit`) until Ctrl, Shift, Alt and Win are all physically up. Quick Fix and the Composer start on
+/// the press of their key, so the modifiers are still down when the capture begins. Sending Ctrl+C then, with fake
+/// key-ups for keys that are still held, made the copy depend on how long the person held the chord: about one in
+/// three captures came back as "nothing selected". Waiting for the real release makes it the same every time.
+unsafe fn wait_until_modifiers_are_up(limit: Duration) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    const MODS: [i32; 8] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+    let down = || MODS.iter().any(|&vk| (GetAsyncKeyState(vk) as u16 & 0x8000) != 0);
+    let start = Instant::now();
+    let mut waited = false;
+    while down() && start.elapsed() < limit {
+        waited = true;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if waited {
+        // The target reads the key-ups from its own queue; give it a moment so the copy is not seen as Ctrl+Win+C.
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -633,6 +657,88 @@ mod tests {
         let mut c = ctx(AppCategory::General);
         c.window_class = "Shell_TrayWnd".into();
         assert_eq!(refusal_for(&c, false), Some(Refusal::ShellTarget));
+    }
+
+    /// Manual harness for the "Quick Fix works only sometimes" report. The chord fires on the trigger key's press, so
+    /// Ctrl and Win are still physically down when the capture starts and come up a little later. This holds them with
+    /// real key events (F24 as the trigger, so no other shortcut fires), starts a capture, releases after a varying
+    /// delay and counts how often the selection comes back. Run with
+    /// `cargo test -p vi-win32 capture_while_the_chord_is_held -- --ignored --nocapture` while the PC is idle.
+    #[test]
+    #[ignore = "injects Ctrl+Win+F24 and Ctrl+C into a window the test creates and uses the real clipboard"]
+    fn capture_while_the_chord_is_held_is_reliable() {
+        use windows_sys::Win32::UI::Controls::EM_SETSEL;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, SendMessageW, SetWindowTextW, ES_MULTILINE, WS_OVERLAPPEDWINDOW, WS_VISIBLE};
+
+        let original = ClipboardSnapshot::capture(SnapshotLimits { time: Duration::from_secs(3), ..Default::default() }).expect("snapshot");
+        if !original.is_complete() {
+            eprintln!("skipped: the current clipboard cannot be copied completely, so it is left alone");
+            return;
+        }
+        struct PutBack(Option<ClipboardSnapshot>);
+        impl Drop for PutBack {
+            fn drop(&mut self) {
+                if let Some(s) = self.0.take() {
+                    let _ = s.restore();
+                }
+            }
+        }
+        let _guard = PutBack(Some(original));
+        let key = |vk: u16, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0 } },
+        };
+        let send = |inputs: &[INPUT]| unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+
+        let edit = unsafe {
+            let hwnd = CreateWindowExW(0, wide("EDIT").as_ptr(), wide("KeyReed chord test").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | ES_MULTILINE as u32, 100, 100, 420, 200, std::ptr::null_mut(), std::ptr::null_mut(), GetModuleHandleW(std::ptr::null()), std::ptr::null());
+            assert!(!hwnd.is_null());
+            SetWindowTextW(hwnd, wide("Thanks for the update.").as_ptr());
+            hwnd
+        };
+        unsafe {
+            if !force_foreground_window(edit as isize) {
+                DestroyWindow(edit);
+                eprintln!("skipped: Windows would not bring the test window to the front");
+                return;
+            }
+            SetFocus(edit);
+        }
+        let hwnd = edit as usize as u64;
+        let (mut ok, mut nothing, mut other) = (0, 0, 0);
+        for trial in 0..40u64 {
+            unsafe { SendMessageW(edit, EM_SETSEL, 0, -1) };
+            // The user's hold time before letting go: 0 to 390 ms.
+            let hold = Duration::from_millis(trial * 10);
+            send(&[key(0xA2, false), key(0x5B, false), key(0x87, false)]);
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let ctx = crate::context::capture_foreground_context(false);
+                let _ = tx.send(capture(&ctx).map(|c| c.text));
+            });
+            std::thread::sleep(hold);
+            send(&[key(0x87, true), key(0x5B, true), key(0xA2, true)]);
+            let mut outcome = None;
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while outcome.is_none() && Instant::now() < deadline {
+                pump_until(Instant::now() + Duration::from_millis(15), || false);
+                outcome = rx.try_recv().ok();
+            }
+            match outcome {
+                Some(Ok(t)) if t.trim() == "Thanks for the update." => ok += 1,
+                Some(Err(Refusal::NothingSelected)) => nothing += 1,
+                _ => other += 1,
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            if !foreground_is(hwnd) {
+                unsafe { force_foreground_window(edit as isize) };
+                unsafe { SetFocus(edit) };
+            }
+        }
+        unsafe { DestroyWindow(edit) };
+        eprintln!("chord held: {ok} captured, {nothing} 'nothing selected', {other} other, of 40");
+        assert_eq!(ok, 40, "every capture must return the selection however long the chord is held");
     }
 
     #[test]

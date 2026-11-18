@@ -167,7 +167,7 @@ thread_local! {
 /// A low-level mouse hook: the bar is layered and does not own another app's windows or the desktop, so a press is
 /// the only reliable sign of a click outside it (a lost activation can happen with nobody clicking).
 unsafe extern "system" fn click_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && lparam != 0 && wparam as u32 == WM_LBUTTONDOWN {
+    if code >= 0 && lparam != 0 && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN) {
         let pt = (*(lparam as *const MSLLHOOKSTRUCT)).pt;
         let outside = peek(|b| {
             let mut r: RECT = std::mem::zeroed();
@@ -268,12 +268,6 @@ fn place(pill: &RECT, work: &RECT, w: i32, h: i32, gap: i32) -> RECT {
         (work.bottom - h).max(work.top)
     };
     RECT { left, top, right: left + w, bottom: top + h }
-}
-
-/// A click outside the bar closes it only when nothing would be lost: nothing is on screen (no request running, no
-/// result, no failure to read) and nothing is typed. Otherwise Esc closes it, so typed text is never thrown away.
-pub fn outside_click_closes(has_content: bool, typed: &str) -> bool {
-    !has_content && typed.trim().is_empty()
 }
 
 /// A preset works on text: the kept selection, the latest result, or the draft typed into the input. It is dead only
@@ -1011,14 +1005,10 @@ fn dismiss() {
     close();
 }
 
-/// A click outside the bar (another app, the desktop, the pill) closes it only when nothing would be lost.
-/// Returns whether it closed; otherwise the bar stays and Esc still closes it.
-pub fn outside_click() -> bool {
-    let closes = peek(|b| outside_click_closes(!matches!(b.stage, Stage::Empty), &input_text(b))).unwrap_or(false);
-    if closes {
-        dismiss();
-    }
-    closes
+/// A click outside the bar (another app, the desktop, the pill) closes it, and stops a request that is running.
+/// Esc closes it too. The bar is a quick tool, so leaving it must never need a second step.
+pub fn outside_click() {
+    dismiss();
 }
 
 /// Keys that mean something to the bar, wherever the focus is inside it.
@@ -1343,15 +1333,6 @@ mod tests {
         let m = lerp_rect(&a, &b, 0.5);
         assert_eq!((m.left, m.top, m.right, m.bottom), (50, 25, 155, 80));
         assert_eq!(lerp_rect(&a, &b, 1.0).right, 300);
-    }
-
-    #[test]
-    fn a_click_outside_closes_only_when_nothing_would_be_lost() {
-        assert!(outside_click_closes(false, ""), "an empty bar just folds away");
-        assert!(outside_click_closes(false, "   "), "whitespace is not text");
-        assert!(!outside_click_closes(false, "a draft"), "typed text is never thrown away");
-        assert!(!outside_click_closes(true, ""), "a result, a failure or a running request stays until Esc");
-        assert!(!outside_click_closes(true, "a draft"));
     }
 
     #[test]

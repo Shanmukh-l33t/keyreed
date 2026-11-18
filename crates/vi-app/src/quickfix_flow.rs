@@ -7,6 +7,7 @@ use crate::learning::Learning;
 use crate::textjobs::{JobRequest, SharedEngine};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
+use std::time::{Duration, Instant};
 use vi_core::dictionary::PersonalDictionary;
 use vi_core::habits::{self, Dialect};
 use vi_core::style::{Scope, StyleStore};
@@ -36,8 +37,13 @@ pub fn load_engine(cfg: &AppConfig) -> Result<QuickFixEngine> {
     Ok(QuickFixEngine::new(Box::new(gector)).with_speller(Box::new(crate::WindowsSpelling(vi_win32::spell::WindowsSpeller::new()))))
 }
 
+/// A job that has run this long without reporting back is treated as lost, so it cannot block the shortcut forever.
+const JOB_STALE_AFTER: Duration = Duration::from_secs(45);
+
 struct Pending {
     id: u64,
+    /// When the job started, while it is still running (None once its change is waiting in the Review panel).
+    running_since: Option<Instant>,
     ctx: ForegroundContext,
     captured: Captured,
     /// The learning switch and the dictionary as they were when the fix started.
@@ -58,19 +64,33 @@ pub struct QuickFixFlow {
 impl QuickFixFlow {
     /// The Quick Fix chord: capture the selection and hand it to the worker.
     pub fn start(&mut self, cfg: &AppConfig, gui: &WinGuiHandle, jobs: &Sender<JobRequest>, engine: &SharedEngine, external: &ForegroundContext) {
+        if self.pending.as_ref().is_some_and(|p| job_is_lost(p.running_since, Instant::now())) {
+            log::warn!("quick fix: a job never reported back; the shortcut is free again");
+            self.pending = None;
+        }
         if self.pending.is_some() {
             // A change is running or waiting in the Review panel: a second capture would take the selection
             // out from under it. Say so instead of doing nothing.
             refuse(gui, "Finish the change on screen first.");
             return;
         }
-        let Some(ctx) = target(cfg, external) else { return };
+        let Some(ctx) = target(cfg, external) else {
+            log::info!("quick fix: no external window to act on");
+            return;
+        };
         gui.quick_fix(QuickFixStage::Working);
         let captured = match selection::capture(&ctx) {
             // The editor copied a whole line because nothing was selected: replacing it would duplicate the line.
-            Ok(c) if c.copied_line => return refuse(gui, selection::Refusal::NothingSelected.sentence()),
+            Ok(c) if c.copied_line => {
+                log::info!("quick fix: refused, the editor copied a whole line ({:?})", ctx.category);
+                return refuse(gui, selection::Refusal::NothingSelected.sentence());
+            }
             Ok(c) => c,
-            Err(r) => return refuse(gui, r.sentence()),
+            // The reason is one of a closed list, never text, so it is safe to keep in the log.
+            Err(r) => {
+                log::info!("quick fix: capture refused: {r:?} ({:?}, {})", ctx.category, ctx.process_name);
+                return refuse(gui, r.sentence());
+            }
         };
         self.next_id += 1;
         let id = self.next_id;
@@ -91,7 +111,7 @@ impl QuickFixFlow {
         if jobs.send((job, engine.clone())).is_err() {
             return refuse(gui, "Quick Fix isn't available right now.");
         }
-        self.pending = Some(Pending { id, ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
+        self.pending = Some(Pending { id, running_since: Some(Instant::now()), ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
     }
 
     /// The voice-command chord's press: capture the selection exactly as Quick Fix does and hold it until the
@@ -145,7 +165,7 @@ impl QuickFixFlow {
         if jobs.send((job, engine.clone())).is_err() {
             return refuse(gui, "KeyReed couldn't start the voice command.");
         }
-        self.pending = Some(Pending { id, ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
+        self.pending = Some(Pending { id, running_since: Some(Instant::now()), ctx, captured, learn: cfg.learn_from_edits, dictionary: cfg.dictionary.clone() });
     }
 
     /// The chord was cancelled, the microphone failed or nothing was said: the held selection is handed back so a
@@ -173,7 +193,7 @@ impl QuickFixFlow {
                     gui.quick_fix(QuickFixStage::Notice(format!("{} to review", plural(edits.len()))));
                     let request = review_request(&p.captured.text, &edits, p.captured.structured);
                     gui.show_review(request, !cfg.quick_fix_intro_seen);
-                    self.pending = Some(p);
+                    self.pending = Some(Pending { running_since: None, ..p });
                 }
             }
             TextJobEvent::Done { id, text, cancelled } if self.is_pending(id) => {
@@ -185,7 +205,7 @@ impl QuickFixFlow {
                 let edit = FixEdit { start: 0, end: p.captured.text.len(), replacement: text, label: "Voice", silent: false };
                 gui.quick_fix(QuickFixStage::Notice("1 change to review".into()));
                 gui.show_review(review_request(&p.captured.text, std::slice::from_ref(&edit), p.captured.structured), false);
-                self.pending = Some(p);
+                self.pending = Some(Pending { running_since: None, ..p });
             }
             TextJobEvent::Failed { id, reason } if self.is_pending(id) => {
                 self.pending = None;
@@ -234,6 +254,12 @@ impl QuickFixFlow {
             Err(r) => refuse(gui, r.sentence()),
         }
     }
+}
+
+/// Whether a job started at `running_since` has been silent for so long that it must be lost. A change waiting in the
+/// Review panel (`None`) is the person's to finish, however long that takes.
+fn job_is_lost(running_since: Option<Instant>, now: Instant) -> bool {
+    running_since.is_some_and(|t| now.saturating_duration_since(t) > JOB_STALE_AFTER)
 }
 
 fn refuse(gui: &WinGuiHandle, sentence: &str) {
@@ -326,6 +352,18 @@ fn review_request(original: &str, edits: &[FixEdit], structured: bool) -> Review
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_job_frees_the_shortcut_but_a_change_in_review_never_expires() {
+        let now = Instant::now();
+        let long_ago = now.checked_sub(Duration::from_secs(600)).unwrap_or(now);
+        assert!(!job_is_lost(Some(now), now), "a job that just started is running");
+        assert!(!job_is_lost(now.checked_sub(Duration::from_secs(20)), now), "a slow model is not a lost job");
+        if long_ago < now {
+            assert!(job_is_lost(Some(long_ago), now), "a job silent for ten minutes is lost");
+            assert!(!job_is_lost(None, now), "a change waiting in the Review panel is the person's to finish");
+        }
+    }
 
     #[test]
     fn review_request_carries_edits_and_the_formatting_note() {

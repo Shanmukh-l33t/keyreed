@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.1 (unreleased)
+
+### Fixed
+- Clicking the idle pill could close KeyReed: a rounding error in the drawing code made a clamp panic. The same kind of clamp in the Settings scrollbar is hardened too.
+- The Composer did not open again after Replace, Insert or Copy; the shortcut was ignored until KeyReed restarted. Every way of closing the bar now frees it.
+- Quick Fix and the Composer worked only some of the time. The shortcut fires while Ctrl and Win are still held, and the copy that reads your selection was sent too early, so about one in three attempts found "nothing selected". Capture now waits for the keys to come up first (40 of 40 in an automated hold-time test, 27 of 40 before).
+- Quick Fix said "select the text first" for a line selected in an email, document or web page: a line copied with its line break is only treated as "nothing selected" in code editors now. The copy wait is 0.9 s (was 0.4 s) for slow apps, and a new capture waits until the previous paste has put your clipboard back.
+- A Quick Fix job that never reported back no longer blocks the shortcut with "Finish the change on screen first"; it is released after 45 seconds.
+
+### Changed
+- A click anywhere outside the Composer bar (left, right or middle button) closes it, even with a draft or a result on screen. Esc still works.
+- Quick Fix refusals are written to the log (reason and app category, never your text) so a failure can be traced.
+
 ## 2.1.0 (2026-11-18)
 
 The first full 2.1 release: a new interface, plus the Quick Fix and sound fixes below, on top of everything in 2.1.0-beta.1. Speech recognition, cleanup, insertion and your settings file work exactly as before. The grammar model now downloads from the 2.1.0 release (same file, same SHA-256), because the beta releases were taken down.

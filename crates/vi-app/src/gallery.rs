@@ -617,20 +617,27 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         "bar_closed": closed,
     }));
     anyhow::ensure!(closed, "a click outside an empty bar closes it");
-    // A click outside a bar with a draft keeps it: Esc is the way out, so nothing typed is lost.
+    // A click outside closes the bar even with a draft typed: the click is the way out, no Esc needed.
     g.gui.composer(ComposerMsg::Open(local(None)));
     pump_for(400);
     composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
     pump_for(150);
     let rc = window_rect(composer_hwnd());
     click_at(rc.left - 140, rc.top + 30);
-    pump_for(350);
-    let kept = !composer_bar::hwnd().is_null();
-    g.shot_composer(
-        "composer_12_outside_click_keeps_draft",
-        "A click outside with a draft on screen keeps the bar (Esc closes it): typed text is never thrown away",
-    )?;
-    anyhow::ensure!(kept, "a click outside keeps a draft");
+    pump_for(800);
+    let closed_with_draft = composer_bar::hwnd().is_null();
+    g.report.push(serde_json::json!({
+        "shot": "composer_12_outside_click_with_draft",
+        "kind": "composer",
+        "note": "A real click outside a bar with a draft on screen: the bar folded away",
+        "bar_closed": closed_with_draft,
+    }));
+    anyhow::ensure!(closed_with_draft, "a click outside closes the bar even with a draft");
+    // The drag check below needs a bar again.
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
+    pump_for(150);
     // A drag: the window moves, and the resting rectangle follows it, so a later update cannot snap it back.
     let before = window_rect(composer_hwnd());
     unsafe {
