@@ -10,6 +10,6 @@
     { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
   ],
   "display": "browser",
-  "background_color": "#f6f9f6",
-  "theme_color": "#f6f9f6"
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff"
 }

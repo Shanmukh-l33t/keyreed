@@ -95,28 +95,32 @@ in float vGlow;
 in float vEdge;
 
 uniform float uVoiceAmp;
+uniform float uLight;
 out vec4 outColor;
 
 void main() {
-  // Brand palette: evergreen #0B3B2C -> emerald #10B981 / #34D399 -> mint #A7F3D0
-  vec3 cBase = vec3(0.045, 0.215, 0.155);
-  vec3 cMid  = vec3(0.105, 0.785, 0.545);
-  vec3 cTip  = vec3(0.680, 0.965, 0.835);
-
-  vec3 col = mix(cBase, cMid, smoothstep(0.05, 0.64, vT));
-  col = mix(col, cTip, smoothstep(0.58, 1.0, vT));
-
-  // Tip luminescence boosted by voice envelope & ripple ring
+  // Dark mode: evergreen -> luminous emerald -> mint glow
+  vec3 dBase = vec3(0.045, 0.215, 0.155);
+  vec3 dMid  = vec3(0.105, 0.785, 0.545);
+  vec3 dTip  = vec3(0.680, 0.965, 0.835);
+  vec3 dCol  = mix(dBase, dMid, smoothstep(0.05, 0.64, vT));
+  dCol = mix(dCol, dTip, smoothstep(0.58, 1.0, vT));
   float tipBoost = pow(vT, 2.2) * (0.36 + vGlow * 0.85 + uVoiceAmp * 0.48);
-  col += vec3(0.22, 0.86, 0.62) * tipBoost;
+  dCol += vec3(0.22, 0.86, 0.62) * tipBoost;
+  dCol = mix(dCol, vec3(0.027, 0.039, 0.035), mix(0.55, 0.03, vDepth) * (1.0 - vT * 0.35));
 
-  // Depth fog into dark stage floor (#060B09)
-  vec3 fog = vec3(0.024, 0.043, 0.035);
-  float fogAmt = mix(0.55, 0.03, vDepth);
-  col = mix(col, fog, fogAmt * (1.0 - vT * 0.35));
+  // Light mode: delicate botanical emerald on pure white canvas
+  vec3 lBase = vec3(0.62, 0.84, 0.75);
+  vec3 lMid  = vec3(0.06, 0.66, 0.46);
+  vec3 lTip  = vec3(0.20, 0.83, 0.60);
+  vec3 lCol  = mix(lBase, lMid, smoothstep(0.08, 0.68, vT));
+  lCol = mix(lCol, lTip, smoothstep(0.65, 1.0, vT));
+  lCol = mix(lCol, vec3(1.0, 1.0, 1.0), mix(0.68, 0.14, vDepth) * (1.0 - vT * 0.45));
 
+  vec3 col = mix(dCol, lCol, uLight);
   float edgeSoft = smoothstep(1.0, 0.24, abs(vEdge));
-  float alpha = mix(0.54, 0.98, vDepth) * smoothstep(0.0, 0.07, vT) * edgeSoft;
+  float baseAlpha = mix(mix(0.54, 0.96, vDepth), mix(0.20, 0.58, vDepth), uLight);
+  float alpha = baseAlpha * smoothstep(0.0, 0.09, vT) * edgeSoft;
   outColor = vec4(col, alpha);
 }
 `;
@@ -233,6 +237,7 @@ export function mountReeds(canvas, options = {}) {
       uPointer: gl.getUniformLocation(prog, 'uPointer'),
       uVoice: gl.getUniformLocation(prog, 'uVoice'),
       uVoiceAmp: gl.getUniformLocation(prog, 'uVoiceAmp'),
+      uLight: gl.getUniformLocation(prog, 'uLight'),
     };
 
     let aspect = 1;
@@ -250,7 +255,8 @@ export function mountReeds(canvas, options = {}) {
     window.addEventListener('resize', resize, { passive: true });
 
     // Pointer wind tracking on parent dark stage
-    const stage = canvas.closest('.slab-dark') || canvas.parentElement;
+    const insideDarkSlab = Boolean(canvas.closest('.slab-dark'));
+    const stage = canvas.closest('.slab-dark') || canvas.closest('.hero-open') || canvas.parentElement;
     let targetPx = 0, curPx = 0, targetPs = 0, curPs = 0;
     const onMove = (e) => {
       const r = canvas.getBoundingClientRect();
@@ -308,8 +314,10 @@ export function mountReeds(canvas, options = {}) {
       gl.uniform1f(loc.uAspect, aspect);
       gl.uniform1f(loc.uGrow, grow);
       gl.uniform3f(loc.uPointer, curPx, 0, curPs);
+      const isLight = !insideDarkSlab && document.documentElement.getAttribute('data-theme') !== 'dark' ? 1.0 : 0.0;
       gl.uniform2f(loc.uVoice, voiceCur, rippleClock);
       gl.uniform1f(loc.uVoiceAmp, voiceCur);
+      gl.uniform1f(loc.uLight, isLight);
 
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, (SEGS + 1) * 2, count);
       gl.bindVertexArray(null);

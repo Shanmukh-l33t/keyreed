@@ -16,7 +16,7 @@ const metaTheme = $('meta[name="theme-color"]');
 
 function syncThemeUi(theme) {
   root.setAttribute('data-theme', theme);
-  if (metaTheme) metaTheme.setAttribute('content', theme === 'dark' ? '#060908' : '#f6f9f6');
+  if (metaTheme) metaTheme.setAttribute('content', theme === 'dark' ? '#070a09' : '#ffffff');
   if (!themeBtn) return;
   const next = theme === 'dark' ? 'light' : 'dark';
   themeBtn.setAttribute('aria-label', `Switch to ${next} theme`);

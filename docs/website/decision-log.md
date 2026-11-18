@@ -94,9 +94,9 @@ Every factual statement on `/`, `/details`, and `/vs-wispr-flow` traces to an ex
 
 | Claim on Site | Exact Value | Source |
 | --- | --- | --- |
-| Latest version & release date | `2.1.0` (18 November 2026) | `README.md:32`, `CHANGELOG.md:3`, GitHub tag `v2.1.0` |
-| Installer filename, size & SHA-256 | `KeyReed-Setup-x64.exe`, `24.4 MB` (`24,427,697` bytes), `e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd` | `gh release view v2.1.0`, `docs/installation.md:17,48` |
-| Portable archive filename, size & SHA-256 | `keyreed-2.1.0-windows-x86_64-portable.zip`, `47.3 MB` (`47,320,361` bytes), `ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c` | `gh release view v2.1.0`, `docs/installation.md:18,49` |
+| Latest version & release date | `2.1.1` (18 November 2026) | `README.md`, `CHANGELOG.md`, GitHub tag `v2.1.1` |
+| Installer filename, size & SHA-256 | `KeyReed-Setup-x64.exe`, `24.4 MB`, `6abae134861325cf84f99e927081e5b8dfebb47a67193179923c0fe17d516ca5` | `gh release view v2.1.1`, `docs/installation.md` |
+| Portable archive filename, size & SHA-256 | `keyreed-2.1.1-windows-x86_64-portable.zip`, `48.2 MB`, `dd4bc184afdb228a86374be709cbed4fa4067aba351b761b50eb4adaea81ce09` | `gh release view v2.1.1`, `docs/installation.md` |
 | Quick Fix grammar archive & SHA-256 | `gector-bert-en-int8.tar.bz2`, `73.1 MB` (`~70 MB` catalog), `5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0`, Apache-2.0 | `crates/vi-asr/src/catalog.rs:151-163`, `docs/installation.md:19,50` |
 | Supported OS | Windows 10 & 11 x64 (built & tested on 64-bit Windows 11; Windows 10 x64 supported by code, not re-tested for 2.1.0) | `README.md:149,177`, `docs/installation.md:5` |
 | Licence | Dual licensed MIT or Apache-2.0 | `Cargo.toml`, `README.md:202` |
@@ -109,3 +109,16 @@ Every factual statement on `/`, `/details`, and `/vs-wispr-flow` traces to an ex
 | Memory & GPU | No GPU needed (ASR on CPU; optional Vulkan GPU speeds up grammar `2.7–6×` on Quadro P2000). ~`1.6 GB` working set with grammar runtime on a 4 GB test VM | `README.md:61,150,152`, `CHANGELOG.md:110` |
 | Unsigned installer & SmartScreen | Executables and installer are not code-signed yet; SmartScreen may warn; SHA-256 verification documented | `README.md:32,45,169`, `docs/installation.md:37-53` |
 | Wispr Flow comparison facts | Free tier limited words/week (`2,000 words/week` on Mac/Windows per Flow docs); Pro `$15/mo` (`$12/mo` or `€12/mo` billed annually); Mac/Windows/iOS/Android; 100+ languages; *"Transcription always occurs on the cloud"*; Command Mode, snippets, Notetaker, SOC 2 Type II, ISO 27001, HIPAA on Growth/Enterprise | Re-verified live on `https://wisprflow.ai/pricing`, `https://wisprflow.ai/privacy`, and `https://wisprflow.ai/data-controls` on **18 November 2026** |
+
+
+---
+
+## 6. v3.1 Refinement — Open Borderless Hero Canvas & Playful Cursor Acoustic Field
+
+Following visual review on wide desktop viewports:
+1. **Removed boxed green hero wrapper (`.slab-dark` on opening sections → `.hero-open`):**
+   - `/`, `/vs-wispr-flow`, and `/404` now open onto an airy, borderless full-width canvas (`#f9fbf9` in default light theme, `#070a09` in dark theme) with a soft top emerald aura and theme-aware WebGL2 reeds (`uLight` uniform + `assets/reeds-poster-light.webp` static fallback), eliminating the floating dark-green box around the hero headline.
+   - Mid-page evergreen stages (`#privacy-slab` and `#download` finale) span full-bleed edge-to-edge (`max-width: none; border-radius: 0`) so no section appears boxed on 1440p/1920p displays.
+2. **Playful native-cursor craft (no custom cursor replacement):**
+   - **Cursor Acoustic Reed-Field (`#hero-field` in `website/js/hero.js`):** A 40 px micro-dot lattice across the open hero wakes into oriented emerald waveform bars along the cursor's velocity path, with concentric acoustic shockwave rings on click or `Right Ctrl` press/hold. Sleeps at `0%` CPU when settled or offscreen and respects `prefers-reduced-motion: reduce`.
+   - **3D Specular Keycap Tilt & H1 Word Micro-Float:** Fine-pointer hover tilts `#hero-keycap` / `#nf-keycap` (`±9°` with live specular highlight) and gently floats individual `.h-hero .hw` words.

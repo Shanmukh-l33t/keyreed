@@ -6,7 +6,7 @@
   <title>KeyReed: open-source, local-first voice dictation for Windows</title>
   <meta name="description" content="Free, open-source voice typing for Windows. Hold Right Ctrl, speak, and clean text lands in any app. Runs locally on your PC with zero cloud requirement.">
   <link rel="canonical" href="https://www.keyreed.com/">
-  <meta name="theme-color" content="#f6f9f6">
+  <meta name="theme-color" content="#ffffff">
   <meta name="color-scheme" content="light dark">
   <meta name="author" content="Shanmukh-l33t">
 
@@ -112,7 +112,7 @@
   }
   </script>
 </head>
-<body class="on-dark-hero">
+<body>
   <!-- Icon sprite -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <defs>
@@ -185,10 +185,10 @@
   </header>
 
   <main id="main">
-    <!-- ============ 1. HERO: "THE WOW" (DARK STAGE) ============ -->
-    <section class="slab-shell" id="top">
-      <div class="slab-dark hero-slab">
-        <div class="wrap hero-in">
+    <!-- ============ 1. HERO: "THE WOW" (OPEN STAGE + INTERACTIVE ACOUSTIC FIELD) ============ -->
+    <section class="hero-open" id="top">
+      <canvas class="hero-field" id="hero-field" aria-hidden="true"></canvas>
+      <div class="wrap hero-in">
           <a class="eyebrow-pill" href="https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.1" rel="noopener">
             <span class="dot" aria-hidden="true"></span>
             <span>KeyReed <span data-bind="version">2.1.1</span></span>
@@ -268,10 +268,9 @@
           <p class="toy-caption">Illustration, not a recording.</p>
         </div>
 
-        <div class="reeds-bed" aria-hidden="true">
+        <div class="reeds-bed hero-reeds-bed" aria-hidden="true">
           <canvas id="hero-reeds"></canvas>
         </div>
-      </div>
     </section>
 
     <!-- ============ 2. PROOF BAND ============ -->
@@ -471,7 +470,7 @@
 
                 <!-- Disconnected optional cloud branch -->
                 <path d="M 238 96 L 238 134 L 352 134" fill="none" stroke="rgba(167,243,208,0.16)" stroke-width="1.5" stroke-dasharray="4 6"/>
-                <g opacity="0.42">
+                <g opacity="0.45">
                   <rect x="362" y="114" width="166" height="40" rx="12" fill="#09130f" stroke="rgba(167,243,208,0.2)"/>
                   <text x="376" y="132" fill="#a9c2b6" font-family="Geist Mono, monospace" font-size="10.5">Optional cloud (off)</text>
                   <text x="376" y="146" fill="#7f9a8d" font-family="Geist, sans-serif" font-size="10">Your own key only</text>
@@ -520,7 +519,7 @@
             </div>
 
             <!-- Real Rust Code Receipt -->
-            <div class="code-receipt lit" id="code-receipt" data-reveal style="--d:.08s">
+            <div class="code-receipt lit keep-dark" id="code-receipt" data-reveal style="--d:.08s">
               <div class="cr-bar">
                 <span>crates/vi-core/src/types.rs</span>
                 <a class="inline-link" href="https://github.com/Shanmukh-l33t/keyreed/blob/main/crates/vi-core/src/types.rs" rel="noopener">Source</a>
