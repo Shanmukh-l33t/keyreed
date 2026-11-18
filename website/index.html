@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>KeyReed: open-source, local-first voice dictation for Windows</title>
-  <meta name="description" content="Free, open-source voice dictation for Windows. Hold a key, speak, let go: clean text appears in the app you are typing in. Runs on your PC, no account.">
-  <link rel="canonical" href="https://keyreed-website.vercel.app/">
+  <meta name="description" content="Free, open-source voice typing for Windows. Hold Right Ctrl, speak, and clean text lands in any app. Runs locally on your PC with zero cloud requirement.">
+  <link rel="canonical" href="https://www.keyreed.com/">
   <meta name="theme-color" content="#f6f9f6">
   <meta name="color-scheme" content="light dark">
   <meta name="author" content="Shanmukh-l33t">
@@ -13,17 +13,17 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="KeyReed">
   <meta property="og:title" content="KeyReed: open-source, local-first voice dictation for Windows">
-  <meta property="og:description" content="Your voice. Your words. Your machine. Hold a shortcut, speak, and paste polished text anywhere on Windows. Open source, local by default.">
-  <meta property="og:url" content="https://keyreed-website.vercel.app/">
-  <meta property="og:image" content="https://keyreed-website.vercel.app/assets/og-image.png">
+  <meta property="og:description" content="Your voice. Your words. Your machine. Free, open-source voice typing, Quick Fix, and Composer for Windows — all on your PC.">
+  <meta property="og:url" content="https://www.keyreed.com/">
+  <meta property="og:image" content="https://www.keyreed.com/assets/og-image.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="KeyReed, open-source voice dictation for Windows, on a dark evergreen background with an emerald waveform.">
+  <meta property="og:image:alt" content="KeyReed: Your voice. Your words. Your machine. Glowing emerald reeds beneath a 3D Right Ctrl keycap on an evergreen stage.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="KeyReed: open-source, local-first voice dictation for Windows">
-  <meta name="twitter:description" content="Your voice. Your words. Your machine. Open source, local by default, Windows x64.">
-  <meta name="twitter:image" content="https://keyreed-website.vercel.app/assets/og-image.png">
-  <meta name="twitter:image:alt" content="KeyReed, open-source voice dictation for Windows, on a dark evergreen background with an emerald waveform.">
+  <meta name="twitter:description" content="Your voice. Your words. Your machine. Free, open-source voice typing for Windows — local by default.">
+  <meta name="twitter:image" content="https://www.keyreed.com/assets/og-image.png">
+  <meta name="twitter:image:alt" content="KeyReed: Your voice. Your words. Your machine. Glowing emerald reeds beneath a 3D Right Ctrl keycap.">
 
   <link rel="icon" href="favicon.ico" sizes="48x48">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/icon-32.png">
@@ -41,58 +41,101 @@
     "@graph": [
       {
         "@type": "SoftwareApplication",
-        "@id": "https://keyreed-website.vercel.app/#app",
+        "@id": "https://www.keyreed.com/#app",
         "name": "KeyReed",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Windows 10, Windows 11 (x64)",
         "softwareVersion": "2.1.0",
-        "description": "Open-source, local-first voice dictation for Windows. Hold a shortcut, speak, and get clean text typed into the application you are using.",
-        "url": "https://keyreed-website.vercel.app/",
-        "downloadUrl": "https://github.com/Shanmukh-l33t/keyreed/releases/latest",
+        "description": "Free, open-source, local-first voice dictation, Quick Fix, and Composer for Windows. Hold a key, speak, and clean text lands in any app on your PC.",
+        "url": "https://www.keyreed.com/",
+        "downloadUrl": "https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe",
         "license": "https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT",
         "codeRepository": "https://github.com/Shanmukh-l33t/keyreed",
         "isAccessibleForFree": true,
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-        "image": "https://keyreed-website.vercel.app/assets/og-image.png"
+        "image": "https://www.keyreed.com/assets/og-image.png"
       },
       {
         "@type": "FAQPage",
         "mainEntity": [
-          { "@type": "Question", "name": "Is KeyReed free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. KeyReed is free, open-source software under the MIT or Apache-2.0 licenses, with no subscription. The optional cloud profiles use an API key you supply, and that provider's own pricing applies." } },
-          { "@type": "Question", "name": "Does KeyReed work offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, once a speech model is installed. The default profile does not call any network service. The installer's first-run setup downloads the default speech model once." } },
-          { "@type": "Question", "name": "Does KeyReed send audio to the cloud?", "acceptedAnswer": { "@type": "Answer", "text": "Not by default. The default profile, Maximum Privacy (100% Offline), keeps audio and text on your computer. Audio or text can only leave your machine if you switch to a hybrid or cloud profile and store an API key for an endpoint you choose." } },
-          { "@type": "Question", "name": "Do I need an account to use KeyReed?", "acceptedAnswer": { "@type": "Answer", "text": "No. There is no sign-up, login or licence key, and KeyReed does not send usage data. The only network traffic in the default profile is the one-time speech model download you start yourself." } },
-          { "@type": "Question", "name": "Does KeyReed require a GPU?", "acceptedAnswer": { "@type": "Answer", "text": "No. Speech recognition runs on the CPU. The optional local grammar model uses a GPU through Vulkan when one is available and falls back to the CPU otherwise." } }
+          {
+            "@type": "Question",
+            "name": "Is it really free?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. KeyReed is free and open source under MIT or Apache-2.0, with no word limit, subscription, or account. Optional cloud profiles use an API key you bring yourself at that provider's price."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does my voice leave my PC?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Not in the default Maximum Privacy profile, which makes zero network calls for audio or text. Audio stays in RAM and is wiped after decoding. Only optional cloud profiles send data, and only with your own API key."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Do I need a GPU?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. Speech recognition runs on your CPU via sherpa-onnx. The optional local grammar model uses a Vulkan GPU when available and falls back to CPU automatically."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How is it different from Wispr Flow?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "KeyReed is free, open source, Windows-only, and processes speech locally offline. Wispr Flow is a commercial cloud service on Mac, Windows, iOS, and Android with 100+ languages, Command Mode, and team compliance."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why does Windows SmartScreen warn me?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "KeyReed's Windows builds are not code-signed yet, so SmartScreen may show an unknown-publisher prompt. Always verify the SHA-256 checksum below or build from source before running."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Which languages work?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "English by default (Parakeet TDT 0.6B v2), 25 European languages (Parakeet v3 and Ultra), or English, Chinese, Japanese, Korean, and Cantonese (SenseVoice Small). Eight SHA-256-pinned models are selectable in Settings."
+            }
+          }
         ]
       }
     ]
   }
   </script>
 </head>
-<body>
+<body class="on-dark-hero">
   <!-- Icon sprite -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <defs>
       <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .5A11.5 11.5 0 0 0 .5 12.2c0 5.2 3.3 9.6 7.9 11.1.6.1.8-.3.8-.6v-2.2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.4 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6a11.7 11.7 0 0 0 7.9-11.1A11.5 11.5 0 0 0 12 .5Z"/></symbol>
+      <symbol id="i-star" viewBox="0 0 24 24"><path fill="currentColor" d="m12 2.6 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.4l-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9L12 2.6Z"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-6-6 6 6-6 6"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></symbol>
       <symbol id="i-windows" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5.5 10.4 4.5v6.7H3V5.5Zm8.5-1.1L21 3v8.2h-9.5V4.4ZM3 12.2h7.4V19L3 18v-5.8Zm8.5 0H21V21l-9.5-1.3v-7.5Z"/></symbol>
-      <symbol id="i-mic" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm7 9a7 7 0 0 1-14 0m7 7v3"/></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
-      <symbol id="i-minus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 12h12"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
-      <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></symbol>
-      <symbol id="i-code" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="m8 8-5 4 5 4m8-8 5 4-5 4m-3.5-10-3 12"/></symbol>
-      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
       <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+      <symbol id="i-vol-on" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 5 6 9H3v6h3l5 4V5Zm4.5 3.5a5 5 0 0 1 0 7m2.8-9.8a9 9 0 0 1 0 12.6"/></symbol>
+      <symbol id="i-vol-off" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 5 6 9H3v6h3l5 4V5Zm6 4 5 6m0-6-5 6"/></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
     </defs>
   </svg>
 
   <a class="skip" href="#main">Skip to content</a>
 
+  <!-- ============ 0. NAV ============ -->
   <header class="nav" id="nav">
     <div class="nav-in">
       <a class="brand" href="#top" aria-label="KeyReed, back to top">
@@ -100,592 +143,559 @@
         <span class="wordmark">Key<b>Reed</b></span>
       </a>
       <nav class="nav-links" id="desk-nav" aria-label="Primary">
-        <a href="#product" data-spy="product">Product</a>
         <a href="#features" data-spy="features">Features</a>
         <a href="#privacy" data-spy="privacy">Privacy</a>
-        <a href="#open-source" data-spy="open-source">Open Source</a>
+        <a href="#open-source" data-spy="open-source">Open source</a>
         <a href="#faq" data-spy="faq">FAQ</a>
       </nav>
       <div class="nav-actions">
-        <button class="theme-btn" id="theme-btn" type="button" aria-label="Switch to dark theme" title="Switch to dark theme"><svg class="ic i-sun"><use href="#i-sun"/></svg><svg class="ic i-moon"><use href="#i-moon"/></svg></button>
-        <a class="nav-gh" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic"><use href="#i-github"/></svg><span>GitHub</span></a>
-        <a class="btn btn-sm btn-primary" href="#download"><svg class="ic"><use href="#i-download"/></svg>Download</a>
-        <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open menu"><svg class="ic"><use href="#i-menu"/></svg></button>
+        <button class="icon-btn sound-btn" id="sound-btn" type="button" aria-pressed="false" aria-label="Turn sound effects on" title="Turn sound effects on">
+          <svg class="ic i-vol-on" aria-hidden="true"><use href="#i-vol-on"/></svg>
+          <svg class="ic i-vol-off" aria-hidden="true"><use href="#i-vol-off"/></svg>
+        </button>
+        <button class="icon-btn theme-btn" id="theme-btn" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+          <svg class="ic i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+          <svg class="ic i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <a class="nav-gh" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener" aria-label="KeyReed on GitHub">
+          <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+          <span>GitHub</span>
+          <span class="gh-stars" data-gh-stars hidden></span>
+        </a>
+        <a class="btn btn-sm btn-primary nav-dl" href="#download">Download</a>
+        <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open menu">
+          <svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg>
+        </button>
       </div>
     </div>
+
     <div class="mobile-nav" id="mobile-nav" hidden>
-      <a href="#product">Product</a>
-      <a href="#features">Features</a>
-      <a href="#privacy">Privacy</a>
-      <a href="#open-source">Open Source</a>
-      <a href="#faq">FAQ</a>
-      <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>
-      <a class="btn btn-primary" href="#download"><svg class="ic"><use href="#i-download"/></svg>Download for Windows</a>
+      <div class="mobile-sheet-links">
+        <a href="#features">Features</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#open-source">Open source</a>
+        <a href="#faq">FAQ</a>
+        <a href="details">Details</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>
+      </div>
+      <div class="mobile-sheet-foot">
+        <a class="btn btn-lg btn-primary" href="#download"><svg class="ic" aria-hidden="true"><use href="#i-windows"/></svg>Download for Windows</a>
+      </div>
     </div>
   </header>
 
   <main id="main">
-    <!-- ============ HERO ============ -->
-    <section class="hero" id="top">
-      <div class="hero-bg" aria-hidden="true">
-        <i class="aurora a1"></i><i class="aurora a2"></i><i class="grid"></i>
-      </div>
-      <div class="wrap hero-copy">
-        <a class="pill" id="release-pill" href="https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0" rel="noopener">
-          <span class="dot"></span><span id="pill-ver">KeyReed 2.1.0</span><span class="sep"></span><span>MIT or Apache-2.0</span><svg class="ic"><use href="#i-arrow"/></svg>
-        </a>
-        <h1 class="h-hero" aria-label="Your voice. Your words. Your machine.">
-          <span class="w" style="--i:0">Your</span> <span class="w" style="--i:1">voice.</span> <span class="w" style="--i:2">Your</span> <span class="w" style="--i:3">words.</span><br>
-          <span class="w serif" style="--i:4">Your</span> <span class="w serif" style="--i:5">machine.</span>
-        </h1>
-        <div class="cta-row rise" style="--d:.45s">
-          <a class="btn btn-primary btn-lg" id="hero-download" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/KeyReed-Setup-x64.exe">
-            <svg class="ic"><use href="#i-windows"/></svg>Download for Windows<svg class="ic arrow"><use href="#i-arrow"/></svg>
+    <!-- ============ 1. HERO: "THE WOW" (DARK STAGE) ============ -->
+    <section class="slab-shell" id="top">
+      <div class="slab-dark hero-slab">
+        <div class="wrap hero-in">
+          <a class="eyebrow-pill" href="https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0" rel="noopener">
+            <span class="dot" aria-hidden="true"></span>
+            <span>KeyReed <span data-bind="version">2.1.0</span></span>
+            <span class="sep" aria-hidden="true"></span>
+            <span>Free &amp; open source</span>
+            <svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg>
           </a>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">
-            <svg class="ic"><use href="#i-github"/></svg>Explore on GitHub<svg class="ic arrow"><use href="#i-arrow"/></svg>
-          </a>
-        </div>
-        <ul class="chips rise" style="--d:.55s" aria-label="Highlights">
-          <li>Free, no account</li><li>Open source</li><li>Works offline</li><li>Windows 10 and 11</li><li>No GPU required</li>
-        </ul>
-        <p class="fine rise" style="--d:.6s"><span data-bind="installer-size">24.4 MB</span> installer. Setup downloads the speech model (about 460 MB) once. Checked with automated tests and screenshots, not by hand, and unsigned, so SmartScreen may warn: <a href="#smartscreen">why</a>.</p>
-      </div>
 
-      <!-- Product scene: an illustration, not a live recording -->
-      <div class="wrap stage-wrap rise" style="--d:.5s">
-        <div class="stage lit" id="scene" data-state="idle" role="img" aria-label="Animated illustration: hold Right Ctrl, speak, release, and the cleaned-up text is typed into the email. It is not a recording of the app.">
-          <div class="stage-glow" aria-hidden="true"></div>
-          <div class="desk" aria-hidden="true">
-            <div class="win">
-              <div class="win-bar">
-                <span class="win-title"><i></i>New message</span>
-                <span class="win-ctl"><b></b><b></b><b></b></span>
-              </div>
-              <div class="mail">
-                <div class="mail-row"><span>To</span><em>Maya Rao</em></div>
-                <div class="mail-row"><span>Subject</span><em>Launch timing</em></div>
-                <div class="mail-body" id="mail-body">
-                  <span class="ph" id="mail-ph">Your cursor is here</span>
-                  <span class="pasted" id="mail-text"></span><span class="caret"></span>
+          <h1 class="h-hero">
+            <span class="hw-mask"><span class="hw" style="--wi:0">Your</span></span>
+            <span class="hw-mask"><span class="hw" style="--wi:1">voice.</span></span>
+            <span class="hw-mask"><span class="hw" style="--wi:2">Your</span></span>
+            <span class="hw-mask"><span class="hw" style="--wi:3">words.</span></span><br>
+            <span class="hw-mask"><span class="hw serif" style="--wi:4">Your machine.</span></span>
+          </h1>
+
+          <p class="hero-sub">Free, open-source voice typing for Windows. Hold a key, speak, and clean text lands in any app. All on your PC.</p>
+
+          <div class="hero-ctas">
+            <div class="cta-stack">
+              <a class="btn btn-lg btn-primary" id="hero-download" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe">
+                <svg class="ic" aria-hidden="true"><use href="#i-windows"/></svg>
+                <span>Download for Windows</span>
+                <svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg>
+              </a>
+              <span class="cta-meta">Free · <span data-bind="installer-size">24.4 MB</span> · Windows 10 &amp; 11</span>
+            </div>
+            <a class="btn btn-lg btn-ghost" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">
+              <svg class="ic" aria-hidden="true"><use href="#i-star"/></svg>
+              <span>Star on GitHub</span>
+            </a>
+          </div>
+
+          <!-- Interactive 3D Keycap Toy -->
+          <div class="hero-toy lit" id="hero-toy" data-phase="landed">
+            <div class="toy-left">
+              <button class="keycap-3d" id="hero-keycap" type="button" aria-pressed="false" aria-describedby="toy-hint">
+                <span class="kc-skirt" aria-hidden="true"></span>
+                <span class="kc-top">
+                  <span class="kc-led" aria-hidden="true"></span>
+                  <span class="kc-label">Right Ctrl</span>
+                </span>
+              </button>
+              <p class="toy-hint" id="toy-hint">Press and hold, or hold Right Ctrl on your keyboard</p>
+            </div>
+
+            <div class="toy-stage">
+              <span class="flight-orb" id="flight-orb" aria-hidden="true">Voice → Text</span>
+              <div class="toy-top-bar">
+                <div class="listener-pill" aria-hidden="true">
+                  <span class="lp-mark"><img src="assets/icon-32.png" alt="" width="16" height="16"></span>
+                  <span class="lp-bars" id="lp-bars"></span>
+                  <span class="lp-lines"><b></b><b></b><b></b></span>
+                  <svg class="lp-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+                  <span class="lp-status" id="lp-status">Inserted</span>
                 </div>
+                <button class="toy-replay" id="toy-replay" type="button">Replay</button>
               </div>
-            </div>
 
-            <div class="side">
-            <div class="rail" id="rail">
-              <div class="rail-step" data-step="1"><b>1</b><span>Hold</span></div>
-              <div class="rail-step" data-step="2"><b>2</b><span>Speak</span></div>
-              <div class="rail-step" data-step="3"><b>3</b><span>Release</span></div>
-              <div class="rail-step" data-step="4"><b>4</b><span>Typed</span></div>
-            </div>
-
-            <div class="keys">
-              <div class="key" id="key-ctrl"><kbd>Right Ctrl</kbd><small>hold to talk</small></div>
-              <div class="key paste" id="key-paste"><kbd>Esc</kbd><small>cancel</small></div>
-            </div>
-            </div>
-
-            <div class="bubble" id="bubble">
-              <div class="bubble-tag" id="bubble-tag">Heard</div>
-              <p id="bubble-text"></p>
-            </div>
-
-            <div class="pill-kr keep-dark" id="kr-pill">
-              <span class="kr-mic"><img src="assets/icon-48.png" alt="" width="22" height="22"><i class="ring"></i></span>
-              <span class="kr-wave" id="kr-wave"></span>
-              <span class="kr-state" id="kr-state">Hold Right Ctrl</span>
-            </div>
-
-            <div class="taskbar">
-              <span class="tb-icons"><i></i><i></i><i class="on"></i><i></i><i></i></span>
-              <span class="tb-tray"><img src="assets/icon-32.png" alt="" width="14" height="14"><i></i><i></i><em>9:41</em></span>
-            </div>
-          </div>
-        </div>
-        <p class="caption">Illustration of the dictation flow, not a recording of the app. <button class="link-btn" id="replay" type="button">Replay</button></p>
-      </div>
-    </section>
-
-    <!-- ============ FACT STRIP ============ -->
-    <section class="strip" aria-label="Project facts">
-      <div class="wrap strip-in" data-stagger>
-        <div><strong>MIT or Apache-2.0</strong><span>Dual licensed, source on GitHub</span></div>
-        <div><strong>Local by default</strong><span>No network call in the default profile</span></div>
-        <div><strong>No GPU needed</strong><span>Speech runs on your CPU; a GPU only speeds up grammar</span></div>
-        <div><strong>Pinned models</strong><span>Size and SHA-256 checked before load</span></div>
-      </div>
-    </section>
-
-    <!-- ============ HOW IT WORKS ============ -->
-    <section class="sec" id="how">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">How it works</p>
-          <h2>Hold. Speak. Release. Done.</h2>
-          <p class="sec-sub">One shortcut sits between your thought and the text field. Nothing to switch to, nothing to open.</p>
-        </header>
-        <ol class="steps" id="steps">
-          <li class="step" data-reveal>
-            <span class="step-n">01</span>
-            <div class="step-vis"><div class="keycap"><kbd>Right Ctrl</kbd></div></div>
-            <h3>Hold the shortcut</h3>
-            <p>Right Ctrl by default. The microphone opens only while you hold it, and closes when you let go.</p>
-          </li>
-          <li class="step" data-reveal style="--d:.08s">
-            <span class="step-n">02</span>
-            <div class="step-vis"><div class="mini-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
-            <h3>Speak naturally</h3>
-            <p>Say it the way you would say it out loud. Audio stays in memory for the length of the recording.</p>
-          </li>
-          <li class="step" data-reveal style="--d:.16s">
-            <span class="step-n">03</span>
-            <div class="step-vis"><ul class="mini-chain" aria-hidden="true"><li>Speech model</li><li>Rules</li><li>Grammar model</li></ul></div>
-            <h3>KeyReed transcribes and processes</h3>
-            <p>A local speech model transcribes while you are still talking, so a long dictation is not decoded from scratch after you let go. Rules and an optional grammar model clean it up.</p>
-          </li>
-          <li class="step" data-reveal style="--d:.24s">
-            <span class="step-n">04</span>
-            <div class="step-vis"><div class="keycap"><kbd>Aa</kbd></div></div>
-            <h3>It appears where you type</h3>
-            <p>KeyReed types the finished text into the field you were in. Password fields and admin windows get the clipboard instead.</p>
-          </li>
-        </ol>
-      </div>
-    </section>
-
-    <!-- ============ CORE FEATURES ============ -->
-    <section class="sec" id="core">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">Beyond dictation</p>
-          <h2>Dictate, fix, rewrite. <span class="serif">All on your PC.</span></h2>
-          <p class="sec-sub">The same shortcut habit, two more tools. Both run on your PC and send nothing anywhere.</p>
-        </header>
-
-        <article class="feat showcase" id="quick-fix" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Quick Fix</p>
-            <h3>Select it. Press a key. <span class="serif">Fixed.</span></h3>
-            <p>Select text in any app and press <span class="keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>. Spelling comes from the Windows spell checker, grammar from a small local model. A fix KeyReed is sure about lands straight away, with Undo on the listener.</p>
-            <p class="muted">Anything uncertain, formatted or rewritten opens the Review panel instead, so you see every change before it replaces your text. Links, addresses, paths and names are left alone.</p>
-          </div>
-          <div class="feat-vis">
-            <figure class="shot-stack">
-              <img class="shot" src="assets/app/quickfix-review.webp" width="1040" height="408" loading="lazy" decoding="async" alt="The Quick Fix Review panel: five changes underlined in a short email, with Show original, Dismiss, Copy and Replace buttons.">
-              <img class="shot-pill" src="assets/app/quickfix-fixed.png" width="286" height="42" loading="lazy" decoding="async" alt="The listener after a fix: Fixed, 4 changes, with Undo and Deeper chips.">
-            </figure>
-          </div>
-        </article>
-
-        <article class="feat showcase flip" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">The Composer</p>
-            <h3>Ask for it shorter, <span class="serif">warmer, clearer.</span></h3>
-            <p>Press <span class="keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span> on a selection, or with nothing selected to write something new. Fix, Improve, Shorter, Change tone, Summarise, or type your own instruction.</p>
-            <p class="muted">A small writing model on this PC answers as it thinks. Replace, copy or try again; Esc cancels. Without the model installed it says so and sends nothing.</p>
-          </div>
-          <div class="feat-vis">
-            <figure class="shot-stack">
-              <img class="shot" src="assets/app/composer-result.webp" width="1040" height="572" loading="lazy" decoding="async" alt="The Composer with a selection from Outlook: a rewritten update about the release moving to Thursday, preset chips, and Again, Copy and Replace buttons.">
-            </figure>
-          </div>
-        </article>
-
-        <div class="core" data-stagger>
-          <a class="core-card lit" href="#models">
-            <span class="core-tag">8 speech models</span>
-            <h3>A model for every PC</h3>
-            <p>Parakeet by default, Parakeet 110M for light English, Parakeet Ultra for 25 languages, plus Whisper, SenseVoice and Moonshine. Each is checked against a pinned SHA-256.</p>
-            <span class="core-more">Compare them<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
-          </a>
-          <a class="core-card lit" href="#features">
-            <span class="core-tag">Your words</span>
-            <h3>Your vocabulary, heard</h3>
-            <p>Names and jargon you add reach the speech decoder itself, so Parakeet listens for them instead of fixing them afterwards.</p>
-            <span class="core-more">See all features<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
-          </a>
-        </div>
-        <p class="fine center" data-reveal>Actual screenshots of KeyReed 2.1.0 with example text.</p>
-      </div>
-    </section>
-
-    <!-- ============ PRODUCT: WRITING MODES ============ -->
-    <section class="sec sec-alt" id="product">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">Product</p>
-          <h2>Six writing modes. <span class="serif">One voice.</span></h2>
-          <p class="sec-sub">Pick how KeyReed should write, or let it adapt to the app you are in. Choose a mode below to see an illustrative before and after.</p>
-        </header>
-
-        <div class="modes" id="modes" data-reveal>
-          <div class="mode-tabs" role="tablist" aria-label="Writing modes" aria-orientation="vertical" id="mode-tabs">
-            <button type="button" role="tab" id="tab-smart" aria-selected="true" aria-controls="mode-panel" data-mode="smart"><span>Smart</span><small>Default</small></button>
-            <button type="button" role="tab" id="tab-exact" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="exact"><span>Exact</span><small>As spoken</small></button>
-            <button type="button" role="tab" id="tab-professional" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="professional"><span>Professional</span><small>Work tone</small></button>
-            <button type="button" role="tab" id="tab-casual" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="casual"><span>Casual</span><small>Chat tone</small></button>
-            <button type="button" role="tab" id="tab-technical" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="technical"><span>Technical</span><small>Precise</small></button>
-            <button type="button" role="tab" id="tab-terminal" aria-selected="false" aria-controls="mode-panel" tabindex="-1" data-mode="terminal"><span>Terminal / Code</span><small>Commands</small></button>
-          </div>
-
-          <div class="mode-panel lit" id="mode-panel" role="tabpanel" aria-labelledby="tab-smart" tabindex="0">
-            <div class="mp-head">
-              <h3 id="mp-title">Smart</h3>
-              <p id="mp-desc"></p>
-            </div>
-            <div class="mp-io">
-              <div class="mp-col">
-                <span class="mp-label">You said</span>
-                <p class="mp-raw mono" id="mp-raw"></p>
+              <div class="raw-stream" id="raw-stream" aria-hidden="true">
+                <span class="rw filler strike">um</span> <span class="rw">so</span> <span class="rw">the</span> <span class="rw">launch</span> <span class="rw">is</span> <span class="rw filler strike">uh</span> <span class="rw">moving</span> <span class="rw">to</span> <span class="rw">thursday</span> <span class="rw">because</span> <span class="rw">the</span> <span class="rw">design</span> <span class="rw">review</span> <span class="rw">isn't</span> <span class="rw">done</span> <span class="rw">yet</span>
               </div>
-              <div class="mp-arrow" aria-hidden="true"><svg class="ic"><use href="#i-arrow"/></svg></div>
-              <div class="mp-col out">
-                <span class="mp-label">KeyReed writes</span>
-                <p class="mp-out" id="mp-out" aria-live="polite"></p>
+
+              <div class="hero-mail" aria-hidden="true">
+                <div class="hm-bar">
+                  <span>New message</span>
+                  <span class="hm-dots"><i></i><i></i><i></i></span>
+                </div>
+                <div class="hm-meta"><span>To</span><b>Maya</b><span>·</span><span>Launch timing</span></div>
+                <div class="hm-body"><span id="hm-typed">So the launch is moving to Thursday because the design review isn't done yet.</span><span class="hm-caret"></span></div>
               </div>
-            </div>
-            <div class="mp-foot">
-              <span id="mp-auto"></span>
-              <span class="mp-note">Illustrative example. Not a live connection to the app.</span>
+
+              <p class="sr" id="toy-live" aria-live="polite">Clean text inserted: So the launch is moving to Thursday because the design review isn't done yet.</p>
             </div>
           </div>
+
+          <p class="toy-caption">Illustration, not a recording.</p>
         </div>
-        <p class="fine center" data-reveal>Smart, Professional, Casual and Technical use the local grammar model when it is installed. Without it, KeyReed applies deterministic rules only, so rewording will be lighter than shown. Exact and Terminal / Code never rephrase.</p>
+
+        <div class="reeds-bed" aria-hidden="true">
+          <canvas id="hero-reeds"></canvas>
+        </div>
       </div>
     </section>
 
-    <!-- ============ THE REAL APP (actual screenshots) ============ -->
-    <section class="sec" id="app">
+    <!-- ============ 2. PROOF BAND ============ -->
+    <section class="proof-band" id="proof" aria-label="Measured highlights">
       <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">The real app</p>
-          <h2>Small on screen. <span class="serif">Calm when it moves.</span></h2>
-          <p class="sec-sub">A quiet listener sits at the edge of your screen and only grows when it has something to tell you. Everything else lives in one settings window. These are actual screenshots of KeyReed 2.1.0, not mockups.</p>
-        </header>
-        <div class="real" data-reveal>
-          <figure class="real-shot">
-            <img class="th-light" src="assets/app/settings-writing-light.webp" width="940" height="660" loading="lazy" decoding="async" alt="KeyReed Settings, Writing page in the light theme: six writing modes and a 'You say' and 'KeyReed writes' example.">
-            <img class="th-dark" src="assets/app/settings-writing-dark.webp" width="940" height="660" loading="lazy" decoding="async" alt="KeyReed Settings, Writing page in the dark theme: six writing modes and a 'You say' and 'KeyReed writes' example.">
-          </figure>
-          <ol class="states" aria-label="Floating listener states, actual screenshots">
-            <li><img src="assets/app/listener-idle.png" width="42" height="42" loading="lazy" alt="Idle listener: the KeyReed mark in a small dark circle."><b>Idle</b><span>Just the mark. It paints nothing while idle.</span></li>
-            <li><img src="assets/app/listener-listening.png" width="66" height="26" loading="lazy" alt="Listening: emerald bars spreading out from the centre beside the KeyReed mark."><b>Listening</b><span>Bars follow your real microphone level, newest in the middle.</span></li>
-            <li><img src="assets/app/listener-transcribing.png" width="148" height="42" loading="lazy" alt="Transcribing: three short text lines and the word Transcribing, in mint."><b>Transcribing</b><span>Your voice becomes lines of text while it works.</span></li>
-            <li><img src="assets/app/listener-inserted.png" width="124" height="42" loading="lazy" alt="Inserted, with an emerald check mark."><b>Inserted</b><span>The check draws itself when your words land.</span></li>
-            <li><img src="assets/app/listener-hover.png" width="160" height="42" loading="lazy" alt="Hover state showing the writing mode Smart and the shortcut Right Ctrl."><b>Hover</b><span>Shows the active mode and shortcut.</span></li>
-          </ol>
+        <div class="proof-line" aria-hidden="true"></div>
+        <div class="proof-grid">
+          <div class="proof-item">
+            <span class="proof-num"><span data-count="0.5" data-from="0.0" data-decimals="1">0.5</span><em>s</em></span>
+            <p class="proof-label">Text ready after a 47-second dictation.</p>
+            <p class="proof-foot">2018 laptop CPU, synthetic speech · <a class="inline-link" href="details#benchmarks">Method</a></p>
+          </div>
+          <div class="proof-item">
+            <span class="proof-num"><span data-count="0" data-from="0">0</span><em>bytes</em></span>
+            <p class="proof-label">Audio sent anywhere in the default profile.</p>
+            <p class="proof-foot">100% local offline processing.</p>
+          </div>
+          <div class="proof-item">
+            <span class="proof-num"><span data-count="0" data-from="0" data-prefix="$">$0</span></span>
+            <p class="proof-label">Free, MIT or Apache-2.0, no account.</p>
+            <p class="proof-foot">No word cap, no sign-up.</p>
+          </div>
         </div>
-        <p class="fine center" data-reveal>Captured from the running app with its built-in <code>--ui-gallery</code> mode. Windows Animation effects off turns the motion off.</p>
+        <div class="proof-line" aria-hidden="true"></div>
       </div>
     </section>
 
-    <!-- ============ FEATURES ============ -->
+    <!-- ============ 3. "EVERY APP. THE RIGHT VOICE." (PINNED SCRUBBED SCENE) ============ -->
+    <section class="apps-sec" id="apps-sec">
+      <div class="wrap" id="apps-pin">
+        <header class="sec-head center" data-reveal>
+          <p class="eyebrow">Voice it. Everywhere.</p>
+          <h2 class="h2">Every app. <span class="serif">The right voice.</span></h2>
+        </header>
+
+        <div class="apps-stage">
+          <div class="spoken-bar" aria-hidden="true">
+            <span class="sb-tag">You speak</span>
+            <span class="sb-voice" id="sb-voice">"please revert back once the deployment is completed on staging"</span>
+          </div>
+
+          <div class="app-rail" role="group" aria-label="App writing modes">
+            <button class="rail-tick lit active" type="button" data-idx="0">
+              <kbd>1</kbd>
+              <span class="rt-meta"><span class="rt-app">Mail</span><span class="rt-mode">Professional</span></span>
+            </button>
+            <button class="rail-tick lit" type="button" data-idx="1">
+              <kbd>2</kbd>
+              <span class="rt-meta"><span class="rt-app">Chat</span><span class="rt-mode">Casual</span></span>
+            </button>
+            <button class="rail-tick lit" type="button" data-idx="2">
+              <kbd>3</kbd>
+              <span class="rt-meta"><span class="rt-app">Code editor</span><span class="rt-mode">Technical</span></span>
+            </button>
+            <button class="rail-tick lit" type="button" data-idx="3">
+              <kbd>4</kbd>
+              <span class="rt-meta"><span class="rt-app">Terminal</span><span class="rt-mode">Terminal / Code</span></span>
+            </button>
+          </div>
+
+          <div class="morph-win lit" id="morph-win" data-app="mail">
+            <div class="mw-chrome" aria-hidden="true">
+              <span class="mw-dots"><i></i><i></i><i></i></span>
+              <span class="mw-title" id="mw-title">New Message — Staging rollout</span>
+              <span class="mw-badge" id="mw-badge">Professional</span>
+            </div>
+            <div class="mw-body">
+              <p class="mw-context mono" id="mw-context" aria-hidden="true">To: release@acme.test · Subject: Staging rollout</p>
+              <p class="mw-out" id="mw-out" aria-live="polite">Please reply once the deployment is completed on staging.</p>
+            </div>
+          </div>
+
+          <!-- Mobile (< 768px) swipe carousel & reduced-motion / no-JS cards -->
+          <div class="apps-mobile" id="apps-mobile" aria-label="App writing mode examples">
+            <article class="am-card">
+              <div class="am-head"><span>Mail</span><span>Professional</span></div>
+              <p class="am-said">"please revert back once the deployment is completed on staging"</p>
+              <p class="am-wrote">Please reply once the deployment is completed on staging.</p>
+            </article>
+            <article class="am-card">
+              <div class="am-head"><span>Chat</span><span>Casual</span></div>
+              <p class="am-said">"i will be 10 mins late stuck in traffic"</p>
+              <p class="am-wrote">I'll be 10 mins late stuck in traffic</p>
+            </article>
+            <article class="am-card">
+              <div class="am-head"><span>Code editor</span><span>Technical</span></div>
+              <p class="am-said">"update auth underscore middleware dot rs to return http 401"</p>
+              <p class="am-wrote mono">Update auth_middleware.rs to return HTTP 401.</p>
+            </article>
+            <article class="am-card">
+              <div class="am-head"><span>Terminal</span><span>Terminal / Code</span></div>
+              <p class="am-said">"git checkout dash b fix slash login"</p>
+              <p class="am-wrote mono">git checkout -b fix/login</p>
+            </article>
+          </div>
+
+          <div class="modes-bar">
+            <div class="mode-chips" role="group" aria-label="All six writing modes">
+              <button class="mode-chip" type="button" data-mode="professional" aria-pressed="true">Professional</button>
+              <button class="mode-chip" type="button" data-mode="casual" aria-pressed="false">Casual</button>
+              <button class="mode-chip" type="button" data-mode="technical" aria-pressed="false">Technical</button>
+              <button class="mode-chip" type="button" data-mode="terminal" aria-pressed="false">Terminal / Code</button>
+              <button class="mode-chip" type="button" data-mode="smart" aria-pressed="false">Smart</button>
+              <button class="mode-chip" type="button" data-mode="exact" aria-pressed="false">Exact</button>
+            </div>
+            <p class="fine">Picks the mode from the app you're in, or choose your own. Illustration, not a recording.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 4. "MORE THAN DICTATION." (QUICK FIX & COMPOSER) ============ -->
     <section class="sec" id="features">
       <div class="wrap">
         <header class="sec-head" data-reveal>
-          <p class="eyebrow">Features</p>
-          <h2>Built for the way you already work.</h2>
-          <p class="sec-sub">Every capability below exists in the current source. Each one is here because of what it changes for you.</p>
+          <p class="eyebrow">Beyond dictation</p>
+          <h2 class="h2">More than dictation. <span class="serif">Still local.</span></h2>
         </header>
 
-        <article class="feat" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">System-wide dictation</p>
-            <h3>It follows your cursor, not a window.</h3>
-            <p>KeyReed lives in the system tray and listens for a global shortcut, so dictation works in whatever you are typing into. With automatic app-context adaptation on, it picks a writing mode to match the app in front of you.</p>
-            <p class="muted">Text is typed into the focused field by default. If the field is a password box, an administrator window, or focus moved while KeyReed was working, it goes to the clipboard instead and nothing is typed anywhere else.</p>
-          </div>
-          <div class="feat-vis">
-            <div class="ctx lit" id="ctx" data-stagger>
-              <div class="ctx-head"><span>Active app</span><span>Writing mode</span></div>
-              <div class="ctx-row"><span>Mail</span><i></i><em>Professional</em></div>
-              <div class="ctx-row"><span>Chat</span><i></i><em>Casual</em></div>
-              <div class="ctx-row"><span>Documents and notes</span><i></i><em>Smart</em></div>
-              <div class="ctx-row"><span>Code editor</span><i></i><em>Technical</em></div>
-              <div class="ctx-row"><span>Terminal</span><i></i><em>Terminal / Code</em></div>
-              <div class="ctx-row"><span>Password-protected</span><i></i><em>Exact</em></div>
-              <p class="ctx-foot">Automatic adaptation can be switched off in Settings.</p>
+        <div class="beyond-grid">
+          <!-- Quick Fix -->
+          <article class="tool-card lit" data-reveal>
+            <div class="tc-copy">
+              <div class="tc-head">
+                <h3 class="h3">Quick Fix</h3>
+                <span class="keys-inline"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>
+              </div>
+              <p>Select text in any app to fix spelling and grammar in place, with instant Undo or a full Review panel.</p>
             </div>
-          </div>
-        </article>
 
-        <article class="feat flip" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Push-to-talk and toggle</p>
-            <h3>Hold to talk, or tap to start and stop.</h3>
-            <p>Hold Right Ctrl, speak, release. Prefer hands-free for longer thoughts? Switch to toggle-to-talk and press once to start, once to finish. The shortcut is a preset you pick in Settings.</p>
-            <p class="muted">Escape cancels a recording. A single dictation can run up to 30 minutes, and at the cap the recording is processed rather than thrown away. A lost key release still cancels instead of typing something half-captured.</p>
-          </div>
-          <div class="feat-vis">
-            <div class="keyboard lit" id="keyboard" data-stagger>
-              <div class="kb-row"><div class="kb-key big"><kbd>Right Ctrl</kbd><small>Hold to talk</small></div></div>
-              <div class="kb-row"><div class="kb-key"><kbd>Esc</kbd><small>Cancel</small></div><div class="kb-key wide"><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></span><small>Cycle writing mode</small></div></div>
-              <div class="kb-row"><div class="kb-key"><span><kbd>Ctrl</kbd><kbd>V</kbd></span><small>Paste again, or in clipboard mode</small></div></div>
+            <div class="qf-demo" id="qf-demo" aria-label="Quick Fix illustration and real KeyReed 2.1.0 Review screenshot">
+              <p class="qf-text" aria-hidden="true">
+                <span class="qf-sel"></span>
+                <span class="qf-word" data-typo="Teh" data-fix="The">The</span> launch is moving to
+                <span class="qf-word" data-typo="thursday" data-fix="Thursday">Thursday</span>
+                <span class="qf-word" data-typo="becuase" data-fix="because">because</span> the design
+                <span class="qf-word" data-typo="reveiw" data-fix="review">review</span> isn't ready.
+              </p>
+              <div class="qf-bar" aria-hidden="true">
+                <span class="keys-inline qf-keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>
+                <span class="qf-pill"><em>✓</em> Fixed · 4 changes · Undo</span>
+              </div>
+              <div class="qf-shot-layer">
+                <img src="assets/app/quickfix-review.webp" width="1040" height="408" loading="lazy" decoding="async" alt="Actual KeyReed 2.1.0 Quick Fix Review panel showing underlined edits with Dismiss, Copy, and Replace buttons.">
+              </div>
+              <button class="qf-replay-btn" id="qf-replay" type="button">Replay</button>
             </div>
-          </div>
-        </article>
 
-        <article class="feat" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Local transcription</p>
-            <h3>Speech recognition that runs on your CPU.</h3>
-            <p>KeyReed uses sherpa-onnx to run speech models on the processor you already have. NVIDIA Parakeet TDT is the English default. Lighter and multilingual models are one click away in Settings, and nothing downloads unless you ask.</p>
-            <p class="muted">Every model file is checked against a compile-time size and SHA-256 before it loads. A half-finished download is never activated.</p>
-          </div>
-          <div class="feat-vis">
-            <div class="models lit" id="models" data-stagger>
-              <div class="models-head"><span>Model</span><span>Download</span><span>RAM</span></div>
-              <div class="model def"><div><b>Parakeet TDT 0.6B v2</b><small>English, default</small></div><span style="--w:46%">≈460 MB</span><span style="--w:69%">≈690 MB</span></div>
-              <div class="model"><div><b>Parakeet TDT 0.6B v3</b><small>25 European languages</small></div><span style="--w:47%">≈465 MB</span><span style="--w:71%">≈710 MB</span></div>
-              <div class="model"><div><b>Parakeet TDT 0.6B Ultra</b><small>25 languages</small></div><span style="--w:47%">≈465 MB</span><span style="--w:72%">≈715 MB</span></div>
-              <div class="model"><div><b>Parakeet TDT 110M</b><small>English, light</small></div><span style="--w:11%">≈103 MB</span><span style="--w:19%">≈190 MB</span></div>
-              <div class="model"><div><b>Whisper small.en</b><small>English</small></div><span style="--w:61%">≈606 MB</span><span style="--w:44%">≈440 MB</span></div>
-              <div class="model"><div><b>SenseVoice Small</b><small>en, zh, ja, ko, yue</small></div><span style="--w:100%">≈999 MB</span><span style="--w:29%">≈290 MB</span></div>
-              <div class="model"><div><b>Moonshine Base</b><small>English, light</small></div><span style="--w:24%">≈239 MB</span><span style="--w:17%">≈165 MB</span></div>
-              <div class="model"><div><b>Moonshine Tiny</b><small>English, low-RAM PCs</small></div><span style="--w:10%">≈103 MB</span><span style="--w:10%">≈95 MB</span></div>
-              <p class="models-foot">Approximate figures from the model catalog in the source. Model licenses differ; see each model's page.</p>
+            <p class="tc-foot">Runs on your PC. Sends nothing anywhere. Illustration, not a recording.</p>
+          </article>
+
+          <!-- Composer -->
+          <article class="tool-card lit" data-reveal style="--d:.08s">
+            <div class="tc-copy">
+              <div class="tc-head">
+                <h3 class="h3">Composer</h3>
+                <span class="keys-inline"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span>
+              </div>
+              <p>Shorten, warm up, or rewrite a selection — streamed live from a local writing model.</p>
             </div>
-          </div>
-        </article>
 
-        <article class="feat flip" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Grammar correction</p>
-            <h3>Cleanup that is allowed to say no.</h3>
-            <p>First, fast deterministic rules remove fillers and stutters, resolve spoken self-corrections, and fix casing. Then, if a local grammar model is installed, it polishes the sentence. Its output is checked against guards and discarded when it drifts from what you said.</p>
-            <p class="muted">Terminal / Code mode compiles spoken flags into commands and warns before a destructive one. It does not try to improve your command.</p>
-          </div>
-          <div class="feat-vis">
-            <ol class="pipe lit" id="pipe" data-stagger>
-              <li><b>Raw transcript</b><span>from the local speech model</span></li>
-              <li><b>Tier 0 rules</b><span>fillers, stutters, self-repairs, casing, your vocabulary</span></li>
-              <li><b>Local grammar model</b><span>optional, Qwen3.5 0.8B; uses your GPU when present, CPU otherwise. Skipped when the sentence is already clean</span></li>
-              <li class="guard"><b>Guards</b><span>reject chatter, number changes and runaway length, then fall back to Tier 0</span></li>
-              <li class="end"><b>Finished text</b><span>typed into your app</span></li>
-            </ol>
-          </div>
-        </article>
+            <div class="cmp-demo" id="cmp-demo">
+              <div class="cmp-bg-shot" aria-hidden="true">
+                <img id="cmp-parallax" src="assets/app/composer-result.webp" width="1040" height="572" loading="lazy" decoding="async" alt="">
+              </div>
+              <div class="cmp-fg">
+                <div class="cmp-chips" role="group" aria-label="Composer rewrite presets">
+                  <button class="cmp-chip" type="button" data-preset="shorter" aria-pressed="true">Shorter</button>
+                  <button class="cmp-chip" type="button" data-preset="warmer" aria-pressed="false">Warmer</button>
+                  <button class="cmp-chip" type="button" data-preset="clearer" aria-pressed="false">Clearer</button>
+                </div>
+                <p class="cmp-stream" id="cmp-stream" aria-live="polite">Release moves to Thursday while we finish the design review.</p>
+              </div>
+            </div>
 
-
-        <article class="feat" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Your controls</p>
-            <h3>Yours to tune.</h3>
-            <p>Teach KeyReed your names and jargon with a personal vocabulary. Choose the microphone, the shortcut, how text is delivered and which speech engine runs. Choose how private you want it, from fully offline to a hybrid that can use your own cloud key.</p>
-            <p class="muted">Settings are stored in <code>%LOCALAPPDATA%\keyreed</code>. Startup with Windows is off until you turn it on.</p>
-          </div>
-          <div class="feat-vis">
-            <figure class="real-shot">
-              <img src="assets/app/dictation-light.webp" width="940" height="660" loading="lazy" decoding="async" alt="KeyReed Settings, Dictation page: push-to-talk shortcut drop-down, a switch to listen for the shortcut, and a choice between hold to talk and press to start and stop.">
-            </figure>
-          </div>
-        </article>
+            <p class="tc-foot">Runs on your PC. Sends nothing anywhere. Illustration, not a recording.</p>
+          </article>
+        </div>
       </div>
     </section>
 
-    <!-- ============ PRIVACY ============ -->
-    <section class="sec sec-alt" id="privacy">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">Privacy</p>
-          <h2>Your voice doesn't need to <span class="serif">leave your computer.</span></h2>
-          <p class="sec-sub">In the default profile it doesn't. Here is how audio moves, and where an optional cloud route would fit in if you turn it on.</p>
-        </header>
+    <!-- ============ 5. "PRIVATE BY DESIGN" (DARK SLAB) ============ -->
+    <section class="slab-shell mid" id="privacy">
+      <div class="slab-dark priv-slab" id="privacy-slab">
+        <div class="wrap">
+          <header class="sec-head" data-reveal>
+            <p class="eyebrow">Private by design</p>
+            <h2 class="h2">Your voice never has to <span class="serif">leave your computer.</span></h2>
+          </header>
 
-        <div class="flow lit" id="flow" data-reveal>
-          <div class="flow-main">
-            <div class="node"><svg class="ic"><use href="#i-mic"/></svg><b>Microphone</b><span>opens while you hold the key</span></div>
-            <i class="wire" aria-hidden="true"></i>
-            <div class="node"><svg class="ic"><use href="#i-cpu"/></svg><b>Local speech processing</b><span>sherpa-onnx on your CPU</span></div>
-            <i class="wire" aria-hidden="true"></i>
-            <div class="node"><svg class="ic"><use href="#i-check"/></svg><b>Text correction</b><span>rules, then optional local model</span></div>
-            <i class="wire" aria-hidden="true"></i>
-            <div class="node"><svg class="ic"><use href="#i-windows"/></svg><b>Active application</b><span>typed in, or clipboard</span></div>
-          </div>
-          <div class="flow-cloud">
-            <div class="cloud-label"><svg class="ic"><use href="#i-lock"/></svg>Optional cloud route</div>
-            <p>Only if you switch to <em>Balanced</em> or <em>Maximum Accuracy</em> and store an API key. Speech or text can then be sent to the endpoint you configured. The default profile never uses it.</p>
+          <div class="priv-grid">
+            <div class="priv-flow-card lit" data-reveal>
+              <svg class="priv-svg" id="priv-svg" viewBox="0 0 540 165" role="img" aria-label="Illustration, not a recording: microphone audio flows locally to your CPU and turns into text for your active app, while optional cloud stays disconnected off to the side.">
+                <!-- Active local track -->
+                <line x1="74" y1="66" x2="208" y2="66" stroke="rgba(167,243,208,0.22)" stroke-width="2"/>
+                <line x1="268" y1="66" x2="412" y2="66" stroke="rgba(167,243,208,0.22)" stroke-width="2"/>
+
+                <!-- Disconnected optional cloud branch -->
+                <path d="M 238 96 L 238 134 L 352 134" fill="none" stroke="rgba(167,243,208,0.16)" stroke-width="1.5" stroke-dasharray="4 6"/>
+                <g opacity="0.42">
+                  <rect x="362" y="114" width="166" height="40" rx="12" fill="#09130f" stroke="rgba(167,243,208,0.2)"/>
+                  <text x="376" y="132" fill="#a9c2b6" font-family="Geist Mono, monospace" font-size="10.5">Optional cloud (off)</text>
+                  <text x="376" y="146" fill="#7f9a8d" font-family="Geist, sans-serif" font-size="10">Your own key only</text>
+                </g>
+
+                <!-- Animated audio dots (Mic -> CPU) -->
+                <circle class="pf-dot" cx="0" cy="0" r="3.5" fill="#34d399" transform="translate(110,66)"/>
+                <circle class="pf-dot" cx="0" cy="0" r="3" fill="#a7f3d0" transform="translate(152,66)"/>
+                <circle class="pf-dot" cx="0" cy="0" r="3.5" fill="#10b981" transform="translate(188,66)"/>
+
+                <!-- Animated text dashes (CPU -> App) -->
+                <rect class="pf-dash" x="0" y="-1.5" width="14" height="3" rx="1.5" fill="#a7f3d0" transform="translate(295,62)"/>
+                <rect class="pf-dash" x="0" y="-1.5" width="10" height="3" rx="1.5" fill="#34d399" transform="translate(340,70)"/>
+                <rect class="pf-dash" x="0" y="-1.5" width="16" height="3" rx="1.5" fill="#a7f3d0" transform="translate(382,62)"/>
+
+                <!-- Node 1: Mic -->
+                <g>
+                  <rect x="14" y="40" width="60" height="52" rx="14" fill="#0c1d16" stroke="rgba(52,211,153,0.45)"/>
+                  <text x="44" y="70" text-anchor="middle" fill="#e9f2ed" font-family="Geist Mono, monospace" font-size="11.5">Mic</text>
+                </g>
+
+                <!-- Node 2: CPU -->
+                <g>
+                  <circle id="pf-cpu-ring" cx="238" cy="66" r="34" fill="rgba(16,185,129,0.12)"/>
+                  <rect x="208" y="40" width="60" height="52" rx="14" fill="#0f291f" stroke="#34d399"/>
+                  <text x="238" y="64" text-anchor="middle" fill="#a7f3d0" font-family="Geist Mono, monospace" font-size="11">CPU</text>
+                  <text x="238" y="79" text-anchor="middle" fill="#8da59a" font-family="Geist Mono, monospace" font-size="9.5">RAM only</text>
+                </g>
+
+                <!-- Node 3: Active App -->
+                <g>
+                  <rect x="412" y="40" width="114" height="52" rx="14" fill="#0c1d16" stroke="rgba(52,211,153,0.45)"/>
+                  <text x="469" y="64" text-anchor="middle" fill="#e9f2ed" font-family="Geist Mono, monospace" font-size="11.5">Your app</text>
+                  <text x="469" y="79" text-anchor="middle" fill="#34d399" font-family="Geist Mono, monospace" font-size="9.5">✓ Typed in</text>
+                </g>
+              </svg>
+
+              <div>
+                <ul class="priv-chips">
+                  <li>No account</li>
+                  <li>Works offline</li>
+                  <li>Models checked by SHA-256</li>
+                </ul>
+                <p class="fine" style="margin-top:10px">Illustration, not a recording.</p>
+              </div>
+            </div>
+
+            <!-- Real Rust Code Receipt -->
+            <div class="code-receipt lit" id="code-receipt" data-reveal style="--d:.08s">
+              <div class="cr-bar">
+                <span>crates/vi-core/src/types.rs</span>
+                <a class="inline-link" href="https://github.com/Shanmukh-l33t/keyreed/blob/main/crates/vi-core/src/types.rs" rel="noopener">Source</a>
+              </div>
+              <pre class="cr-pre" aria-label="Rust source excerpt showing allows_network returning false for MaxPrivacyOffline"><code id="receipt-pre"><span class="l hl" data-ln="180">    #[default] MaxPrivacyOffline,</span>
+<span class="l hl" data-ln="213">    pub fn allows_network(self) -&gt; bool {</span>
+<span class="l hl" data-ln="214">        !matches!(self, ProcessingProfile::MaxPrivacyOffline)</span>
+<span class="l" data-ln="215">    }</span></code></pre>
+              <div class="cr-foot">
+                <span>The line that keeps it offline. Read it yourself.</span>
+                <a class="link-arrow" href="details#privacy">All specs<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+              </div>
+            </div>
           </div>
         </div>
-
-        <div class="facts" data-stagger>
-          <div class="fact"><h3>Local by default</h3><p>The default profile, Maximum Privacy (100% Offline), makes no network call for audio or text. A unit test in the source holds it to that.</p></div>
-          <div class="fact"><h3>One setup download</h3><p>After the small installer, first-run setup fetches a speech model once, over HTTPS. A model you download is checked against its SHA-256 pin before it is used.</p></div>
-          <div class="fact"><h3>Audio stays in memory</h3><p>Recordings are kept in RAM, are not written to a file on the normal path, and are wiped after decoding. Cancelled and timed-out recordings are discarded.</p></div>
-          <div class="fact"><h3>Verified models</h3><p>Model files are checked against compile-time size and SHA-256 pins before they load. A partial or mismatched download is not activated.</p></div>
-          <div class="fact"><h3>Network, precisely</h3><p>Needed to download a model, and for the cloud profiles. Not needed to dictate once a model is installed. Cloud keys are stored DPAPI-encrypted.</p></div>
-          <div class="fact"><h3>Know the clipboard</h3><p>When KeyReed falls back to the clipboard, the text stays there until you replace it. Keeping it out of Windows Clipboard History is on by default for new settings, and you can turn it off.</p></div>
-        </div>
-        <p class="fine center" data-reveal>Don't take our word for it: the source is public. We have not published an independent network capture of the offline profile yet, so read the code or run your own.</p>
       </div>
     </section>
 
-    <!-- ============ OPEN SOURCE ============ -->
+    <!-- ============ 6. "FREE. OPEN. YOURS." ============ -->
     <section class="sec" id="open-source">
-      <div class="wrap oss">
-        <div class="oss-copy" data-reveal>
+      <div class="wrap">
+        <header class="sec-head" data-reveal>
           <p class="eyebrow">Open source</p>
-          <h2>Not a black box. Open source by design.</h2>
-          <p class="sec-sub">KeyReed gives you control over your voice input. Explore the source, inspect the implementation, contribute improvements and make it your own.</p>
-          <ul class="oss-list">
-            <li><svg class="ic"><use href="#i-check"/></svg><span>Public repository with an inspectable Rust workspace</span></li>
-            <li><svg class="ic"><use href="#i-check"/></svg><span>Dual licensed <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT</a> or <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>, your choice</span></li>
-            <li><svg class="ic"><use href="#i-check"/></svg><span>Contributions welcome, small and tested</span></li>
-            <li><svg class="ic"><use href="#i-check"/></svg><span>Release audits and known limits documented in the open</span></li>
-            <li><svg class="ic"><use href="#i-check"/></svg><span>Local-first architecture you can read end to end</span></li>
-          </ul>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic"><use href="#i-code"/></svg>Explore the source code<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-            <a class="btn btn-ghost" href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">Contribute to KeyReed<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-          </div>
-        </div>
-
-        <div class="code lit keep-dark" id="code" data-reveal style="--d:.1s">
-          <div class="code-bar">
-            <span class="tl" aria-hidden="true"><i></i><i></i><i></i></span>
-            <div class="code-tabs" role="tablist" aria-label="Source excerpts">
-              <button type="button" role="tab" aria-selected="true" aria-controls="code-body" data-file="privacy" id="ct-privacy">types.rs</button>
-              <button type="button" role="tab" aria-selected="false" aria-controls="code-body" tabindex="-1" data-file="config" id="ct-config">config.rs</button>
-              <button type="button" role="tab" aria-selected="false" aria-controls="code-body" tabindex="-1" data-file="pin" id="ct-pin">catalog.rs</button>
-              <button type="button" role="tab" aria-selected="false" aria-controls="code-body" tabindex="-1" data-file="tree" id="ct-tree">Cargo.toml</button>
-            </div>
-          </div>
-          <pre class="code-body" id="code-body" role="tabpanel" tabindex="0" aria-labelledby="ct-privacy"><code id="code-pre"></code></pre>
-          <div class="code-foot"><span id="code-path">crates/vi-core/src/types.rs</span><a href="https://github.com/Shanmukh-l33t/keyreed/tree/main/crates" rel="noopener">Browse crates<svg class="ic arrow"><use href="#i-arrow"/></svg></a></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ COMPARE ============ -->
-    <section class="sec sec-alt" id="compare">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">Compared</p>
-          <h2>KeyReed or Wispr Flow?</h2>
-          <p class="sec-sub">Meet the open-source alternative to Wispr Flow for Windows. Wispr Flow is a polished, mature product. This is how the two differ, and where it is ahead.</p>
+          <h2 class="h2">Free. Open. <span class="serif">Yours.</span></h2>
         </header>
 
-        <div class="cmp-wrap" data-reveal>
-          <table class="cmp" id="cmp">
-            <caption class="sr">KeyReed compared with Wispr Flow</caption>
-            <colgroup><col style="width:25%"><col style="width:37.5%"><col style="width:37.5%"></colgroup>
-            <thead>
-              <tr><th scope="col"><span class="sr">Capability</span></th><th scope="col" class="us"><img src="assets/icon-32.png" alt="" width="18" height="18">KeyReed</th><th scope="col">Wispr Flow</th></tr>
-            </thead>
-            <tbody>
-              <tr><th scope="row">Source code</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Open source, MIT or Apache-2.0</td><td>Commercial service</td></tr>
-              <tr><th scope="row">Where speech is transcribed</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>On your PC by default</td><td>In Wispr's cloud, per its docs</td></tr>
-              <tr><th scope="row">Works offline</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Yes, once a model is installed</td><td>No, an internet connection is required</td></tr>
-              <tr><th scope="row">Audio leaves your device</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Only if you enable a cloud profile</td><td>Yes, sent for transcription</td></tr>
-              <tr><th scope="row">Writing styles</th><td class="us">Six selectable modes plus per-app adaptation</td><td>Auto-edits and AI commands</td></tr>
-              <tr><th scope="row">Customisation</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Vocabulary, shortcut, model choice, build from source</td><td>Dictionary, snippets, custom shortcuts</td></tr>
-              <tr><th scope="row">Price</th><td class="us pro"><svg class="ic"><use href="#i-check"/></svg>Free. Cloud profiles use your own key</td><td>Free for 2,000 words a week. Pro $15/mo, or $12/mo billed yearly</td></tr>
-              <tr class="theirs"><th scope="row">Platforms</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Windows 10 and 11, x64</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Mac, Windows, iPhone, Android</td></tr>
-              <tr class="theirs"><th scope="row">Languages</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>English by default, more via optional models</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>100+ languages</td></tr>
-              <tr class="theirs"><th scope="row">Maturity and team features</th><td class="us"><svg class="ic dim"><use href="#i-minus"/></svg>Young project (2.1), individual use, unsigned builds</td><td class="pro"><svg class="ic"><use href="#i-check"/></svg>Team plans, admin controls, SOC 2 Type II</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="cmp-foot" data-reveal>
-          <p><strong>Open source. Local-first. Windows-focused. Yours to inspect and improve.</strong> KeyReed does not claim feature parity with Wispr Flow. The last three rows are where Wispr Flow is the stronger choice today.</p>
-          <p><a class="link-arrow" href="/vs-wispr-flow">Read the full comparison<svg class="ic arrow"><use href="#i-arrow"/></svg></a></p>
-          <p class="fine">Wispr Flow details come from its own pages, checked in November 2026: <a href="https://wisprflow.ai/pricing" rel="noopener">pricing</a>, <a href="https://wisprflow.ai/privacy" rel="noopener">privacy</a>, <a href="https://docs.wisprflow.ai/articles/2772472373-what-is-flow" rel="noopener">what is Flow</a>. KeyReed is an independent project and is not affiliated with Wispr.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ DOWNLOAD ============ -->
-    <section class="sec" id="download">
-      <div class="wrap">
-        <header class="sec-head" data-reveal>
-          <p class="eyebrow">Download</p>
-          <h2>Get KeyReed for Windows.</h2>
-          <p class="sec-sub">Start with the small installer. Setup downloads one speech model.</p>
-        </header>
-
-        <div class="dl-grid">
-          <div class="dl-main lit" data-reveal>
-            <div class="dl-tag"><svg class="ic"><use href="#i-windows"/></svg>Recommended</div>
-            <h3>Windows x64 installer</h3>
-            <p class="dl-meta"><span id="dl-ver">Version 2.1.0</span><span class="sep"></span><span data-bind="installer-size">24.4 MB</span><span class="sep"></span><span>KeyReed-Setup-x64.exe</span></p>
-            <p>Installs KeyReed and its runtimes. It does not include speech models: after launch, the 4-step first-run setup guides you through downloading the default speech model (about 460 MB, once, verified against compile-time SHA-256 pins).</p>
-            <a class="btn btn-primary btn-lg" id="dl-installer" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/KeyReed-Setup-x64.exe"><svg class="ic"><use href="#i-download"/></svg>Download installer<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-            <div class="sha"><span>SHA-256</span><code id="sha-installer">e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd</code><button class="copy" type="button" data-copy-from="sha-installer" aria-label="Copy installer SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
-          </div>
-
-          <div class="dl-side" data-reveal style="--d:.08s">
-            <div class="dl-alt lit">
-              <h3>Portable zip, no installer</h3>
-              <p class="dl-meta"><span>47.3 MB</span><span class="sep"></span><span id="portable-name">keyreed-2.1.0-windows-x86_64-portable.zip</span></p>
-              <p>The exe and its runtime DLLs, no models. Extract it and run <code>keyreed.exe</code>; it downloads a speech model on first use.</p>
-              <a class="link-arrow" id="dl-portable" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/keyreed-2.1.0-windows-x86_64-portable.zip">Download portable zip<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-              <div class="sha"><span>SHA-256</span><code id="sha-portable">ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c</code><button class="copy" type="button" data-copy-from="sha-portable" aria-label="Copy portable zip SHA-256"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+        <div class="open-grid">
+          <div class="cmp-card lit" id="compare" data-reveal>
+            <table class="cmp-table">
+              <caption class="sr">KeyReed compared with Wispr Flow</caption>
+              <thead>
+                <tr>
+                  <th scope="col"><span class="sr">Feature</span></th>
+                  <th scope="col" class="us">KeyReed</th>
+                  <th scope="col">Wispr Flow</th>
+                </tr>
+              </thead>
+              <tbody data-stagger>
+                <tr>
+                  <th scope="row">Price</th>
+                  <td class="us"><svg class="draw-check" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></svg>Free, unlimited</td>
+                  <td>Free 2,000 words/wk; Pro $15/mo</td>
+                </tr>
+                <tr>
+                  <th scope="row">Where voice is processed</th>
+                  <td class="us"><svg class="draw-check" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></svg>On your PC by default</td>
+                  <td>In Wispr's cloud</td>
+                </tr>
+                <tr>
+                  <th scope="row">Works offline</th>
+                  <td class="us"><svg class="draw-check" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></svg>Yes, once a model is installed</td>
+                  <td>No, internet required</td>
+                </tr>
+                <tr>
+                  <th scope="row">Source code</th>
+                  <td class="us"><svg class="draw-check" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></svg>MIT or Apache-2.0</td>
+                  <td>Closed source</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="cmp-card-foot">
+              <a class="link-arrow" href="vs-wispr-flow">Full comparison<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+              <p class="fine">Checked November 2026 (<a href="https://wisprflow.ai/pricing" rel="noopener">pricing</a>, <a href="https://wisprflow.ai/privacy" rel="noopener">privacy</a>). Not affiliated with Wispr.</p>
             </div>
-            <ul class="dl-links">
-              <li><a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/SHA256SUMS.txt" rel="noopener">SHA256SUMS.txt<svg class="ic arrow"><use href="#i-arrow"/></svg></a></li>
-              <li><a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">Source on GitHub<svg class="ic arrow"><use href="#i-arrow"/></svg></a></li>
-              <li><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Installation guide<svg class="ic arrow"><use href="#i-arrow"/></svg></a></li>
-              <li><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CHANGELOG.md" rel="noopener">Changelog<svg class="ic arrow"><use href="#i-arrow"/></svg></a></li>
-            </ul>
           </div>
-        </div>
 
-        <div class="dl-notes">
-          <div class="note warn" id="smartscreen" data-reveal>
-            <h3>About the SmartScreen warning</h3>
-            <p>KeyReed's Windows files are not code-signed yet. Windows SmartScreen may show an unknown-publisher prompt or "Windows protected your PC". That is expected for an unsigned download and is not a verdict on the file, but it is a reason to verify it. Compare the SHA-256 above with your file, or build from source.</p>
-            <div class="cmd"><code id="cmd-hash">Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256</code><button class="copy" type="button" data-copy-from="cmd-hash" aria-label="Copy PowerShell command"><svg class="ic"><use href="#i-copy"/></svg></button></div>
-          </div>
-          <div class="note" data-reveal style="--d:.08s">
-            <h3>Requirements</h3>
-            <ul>
-              <li>64-bit Windows 11 (built and tested). Windows 10 64-bit is supported by the code but was not re-tested for this release.</li>
-              <li>A microphone that desktop apps are allowed to use.</li>
-              <li>No dedicated GPU needed. Speech runs on the CPU; the optional grammar model uses a Vulkan-capable GPU if you have one.</li>
-              <li>Memory: on a 4 GB test machine the app and its local grammar runtime used about 1.6 GB together during a session. More free RAM is safer. An 8 GB PC has not been benchmarked.</li>
-            </ul>
+          <div class="gh-card lit" data-reveal style="--d:.08s">
+            <div>
+              <div class="gh-badges">
+                <span class="gh-badge">v<span data-bind="version">2.1.0</span></span>
+                <span class="gh-badge">MIT or Apache-2.0</span>
+                <span class="gh-badge" data-gh-stars hidden></span>
+              </div>
+              <h3 class="h3" style="margin-top:16px">Built in the open in Rust.</h3>
+              <p class="sec-sub" style="font-size:15px">Six crates, eight SHA-256-pinned speech models, zero telemetry. Audit every line or build it yourself.</p>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+              <a class="btn btn-primary" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">
+                <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+                <span>Star on GitHub</span>
+              </a>
+              <a class="link-arrow" href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">Contribute<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ============ FAQ ============ -->
-    <section class="sec sec-alt" id="faq">
+    <!-- ============ 7. FAQ (6 QUESTIONS) ============ -->
+    <section class="sec" id="faq">
       <div class="wrap narrow">
         <header class="sec-head" data-reveal>
           <p class="eyebrow">FAQ</p>
-          <h2>Questions, answered straight.</h2>
+          <h2 class="h2">Questions, <span class="serif">answered straight.</span></h2>
         </header>
-        <div class="faq" id="faq-list" data-reveal>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a1" id="q1">What is KeyReed?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a1" role="region" aria-labelledby="q1"><div><p>KeyReed is a Windows tray application for voice dictation. You hold a shortcut, speak, and release. It transcribes your speech on your PC, cleans it up, and types the finished text into the field you were in. Where typing is unsafe, such as a password field, it puts the text on the clipboard instead.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a2" id="q2">Is KeyReed free?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a2" role="region" aria-labelledby="q2"><div><p>Yes. It is free, open-source software with no subscription. The optional cloud profiles use an API key you provide, and that provider's own pricing applies.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a3" id="q3">Is it open source?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a3" role="region" aria-labelledby="q3"><div><p>Yes. The whole application is a public Rust workspace on <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>, dual licensed under <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT</a> or <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>. You may use it under either license. The speech and grammar models it downloads have their own licenses.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a4" id="q4">How is it different from Wispr Flow?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a4" role="region" aria-labelledby="q4"><div><p>KeyReed is open source, Windows-only, and transcribes on your own PC by default. Wispr Flow is a mature commercial product on Mac, Windows, iPhone and Android with 100+ languages, and its documentation says transcription happens in its cloud. If you need those platforms, languages or team features today, Wispr Flow is the stronger choice. If you want to inspect the code and keep audio local, KeyReed is built for that. See the <a href="#compare">comparison</a>.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a5" id="q5">Does it work offline?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a5" role="region" aria-labelledby="q5"><div><p>Yes, once a speech model is installed. The small installer needs a one-time internet connection to download the default speech model from the tray. The default profile makes no network calls for dictation.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a6" id="q6">Does it require a GPU?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a6" role="region" aria-labelledby="q6"><div><p>No. Speech recognition runs on the CPU. The optional grammar model uses a GPU through Vulkan when one is present, measured 2.7 to 6 times faster than the CPU on one test laptop with a Quadro P2000, and falls back to the CPU automatically.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a7" id="q7">Does it send audio to the cloud?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a7" role="region" aria-labelledby="q7"><div><p>Not by default. The default profile, Maximum Privacy (100% Offline), keeps audio and text on your computer. Only if you switch to Balanced or Maximum Accuracy <em>and</em> store an API key can audio or text go to the endpoint you configured. The endpoint fields are pre-filled with Groq's OpenAI-compatible API and are editable. KeyReed does not ship a key.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a8" id="q8">Which Windows versions are supported?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a8" role="region" aria-labelledby="q8"><div><p>The package is built and tested on 64-bit Windows 11. Windows 10 (64-bit) is supported by the code but was not re-tested for this release. There are no 32-bit, ARM, macOS or Linux builds.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a9" id="q9">How do I install it?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a9" role="region" aria-labelledby="q9"><div><p>Download <code>KeyReed-Setup-x64.exe</code> and run it. It installs for your user account only, so it does not ask for administrator rights. Windows may warn because the file is unsigned. On first launch a four-step setup picks your shortcut, tests your microphone, downloads the speech model and lets you try a dictation. After that, hold Right Ctrl in any app, speak, and let go. The full steps are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">installation guide</a>.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a10" id="q10">How do I change the shortcut?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a10" role="region" aria-labelledby="q10"><div><p>Open Settings from the tray icon and go to <em>Dictation</em> to pick a different shortcut, or switch between holding the key and pressing once to start and once to stop. Escape cancels a recording, and Ctrl+Shift+Space cycles the writing mode.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a13" id="q13">Do I need an account?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a13" role="region" aria-labelledby="q13"><div><p>No. There is no sign-up, no login and no licence key. KeyReed does not send usage data anywhere. The only network traffic in the default profile is the one-time model download you start yourself.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a14" id="q14">How fast is it?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a14" role="region" aria-labelledby="q14"><div><p>Speech is transcribed while you talk. On a 2018 laptop CPU (Intel i7-8850H), a 47-second dictation was ready 0.5 to 0.7 seconds after the key was released, using the default speech model in Exact mode, without the grammar model. When the grammar model rewrites a long dictation it adds time: a 60-second dictation typed into another window took about 7 seconds from release to fully typed, 3.5 seconds of it the rewrite. These numbers come from an automated test with synthetic speech; your PC will differ. The <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/research/08-e2e-speed-accuracy-worklog.md" rel="noopener">method and raw numbers</a> are public.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a11" id="q11">How can I contribute?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a11" role="region" aria-labelledby="q11"><div><p>Read <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">CONTRIBUTING.md</a>, then open an issue or a small, tested pull request. Open an issue first for anything large. Bug reports with your Windows version and steps are very welcome.</p></div></div></div>
-          <div class="qa"><h3><button type="button" aria-expanded="false" aria-controls="a12" id="q12">What are the current limitations?<svg class="ic"><use href="#i-plus"/></svg></button></h3><div class="a" id="a12" role="region" aria-labelledby="q12"><div><p>KeyReed is a young, independent project (version 2.1). Dictation was not re-run by hand for this release, so watch your first dictations. The Windows files are unsigned. It is Windows-only, with no mobile app. It has no AI command mode and no team features. Speed and accuracy figures come from one test laptop, mostly with synthetic speech; live microphone dictation with real voices in noisy rooms has not been benchmarked yet. Typing into a plain text box runs at about 600 characters per second. The details are in the <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/research/08-e2e-speed-accuracy-worklog.md" rel="noopener">verification matrix</a>.</p></div></div></div>
+
+        <div class="faq-list" data-reveal>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a1" id="q1"><span>Is it really free?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a1" role="region" aria-labelledby="q1"><div><p>Yes. KeyReed is free and open source under MIT or Apache-2.0, with no word limit, subscription, or account. Optional cloud profiles use an API key you bring yourself at that provider's price. <a class="inline-link" href="details#overview">More in details</a>.</p></div></div>
+          </div>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a2" id="q2"><span>Does my voice leave my PC?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a2" role="region" aria-labelledby="q2"><div><p>Not in the default Maximum Privacy profile, which makes zero network calls for audio or text. Audio stays in RAM and is wiped after decoding. Only optional cloud profiles send data, and only with your own API key. <a class="inline-link" href="details#privacy">Privacy details</a>.</p></div></div>
+          </div>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a3" id="q3"><span>Do I need a GPU?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a3" role="region" aria-labelledby="q3"><div><p>No. Speech recognition runs on your CPU via sherpa-onnx. The optional local grammar model uses a Vulkan GPU when available and falls back to CPU automatically. <a class="inline-link" href="details#requirements">System requirements</a>.</p></div></div>
+          </div>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a4" id="q4"><span>How is it different from Wispr Flow?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a4" role="region" aria-labelledby="q4"><div><p>KeyReed is free, open source, Windows-only, and processes speech locally offline. Wispr Flow is a commercial cloud service on Mac, Windows, iOS, and Android with 100+ languages, Command Mode, and team compliance. See <a class="inline-link" href="vs-wispr-flow">Wispr Flow comparison</a> and <a class="inline-link" href="details">details</a>.</p></div></div>
+          </div>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a5" id="q5"><span>Why does Windows SmartScreen warn me?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a5" role="region" aria-labelledby="q5"><div><p>KeyReed's Windows builds are not code-signed yet, so SmartScreen may show an unknown-publisher prompt. Always verify the SHA-256 checksum below or build from source before running. <a class="inline-link" href="details#limitations">Known limits</a>.</p></div></div>
+          </div>
+          <div class="qa">
+            <h3><button type="button" aria-expanded="false" aria-controls="a6" id="q6"><span>Which languages work?</span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button></h3>
+            <div class="a" id="a6" role="region" aria-labelledby="q6"><div><p>English by default (Parakeet TDT 0.6B v2), 25 European languages (Parakeet v3 and Ultra), or English, Chinese, Japanese, Korean, and Cantonese (SenseVoice Small). Eight SHA-256-pinned models are selectable in Settings. <a class="inline-link" href="details#models">Compare all 8 models</a>.</p></div></div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- ============ FINAL CTA ============ -->
-    <section class="final">
-      <div class="final-bg" aria-hidden="true"><i class="aurora a1"></i><i class="aurora a2"></i></div>
-      <div class="wrap final-in" data-reveal>
-        <img class="final-mark" src="assets/icon-192.png" alt="" width="72" height="72">
-        <h2>Your keyboard can <span class="serif">take a break.</span></h2>
-        <p class="sec-sub">Download KeyReed and experience a more open way to turn speech into text.</p>
-        <div class="cta-row center">
-          <a class="btn btn-primary btn-lg" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/KeyReed-Setup-x64.exe"><svg class="ic"><use href="#i-windows"/></svg>Download for Windows<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic"><use href="#i-github"/></svg>Star on GitHub<svg class="ic arrow"><use href="#i-arrow"/></svg></a>
+    <!-- ============ 8. FINALE: DOWNLOAD (DARK STAGE) ============ -->
+    <section class="slab-shell end" id="download">
+      <div class="slab-dark finale-slab">
+        <div class="wrap finale-in">
+          <h2 class="h2">Your keyboard can <span class="serif">take a break.</span></h2>
+
+          <a class="giant-keycap" id="finale-download" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe">
+            <svg class="ic" aria-hidden="true"><use href="#i-windows"/></svg>
+            <span>Download for Windows</span>
+            <svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>
+          </a>
+
+          <p class="finale-meta">
+            <span>Version <span data-bind="version">2.1.0</span></span>
+            <span>·</span>
+            <span data-bind="installer-size">24.4 MB</span>
+            <span>·</span>
+            <span>Windows 10 &amp; 11 x64</span>
+            <span>·</span>
+            <a href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/keyreed-2.1.0-windows-x86_64-portable.zip">Portable zip (<span data-bind="portable-size">47.3 MB</span>)</a>
+          </p>
+
+          <div class="disclosures">
+            <details class="disc">
+              <summary>Verify your download</summary>
+              <div class="disc-body">
+                <p>Compare the installer SHA-256 checksum in PowerShell before running (<a class="inline-link" href="https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/SHA256SUMS.txt" rel="noopener">SHA256SUMS.txt</a>):</p>
+                <div class="hash-row">
+                  <code id="sha-installer">e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd</code>
+                  <button class="copy-btn" type="button" data-copy-from="sha-installer" aria-label="Copy installer SHA-256"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                </div>
+                <div class="hash-row">
+                  <code id="cmd-hash">Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256</code>
+                  <button class="copy-btn" type="button" data-copy-from="cmd-hash" aria-label="Copy PowerShell hash command"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                </div>
+                <p>Portable zip SHA-256: <code id="sha-portable">ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c</code></p>
+              </div>
+            </details>
+
+            <details class="disc" id="smartscreen">
+              <summary>Windows SmartScreen?</summary>
+              <div class="disc-body">
+                <p>KeyReed's Windows executables and installer are not code-signed yet, so Windows SmartScreen may show "Windows protected your PC". That prompt is expected for unsigned open-source builds — verify the SHA-256 hash above or <a class="inline-link" href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/development.md" rel="noopener">build from source</a>. First-run setup downloads the default speech model (~460 MB) once over HTTPS.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="reeds-bed" aria-hidden="true">
+          <canvas id="finale-reeds"></canvas>
         </div>
       </div>
     </section>
@@ -696,30 +706,44 @@
       <div class="foot-brand">
         <a class="brand" href="#top"><img src="assets/icon-48.png" alt="" width="28" height="28"><span class="wordmark">Key<b>Reed</b></span></a>
         <p>Open-source, local-first voice dictation for Windows.</p>
-        <p class="fine">Independent project. Not affiliated with Wispr or any company named on this page.</p>
+        <p class="fine">Independent project. Not affiliated with Wispr or any company named here.</p>
       </div>
       <nav class="foot-col" aria-label="Product">
-        <h4>Product</h4>
-        <a href="#how">How it works</a><a href="#features">Features</a><a href="#privacy">Privacy</a><a href="#compare">Compared</a><a href="/vs-wispr-flow">KeyReed vs Wispr Flow</a><a href="#download">Download</a><a href="#faq">FAQ</a>
+        <p class="foot-heading">Product</p>
+        <a href="#features">Features</a>
+        <a href="#privacy">Privacy</a>
+        <a href="details">Everything in detail</a>
+        <a href="vs-wispr-flow">vs Wispr Flow</a>
+        <a href="#download">Download</a>
       </nav>
       <nav class="foot-col" aria-label="Project">
-        <h4>Project</h4>
-        <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a><a href="https://github.com/Shanmukh-l33t/keyreed/releases" rel="noopener">Releases</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CHANGELOG.md" rel="noopener">Changelog</a><a href="https://github.com/Shanmukh-l33t/keyreed/issues" rel="noopener">Issues</a>
+        <p class="foot-heading">Project</p>
+        <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/releases" rel="noopener">Releases</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CHANGELOG.md" rel="noopener">Changelog</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Install guide</a>
       </nav>
-      <nav class="foot-col" aria-label="Documentation">
-        <h4>Docs</h4>
-        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Installation</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/troubleshooting.md" rel="noopener">Troubleshooting</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/development.md" rel="noopener">Development</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/architecture.md" rel="noopener">Architecture</a>
-      </nav>
-      <nav class="foot-col" aria-label="Legal and community">
-        <h4>Community</h4>
-        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/SECURITY.md" rel="noopener">Security policy</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT license</a><a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0 license</a>
+      <nav class="foot-col" aria-label="Community">
+        <p class="foot-heading">Community</p>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/SECURITY.md" rel="noopener">Security</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT license</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>
       </nav>
     </div>
-    <div class="wrap foot-base"><span>MIT or Apache-2.0. Fonts: Geist and Instrument Serif, SIL OFL 1.1.</span><a href="#top">Back to top<svg class="ic up"><use href="#i-arrow"/></svg></a></div>
+    <div class="wrap foot-base">
+      <span>Code: MIT or Apache-2.0. Fonts: Geist &amp; Instrument Serif (OFL). Motion: GSAP &amp; Lenis.</span>
+      <a href="#top">Back to top<svg class="ic up" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
   </footer>
 
+  <script src="vendor/gsap/gsap.min.js" defer></script>
+  <script src="vendor/gsap/ScrollTrigger.min.js" defer></script>
+  <script src="vendor/gsap/SplitText.min.js" defer></script>
+  <script src="vendor/lenis/lenis.min.js" defer></script>
   <script src="excerpts.js" defer></script>
-  <script src="site.js" defer></script>
-  <script src="demo.js" defer></script>
+  <script type="module" src="js/site.js"></script>
+  <script type="module" src="js/hero.js"></script>
+  <script type="module" src="js/scenes.js"></script>
 </body>
 </html>
