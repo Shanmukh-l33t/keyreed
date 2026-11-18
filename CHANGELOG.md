@@ -1,12 +1,72 @@
 # Changelog
 
+## 2.1.0 (2026-11-18)
+
+The first full 2.1 release: a new interface, plus the Quick Fix and sound fixes below, on top of everything in 2.1.0-beta.1. Speech recognition, cleanup, insertion and your settings file work exactly as before. The grammar model now downloads from the 2.1.0 release (same file, same SHA-256), because the beta releases were taken down.
+
+### Interface
+
+- **Light by default, with a Dark mode switch.** Settings, Quick Fix and the Composer open in the light theme. General > Appearance > Dark mode switches them; the choice is kept per Windows user. The listener stays dark in both.
+- **A new Settings window.** A deep sidebar with the KeyReed mark, and the page on one raised, rounded panel. Larger page titles, uppercase section labels, softer corners (12 px cards, 10 px controls) and fewer borders.
+- **Motion that moves like a physical thing.** Every animation now runs on springs (duration and bounce) driven by one 60 Hz frame clock on a high-resolution timer, instead of `WM_TIMER` at the 15.6 ms system tick. The navigation selection slides between pages, pages rise in with their groups a beat apart, setup steps slide in from the side they come from, switches travel with a small squash, a chosen writing mode pops its dot in, and buttons sink 1 px when pressed. Any key or click during a page change finishes it at once. Hover responds instantly. Windows Animation effects off turns all of it off.
+- **The listener.** Waveform history travels out from the centre, silence rests as dots, the processing state shows lines of text (voice becomes text) in mint instead of a spinner, and the width springs symmetrically from its centre. Copied text no longer flashes the success animation.
+- **Steadier frames.** One back buffer for Settings and the listener, dirty-rectangle repaints, and a straight-edge fast path for shapes. Measured with `KEYREED_UI_PERF=1` at 100 % against 2.1.0-beta.1: listener frames arrive every 17.7 ms at the 95th percentile (was 34.5 ms) and take 0.6 ms to draw; a switch animates at 17.8 ms per frame (was 35.2 ms); an animated Settings frame takes 19 ms at the 95th percentile, about what a full repaint took before; idle Settings and listener windows paint nothing.
+
+### Quick Fix and sound
+- **Quick Fix works on the second press.** The Review panel takes the foreground when it opens, so a chord pressed again straight after a fix was refused as KeyReed's own window or read a stale selection. A chord that lands on KeyReed's own window now acts on the last external window the app saw, and the target is put back in front before its selection is copied. A press while a change is still on screen says so instead of doing nothing.
+- **Quick Fix applies instead of asking.** The Review panel is off by default (`quick_fix_always_review`): a fix the edit-class table marks silent replaces the text straight away, with the Undo chip. Formatting in the selection, review-only edit classes and every writing-model fix still open the Review panel. The Settings switch asks for review of every change.
+- **Quick Fix without the grammar model.** A missing grammar model goes to the writing model instead of reporting a load failure, and the error names both models only when neither is installed. The fallback keeps the strict Fix prompt at temperature 0 and one proofreader pass runs only when that changed nothing on a text with an obvious error (a doubled word or a common misspelling). Measured on 15 sentences with planted errors against Qwen3.5 0.8B: see the ignored `writing_model_quality_against_a_live_server` test.
+
+## 2.1.0-beta.1 (2026-11-17)
+
+Hex-informed round, and the first single build that also carries the 2.0 work below. Built on Linux for Windows x64 and published without being run, tested or benchmarked, so treat it as an evaluation build. The installer and portable zip are unsigned. Research notes are in `docs/research/`.
+
+### Speech recognition
+
+- **Your vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords whenever the dictionary has terms (greedy search otherwise), with a `bpe.vocab` built from the model's own `tokens.txt`. Before this, terms were handed to a greedy decoder that ignores them. The runtime is checked first (`sherpa-onnx` 1.12.24 or newer) because an older one exits on the unknown decoding method.
+- **Quiet microphones are no longer dropped.** The clip-average level test is replaced by a 30 ms windowed gate that also accepts speech 12 dB above the clip's own noise floor.
+- **Better audio in.** A stateful polyphase windowed-sinc (Blackman-Harris) resampler replaces the 3-tap box and linear interpolation, and a 20 Hz single-pole DC blocker runs before level and speech detection.
+- **Release tail.** Recording continues 200 ms after release, extended up to 600 ms while you are still speaking, so the last word survives an early key-up.
+- **Two more selectable models, both verified against pinned SHA-256:** Parakeet TDT 110M (English, 103 MB, low RAM) and Parakeet TDT 0.6B Ultra (25 languages). The catalogue now lists eight speech models; the default is unchanged (Parakeet TDT 0.6B v2).
+- **Cleanup that changes less.** Filler removal keeps your full stops, "hmm" and "ah" stay, only doubled function words collapse ("had had" stays), wording polish only runs in Professional mode, and "march" and "august" are no longer recased.
+
+### The 2.0 work, in the same build
+
+- **Quick Fix (Ctrl + Win + G), end to end.** Select text in another application, press the shortcut, and KeyReed shows every proposed change in a Review panel. Spelling uses the Windows spell checker and grammar uses the Apache-2.0 `gector-bert-en` int8 tagger (73 MB download, runs locally through the ONNX Runtime that ships with the app). Enter replaces, Esc dismisses, Undo on the pill restores the original, and Deeper asks the local writing model for a second look. A fix KeyReed is sure about replaces the text straight away, with Undo; `quick_fix_always_review` is off by default and a Settings switch turns the Review panel on for every change. Selections holding formatting, edits the edit-class table marks review-only, and every writing-model fix always open the Review panel.
+- **The Composer (Ctrl + Win + K, or Open the Composer in the tray menu).** Fix, Improve, Shorter, Change tone, Summarise and a typed instruction; the answer streams, Esc cancels, and a result can replace the selection, be inserted, be copied or be regenerated. It answers from the local writing model (Qwen3.5 0.8B); with none installed it says so and sends nothing. Clicking the listener still starts dictation by default.
+- **Style store and edit watcher.** `vi-core` carries both with their tests: the learned-habits store in `style.json`, and the reader that only looks at the text box KeyReed just typed into, up to a minute. Neither is connected to a Settings page or to the running app yet, so nothing is learned from your edits in this build.
+
+### Interface
+
+- Waveform with real meter ballistics (35 ms attack, 95 ms decay, auto level that adapts to your voice and microphone), taller bars for speech, smoother colour.
+- Teal for "working" (Transcribing, Fixing) so amber means only "look at this".
+- An "Open privacy settings" button when the microphone fails, opening `ms-settings:privacy-microphone`.
+- Setup starts the model download when you press Next, shows progress on every page, moves on by itself when the model is ready, and ends with a practice step that says what went wrong.
+- Emerald focus ring, and a vocabulary editor with a Term row and a Sounds like row per entry.
+
+### Windows reliability
+
+- A 30 minute recording is processed at the cap instead of being discarded. Escape, a lost key release or a session lock still cancels.
+- A held trigger key's repeats and its key-up are swallowed; modifiers resync from the OS on every key event; key chords need exact modifiers; pressing another key while Right Ctrl is held cancels the dictation.
+- Clipboard history exclusion defaults on for new settings and always applies to the typing backup copy.
+- A log file at `%LOCALAPPDATA%\keyreed\logs\keyreed.log` (rotated once past 1 MB) and a panic hook. The installer stops only KeyReed's own `llama-server.exe`, never another app's.
+- The build embeds the manifest and icon for MSVC builds too, not only the mingw toolchain.
+
+### Known limits
+
+- Everything above is untested at runtime. Beam search speed with hotwords, the new resampler, the release tail and the UI changes have not been seen working.
+- Quick Fix has not been checked by hand in Chromium-based apps, Outlook or Word; the automated check ran in a plain Windows edit control.
+- Voice commands, a model picker for the writing model, and the "My style" Settings page are not in this build.
+- Hook re-arm on foreground change and the session-lock modifier reset were not implemented.
+- The build is unsigned.
+
 ## 2.0.0-beta.1 (2026-11-17)
 
 Beta. First public build of the 2.0 line. Quick Fix is the new feature; the dictation path is the 0.5.1 path plus the changes listed below. No dictation benchmark was run for this beta.
 
 ### What works
 
-- **Quick Fix (Ctrl + Win + G).** Select text in another application, press the shortcut, and KeyReed shows the proposed corrections in a Review panel. Nothing is replaced until you confirm (`quick_fix_always_review` is on by default; a Settings switch turns on silent replace). Spelling uses the Windows spell checker; grammar uses the Apache-2.0 `gector-bert-en` model (int8, 73 MB download, runs locally through the ONNX Runtime that ships with the app). Undo restores the original text.
+- **Quick Fix (Ctrl + Win + G).** Select text in another application, press the shortcut, and KeyReed shows the proposed corrections in a Review panel. Sure spelling and grammar fixes replace the text straight away with Undo; formatting, review-only edits and writing-model fixes always open the Review panel (`quick_fix_always_review`, off by default, asks for review of every change). Spelling uses the Windows spell checker; grammar uses the Apache-2.0 `gector-bert-en` model (int8, 73 MB download, runs locally through the ONNX Runtime that ships with the app). Undo restores the original text.
 - **Safer text handling.** Selection capture and replacement restore your clipboard; a busy language model never blocks dictation (it falls back to basic cleanup); streaming client with limits; the shortcut table supports several chords.
 - **Shortcut capture.** Press the keys you want in Settings instead of picking a preset; conflicting or reserved chords are refused.
 - **New pill states and Review panel** with short motion that respects reduced-motion.

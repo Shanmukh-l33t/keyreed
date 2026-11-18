@@ -225,6 +225,9 @@ pub fn capture_foreground_context(redact_sensitive_titles: bool) -> ForegroundCo
                     elevated = elev.TokenIsElevated != 0;
                 }
                 CloseHandle(htok);
+            } else if windows_sys::Win32::Foundation::GetLastError() == 5 {
+                // ERROR_ACCESS_DENIED: a normal-integrity process cannot open an elevated process's token.
+                elevated = true;
             }
             CloseHandle(hproc);
             (name, elevated)

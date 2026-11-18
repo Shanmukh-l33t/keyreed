@@ -154,6 +154,10 @@ impl PttController {
                     self.state = EngineState::Listening;
                     PttAction::StartRecording
                 } else {
+                    // A press over a session the pill, the tray or a voice hold started adopts it, so this
+                    // hold's release ends it instead of being dropped as a stale key-up (which left the app
+                    // recording with no way out but Escape).
+                    self.recording_epoch = Some(epoch);
                     PttAction::None
                 }
             }
@@ -234,18 +238,16 @@ impl PttController {
     }
 
     /// Periodic watchdog check so a stuck toggle or forgotten mic never records indefinitely.
+    /// At the cap the recording is finished and processed, never thrown away. The hold latch is
+    /// kept so the eventual key release (or its repeats) cannot start a new session by accident.
     pub fn on_tick(&mut self, now_ms: u64) -> PttAction {
         if self.is_recording() {
             if let Some(started) = self.recording_started_ms {
                 if now_ms.saturating_sub(started) >= self.max_record_ms {
                     self.recording_started_ms = None;
                     self.recording_epoch = None;
-                    self.open_hold = None;
-                    self.shortcut_physically_down = false;
-                    self.state = EngineState::Idle;
-                    return PttAction::CancelRecording {
-                        reason: "recording_cap_discarded",
-                    };
+                    self.state = EngineState::Processing;
+                    return PttAction::StopAndProcess;
                 }
             }
         }
@@ -343,48 +345,59 @@ mod tests {
     }
 
     #[test]
-    fn max_duration_discards_and_does_not_process() {
+    fn max_duration_stops_and_processes_instead_of_discarding() {
         let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_000);
         assert_eq!(ptt.on_shortcut_down(0), PttAction::StartRecording);
-        assert_eq!(
-            ptt.on_tick(1_000),
-            PttAction::CancelRecording {
-                reason: "recording_cap_discarded"
-            }
-        );
-        assert_eq!(ptt.state(), &EngineState::Idle);
+        assert_eq!(ptt.on_tick(1_000), PttAction::StopAndProcess);
+        assert_eq!(ptt.state(), &EngineState::Processing);
+        // Cap fires once; the late key release is a safe no-op.
+        assert_eq!(ptt.on_tick(1_025), PttAction::None);
         assert_eq!(ptt.on_shortcut_up(1_100), PttAction::None);
+        ptt.transition_to_idle();
         assert_eq!(ptt.on_shortcut_down(1_200), PttAction::StartRecording);
     }
 
     #[test]
-    fn toggle_cap_also_discards() {
+    fn toggle_cap_also_processes() {
         let mut ptt = PttController::new(ActivationMode::ToggleToTalk, 110, 500);
         assert_eq!(ptt.on_shortcut_down(0), PttAction::StartRecording);
         assert_eq!(ptt.on_shortcut_up(50), PttAction::None);
-        assert_eq!(
-            ptt.on_tick(500),
-            PttAction::CancelRecording {
-                reason: "recording_cap_discarded"
-            }
-        );
-        assert!(!matches!(ptt.on_tick(600), PttAction::StopAndProcess));
+        assert_eq!(ptt.on_tick(500), PttAction::StopAndProcess);
+        assert_eq!(ptt.on_tick(600), PttAction::None);
     }
 
     #[test]
     fn stale_keyup_does_not_stop_a_newer_floating_mic_session() {
         let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_000);
         assert_eq!(ptt.on_shortcut_down(0), PttAction::StartRecording);
-        assert!(matches!(
-            ptt.on_tick(1_000),
-            PttAction::CancelRecording {
-                reason: "recording_cap_discarded"
-            }
-        ));
+        assert_eq!(ptt.on_tick(1_000), PttAction::StopAndProcess);
+        ptt.transition_to_idle();
         assert_eq!(ptt.on_floating_mic_click(1_100), PttAction::StartRecording);
         assert_eq!(ptt.on_shortcut_up(1_200), PttAction::None);
         assert_eq!(ptt.state(), &EngineState::Listening);
         assert_eq!(ptt.on_floating_mic_click(2_000), PttAction::StopAndProcess);
+    }
+
+    /// A session the pill, the tray or a voice hold started must still end on this hold's release:
+    /// the press adopts it instead of bumping the epoch it does not carry (else every release is dropped).
+    #[test]
+    fn dictation_key_ends_a_session_it_did_not_start() {
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+        assert_eq!(ptt.on_floating_mic_click(1_000), PttAction::StartRecording);
+        assert_eq!(ptt.on_shortcut_down(2_000), PttAction::None);
+        assert_eq!(ptt.on_shortcut_up(2_400), PttAction::StopAndProcess);
+        assert_eq!(ptt.state(), &EngineState::Processing);
+    }
+
+    /// After a lost key-up the hold stays latched, so the next press does nothing: its release must
+    /// still end the running recording rather than being dropped as stale.
+    #[test]
+    fn a_release_after_a_lost_key_up_still_ends_the_recording() {
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+        assert_eq!(ptt.on_shortcut_down(1_000), PttAction::StartRecording);
+        assert_eq!(ptt.on_shortcut_down(3_000), PttAction::None);
+        assert_eq!(ptt.on_shortcut_up(3_400), PttAction::StopAndProcess);
+        assert_eq!(ptt.state(), &EngineState::Processing);
     }
 
     #[test]

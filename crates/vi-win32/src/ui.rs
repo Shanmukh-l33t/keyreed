@@ -22,17 +22,21 @@ pub enum UiAction {
     OpenComposer,
     /// "Start dictation" from the pill's right-click menu.
     StartDictation,
+    /// "Cancel recording": the way out when a recording will not stop (tray and pill right-click).
+    CancelRecording,
     /// Undo the last Quick Fix (pill chip).
     QuickFixUndo,
     /// Ask for the deeper pass on the last Quick Fix (pill chip).
     QuickFixDeeper,
+    /// Take back the word the pill just announced as learned (pill chip, plan F3).
+    LearningUndo,
     /// The Review panel was closed: what the user chose, the text with the accepted changes applied, and how many
     /// changes were accepted and rejected (for the acceptance counters). Never logged.
     ReviewDone { choice: ReviewChoice, text: String, accepted: u32, rejected: u32 },
     /// The first-use screen of the Review panel was dismissed.
     QuickFixIntroSeen,
-    /// Composer (plan F2): run `instruction`, on the captured selection when `use_selection`.
-    ComposerSubmit { instruction: vi_core::textjob::Instruction, use_selection: bool },
+    /// Composer (plan F2): run `instruction`, on the captured selection when `use_selection`, else on `draft`.
+    ComposerSubmit { instruction: vi_core::textjob::Instruction, use_selection: bool, draft: Option<String> },
     /// A follow-up preset on the latest result.
     ComposerFollowUp(vi_core::textjob::Instruction),
     /// Run the last request again.
@@ -51,11 +55,15 @@ pub enum UiAction {
     ToggleAutoContext,
     SetProcessingProfile(ProcessingProfile),
     ToggleFloatingMicVisible,
+    /// The Settings "Play" button: sound the selected cue now, at the selected volume.
+    PreviewAudioCue,
     SavePillPosition(i32, i32),
     SaveUpdatedConfig {
         new_cfg: Box<AppConfig>,
         new_plaintext_api_key: Option<String>,
     },
+    /// The "My style" store was edited in Settings: the coordinator saves it and learns by it.
+    SaveStyleStore(Box<vi_core::style::StyleStore>),
     ClearHistory,
     CopyLastDictation,
     DownloadDefaultModel,
@@ -173,7 +181,7 @@ impl MicVerdict {
 
     pub fn advice(self) -> &'static str {
         match self {
-            MicVerdict::Silent => "Check the mute switch and Windows Settings › Privacy › Microphone, or pick another device.",
+            MicVerdict::Silent => "Check the mute switch, or turn on \u{201C}Let desktop apps access your microphone\u{201D}.",
             MicVerdict::Low => "KeyReed can hear you. Move closer or raise the input volume for best accuracy.",
             MicVerdict::Good => "Your microphone is ready for dictation.",
             MicVerdict::TooLoud => "Lower the input volume in Windows Sound settings to avoid distortion.",
@@ -278,10 +286,13 @@ pub enum QuickFixStage {
     LooksGood,
     /// A neutral one-line outcome, for example "Spelling only" or "English only for now".
     Notice(String),
-    /// A refusal or failure with its one sentence short form; the pill shakes twice.
-    Refused(String),
+    /// A refusal or failure with its one sentence short form; the pill shakes twice. `settings` adds an
+    /// "Open Settings" chip for a failure the user can fix there (the missing grammar model).
+    Refused { text: String, settings: bool },
     /// The fix was undone: the tick unwinds and the count rolls back down.
     Undone { changes: u32 },
+    /// A correction was learned: "Learned: Kubernetes" with an Undo chip (plan F3). Shares the Fixed layout.
+    Learned(String),
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +310,7 @@ impl QuickFixPill {
     pub fn visible_ms(&self) -> Option<u128> {
         match self.stage {
             QuickFixStage::Working => None,
-            QuickFixStage::Fixed { .. } => Some(6000),
+            QuickFixStage::Fixed { .. } | QuickFixStage::Learned(_) => Some(6000),
             QuickFixStage::Undone { .. } => Some(1800),
             _ => Some(1800),
         }
@@ -342,6 +353,16 @@ pub struct FriendlyError {
     /// Fits the floating listener.
     pub short: &'static str,
     pub message: &'static str,
+    /// Where a click on the error pill should take the user.
+    pub fix: ErrorFix,
+}
+
+/// The Settings page that can resolve an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorFix {
+    None,
+    Microphone,
+    Models,
 }
 
 pub fn friendly_error(raw: &str) -> FriendlyError {
@@ -350,7 +371,8 @@ pub fn friendly_error(raw: &str) -> FriendlyError {
     if has("mic") || has("microphone") || has("audio endpoint") || has("wasapi") || has("capture device") {
         FriendlyError {
             short: "Mic unavailable",
-            message: "KeyReed couldn't open your microphone. Check that it's connected and that Windows allows microphone access. Nothing was recorded.",
+            message: "KeyReed couldn't open your microphone. Check that it's connected and that Windows allows desktop apps to use it. Nothing was recorded.",
+            fix: ErrorFix::Microphone,
         }
     } else if has("not installed")
         || has("not in catalog")
@@ -360,16 +382,19 @@ pub fn friendly_error(raw: &str) -> FriendlyError {
         FriendlyError {
             short: "Model missing",
             message: "The speech model isn't installed or couldn't start. Open Settings › Speech models to download or switch it. This recording was discarded.",
+            fix: ErrorFix::Models,
         }
     } else if has("clipboard") {
         FriendlyError {
             short: "Couldn't copy",
             message: "Windows didn't let KeyReed use the clipboard. Try again in a moment.",
+            fix: ErrorFix::None,
         }
     } else {
         FriendlyError {
             short: "Couldn't transcribe",
             message: "Something went wrong while transcribing, and this recording was discarded. Try again. Details are in the KeyReed log.",
+            fix: ErrorFix::None,
         }
     }
 }
@@ -388,7 +413,7 @@ pub struct AsrUiInfo {
     pub recommended: bool,
 }
 
-pub const ASR_UI_CATALOG: [AsrUiInfo; 6] = [
+pub const ASR_UI_CATALOG: [AsrUiInfo; 8] = [
     AsrUiInfo {
         id: "parakeet-tdt-0.6b-v2-int8",
         name: "Parakeet v2",
@@ -405,6 +430,24 @@ pub const ASR_UI_CATALOG: [AsrUiInfo; 6] = [
         languages: "25 languages",
         download_mb: 465,
         measured_s_per_10s: Some(1.7),
+        recommended: false,
+    },
+    AsrUiInfo {
+        id: "parakeet-tdt-110m-en-int8",
+        name: "Parakeet 110M",
+        summary: "Small and quick English model for low-RAM PCs.",
+        languages: "English",
+        download_mb: 103,
+        measured_s_per_10s: None,
+        recommended: false,
+    },
+    AsrUiInfo {
+        id: "parakeet-tdt-0.6b-ultra-int8",
+        name: "Parakeet Ultra",
+        summary: "Newer 25-language model. Worth comparing with v2.",
+        languages: "25 languages",
+        download_mb: 465,
+        measured_s_per_10s: None,
         recommended: false,
     },
     AsrUiInfo {
@@ -515,6 +558,8 @@ pub struct SharedUiModel {
     pub processing_note: Option<String>,
     /// Quick Fix state on the listener; shown while the engine is idle.
     pub quick_fix: Option<QuickFixPill>,
+    /// What KeyReed learned (plan F3): the "My style" page reads and edits this copy.
+    pub style: vi_core::style::StyleStore,
 }
 
 /// How long a listener hint stays visible.
@@ -582,6 +627,9 @@ mod tests {
         let e = friendly_error("Mic error: WASAPI IAudioClient::Initialize failed 0x88890008");
         assert_eq!(e.short, "Mic unavailable");
         assert!(!e.message.contains("0x"));
+        assert_eq!(e.fix, ErrorFix::Microphone);
+        assert_eq!(friendly_error("ASR model 'foo' not in catalog").fix, ErrorFix::Models);
+        assert_eq!(friendly_error("clipboard busy").fix, ErrorFix::None);
         assert_eq!(friendly_error("ASR model 'foo' not in catalog").short, "Model missing");
         assert_eq!(friendly_error("Transcription failed: decoder panic").short, "Couldn't transcribe");
     }
@@ -611,9 +659,12 @@ mod tests {
     }
 
     #[test]
-    fn asr_catalog_ui_has_six_models_and_one_recommendation() {
-        assert_eq!(ASR_UI_CATALOG.len(), 6);
+    fn asr_catalog_ui_lists_every_model_once_with_one_recommendation() {
         assert_eq!(ASR_UI_CATALOG.iter().filter(|m| m.recommended).count(), 1);
+        for m in ASR_UI_CATALOG.iter() {
+            assert!(asr_ui_info(m.id).is_some(), "{} has no info entry", m.id);
+            assert_eq!(ASR_UI_CATALOG.iter().filter(|o| o.id.eq_ignore_ascii_case(m.id)).count(), 1, "{} listed twice", m.id);
+        }
         assert!(asr_ui_info("PARAKEET-TDT-0.6B-V2-INT8").is_some());
     }
 
@@ -627,6 +678,8 @@ mod tests {
         assert!(!fixed.is_active());
         assert_eq!(fixed_label(1), "Fixed · 1 change");
         assert_eq!(fixed_label(4), "Fixed · 4 changes");
+        // A learned word keeps its Undo chip up as long as a fix does.
+        assert_eq!(QuickFixPill::new(QuickFixStage::Learned("Kubernetes".into())).visible_ms(), fixed.visible_ms());
     }
 
     #[test]
@@ -641,18 +694,18 @@ mod tests {
 pub mod win_gui {
     use super::*;
     use crate::overlay::{
-        fixed_chips, motion, pill_window_width, render_pill, rms_to_level, scaled_icon, PillFrame, PillKind, PillMetrics,
-        TextMask,
+        fixed_chips, motion, pill_window_width, render_pill_into, scaled_icon, PillFrame, PillKind, PillMetrics, TextMask,
+        WaveSim,
     };
     use once_cell::sync::OnceCell;
     use std::cell::RefCell;
-    use std::collections::{HashMap, VecDeque};
-    use std::time::Instant;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use vi_core::brand::{OVERLAY_WINDOW_CLASS, PRODUCT_NAME, SETTINGS_WINDOW_CLASS, TRAY_WINDOW_CLASS};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
-        GetTextExtentPoint32W, GetTextFaceW, MonitorFromPoint, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+        ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, GetMonitorInfoW,
+        GetTextExtentPoint32W, GetTextFaceW, MonitorFromPoint, SelectObject, SetBkMode, SetTextColor,
         TextOutW, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
         HBITMAP, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, TRANSPARENT,
     };
@@ -691,9 +744,9 @@ pub mod win_gui {
     const IDM_SETUP_MODEL: usize = 1015;
     const IDM_START_DICTATION: usize = 1016;
     const IDM_OPEN_COMPOSER: usize = 1017;
+    const IDM_CANCEL_RECORDING: usize = 1018;
     const IDM_MODE_BASE: usize = 1100;
 
-    const IDT_PILL_ANIM: usize = 7002;
     const IDT_HOVER_COLLAPSE: usize = 7003;
     const IDT_QF_EXPIRE: usize = 7004;
     /// Hover must rest this long before the listener expands (avoids accidental expansion).
@@ -708,6 +761,8 @@ pub mod win_gui {
         pub(crate) review_buf: Mutex<Option<(crate::composer::ReviewRequest, bool)>>,
         /// Composer open requests and stream events, applied in order on the GUI thread.
         pub(crate) composer_buf: Mutex<Vec<crate::composer::ComposerMsg>>,
+        /// f32 bits of the loudest RMS since the listener last read it (`swap(0)`); set while a capture runs.
+        pub(crate) level_source: Mutex<Option<Arc<AtomicU32>>>,
     }
 
     static GUI_GLOBALS: OnceCell<WinGuiGlobals> = OnceCell::new();
@@ -845,7 +900,7 @@ pub mod win_gui {
         let badge = match state {
             EngineState::Disabled => Some((0x8Au8, 0x94u8, 0x90u8)),
             EngineState::Listening => Some((0x10, 0xB9, 0x81)),
-            EngineState::Processing | EngineState::Correcting => Some((0xF5, 0x9E, 0x0B)),
+            EngineState::Processing | EngineState::Correcting => Some((0x2D, 0xD4, 0xBF)),
             EngineState::Error(_) => Some((0xE1, 0x1D, 0x48)),
             _ if needs_setup => Some((0xF5, 0x9E, 0x0B)),
             _ => None,
@@ -950,24 +1005,41 @@ pub mod win_gui {
         top: i32,
         /// DPI scale the geometry above was last laid out for.
         last_scale: f32,
-        cur_w: f32,
-        from_w: f32,
-        to_w: f32,
-        tween_start: Instant,
-        content_since: Instant,
-        state_since: Instant,
+        /// Window width and height in physical pixels, on springs: a retarget mid-flight keeps position and speed.
+        w: Animated,
+        h: Animated,
+        /// The keycap: 1 = pressed in (while listening), on a quick press spring and an accent spring back up.
+        press: Animated,
+        /// Drag lift, 0..1.
+        lift: Animated,
+        /// Motion-clock seconds (`crate::motion::now`) when the content and the state last changed.
+        content_since: f64,
+        state_since: f64,
+        /// The state shown before the current one (bars -> text lines -> check continue from it).
+        prev_kind: PillKind,
         last_kind: PillKind,
         last_label: String,
-        levels: VecDeque<f32>,
-        tick: u32,
+        /// Meter ballistics of the listening waveform and the wall-clock time of its last step.
+        wave: WaveSim,
+        wave_at: f64,
+        /// Last non-zero level and how many frames in a row read zero (a frame can fall between audio callbacks).
+        last_rms: f32,
+        dry_frames: u8,
         hovered: bool,
         hover_tracking: bool,
         drag: Option<(i32, i32, bool)>,
+        /// Subscribed to the frame clock (something on the pill is moving).
         timer_on: bool,
-        /// Interval of the running animation timer (16 ms while Quick Fix moves, 33 ms otherwise).
-        timer_ms: u32,
-        /// Action chips of the Fixed pill: window-relative x range and whether it is Deeper (else Undo).
-        chips: Vec<(f32, f32, bool)>,
+        /// Reused frame buffer, so a steady animation allocates nothing.
+        buf: Vec<u32>,
+        /// Where the capsule box starts inside the window (sub-pixel centring), for chip hit-testing.
+        cap_x: f32,
+        /// The action chip under the pointer.
+        hover_chip: Option<usize>,
+        /// What the last frame drew, so a refresh that changes nothing paints nothing.
+        last_sig: u64,
+        /// Action chips: window-relative x range and what a click there does.
+        chips: Vec<(f32, f32, ChipAction)>,
         visible: bool,
         frames_painted: u64,
     }
@@ -976,13 +1048,13 @@ pub mod win_gui {
         static PILL: RefCell<Option<Pill>> = const { RefCell::new(None) };
     }
 
-    const TWEEN_MS: f32 = 160.0;
-    const FADE_MS: f32 = 140.0;
+    const FADE_MS: f32 = crate::motion::FADE_MS;
+    /// The success flash: an emerald edge and glow that fade out once (P4).
+    const RING_MS: f32 = 320.0;
+    /// A Processing label stays at least this long so a very fast transcription does not flash it.
+    const PROCESSING_MIN_MS: u128 = 200;
 
-    fn ease_out_cubic(t: f32) -> f32 {
-        let t = t.clamp(0.0, 1.0);
-        1.0 - (1.0 - t).powi(3)
-    }
+    use crate::motion::{Animated, Spring};
 
     static DPI_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -1027,6 +1099,16 @@ pub mod win_gui {
         };
         let h = PillMetrics::for_scale(scale).window_height() as i32;
         ((wa.left + wa.right) / 2, wa.bottom - h - (14.0 * scale).round() as i32)
+    }
+
+    /// What a click on one of the pill's chips does.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ChipAction {
+        Undo,
+        Deeper,
+        LearningUndo,
+        /// Opens Settings at the Speech models page, where the grammar model is installed.
+        Settings,
     }
 
     /// What the listener should show for the current model.
@@ -1094,6 +1176,8 @@ pub mod win_gui {
         tertiary: String,
         /// The label at its final count, so the window keeps one width while the number rolls.
         sizing_label: String,
+        /// What the first chip does: undo the fix, or take back the word just learned.
+        undo: ChipAction,
         pop: f32,
         tick: f32,
         /// Logical-pixel offsets of the whole window (shake, nod).
@@ -1114,6 +1198,7 @@ pub mod win_gui {
             view: PillView { kind, label: label.to_string(), secondary: String::new() },
             tertiary: String::new(),
             sizing_label: String::new(),
+            undo: ChipAction::Undo,
             pop: 0.0,
             tick: 1.0,
             dx: 0.0,
@@ -1128,6 +1213,7 @@ pub mod win_gui {
             },
             tertiary: if chips && deeper { "Deeper".into() } else { String::new() },
             sizing_label: fixed_label(total),
+            undo: ChipAction::Undo,
             pop: motion::pop(ms),
             tick,
             dx: 0.0,
@@ -1149,8 +1235,25 @@ pub mod win_gui {
                 moving,
                 ..plain(PillKind::Done, "Looks good")
             },
+            QuickFixStage::Learned(word) => QuickFixView {
+                view: PillView { kind: PillKind::Fixed, label: format!("Learned: {word}"), secondary: "Undo".into() },
+                undo: ChipAction::LearningUndo,
+                sizing_label: format!("Learned: {word}"),
+                pop: motion::pop(ms),
+                tick: motion::tick(ms),
+                dx: 0.0,
+                dy: 0.0,
+                moving,
+                ..plain(PillKind::Fixed, "")
+            },
             QuickFixStage::Notice(text) => plain(PillKind::Notice, text),
-            QuickFixStage::Refused(text) => QuickFixView { dx: motion::shake(ms), moving, ..plain(PillKind::Error, text) },
+            QuickFixStage::Refused { text, settings } => {
+                let mut v = plain(PillKind::Error, text);
+                if *settings {
+                    v.view.secondary = "Open Settings".into();
+                }
+                QuickFixView { dx: motion::shake(ms), moving, ..v }
+            }
         })
     }
 
@@ -1187,7 +1290,24 @@ pub mod win_gui {
         IN_REFRESH.with(|f| f.set(false));
     }
 
-    unsafe fn pill_refresh_inner(hwnd: HWND, from_timer: bool) {
+    /// Names the listener's state for screen readers: window text plus a name-change event. Whether Narrator speaks it
+    /// for a no-activate layered window is unverified; test with Narrator.
+    unsafe fn announce_pill(hwnd: HWND, view: &PillView) {
+        let what = match view.kind {
+            PillKind::Idle | PillKind::IdleHover | PillKind::Disabled => String::new(),
+            PillKind::Listening => "Listening".to_string(),
+            _ => view.label.clone(),
+        };
+        let title = if what.is_empty() { "KeyReed listener".to_string() } else { format!("{PRODUCT_NAME}: {what}") };
+        let w = to_wide(&title);
+        SetWindowTextW(hwnd, w.as_ptr());
+        if !what.is_empty() {
+            // EVENT_OBJECT_NAMECHANGE, OBJID_WINDOW, CHILDID_SELF
+            windows_sys::Win32::UI::Accessibility::NotifyWinEvent(0x800C, hwnd, 0, 0);
+        }
+    }
+
+    unsafe fn pill_refresh_inner(hwnd: HWND, _from_timer: bool) {
         let Some(g) = GUI_GLOBALS.get() else { return };
         let snap = g.model.lock().clone();
         let should_show = snap.config.show_floating_mic;
@@ -1200,7 +1320,7 @@ pub mod win_gui {
                     pill.visible = false;
                 }
                 if pill.timer_on {
-                    KillTimer(hwnd, IDT_PILL_ANIM);
+                    crate::frameclock::unsubscribe(hwnd);
                     pill.timer_on = false;
                 }
                 return;
@@ -1208,46 +1328,93 @@ pub mod win_gui {
             let scale = dpi_scale(hwnd);
             if (scale - pill.last_scale).abs() > 0.01 {
                 // Moved onto a monitor with another DPI: keep the same vertical centre.
-                let old_h = PillMetrics::for_scale(pill.last_scale).window_height() as i32;
-                let new_h = PillMetrics::for_scale(scale).window_height() as i32;
+                let old_h = PillMetrics::for_pill(pill.last_scale, pill.last_kind).window_height() as i32;
+                let new_h = PillMetrics::for_pill(scale, pill.last_kind).window_height() as i32;
                 pill.top += (old_h - new_h) / 2;
                 pill.last_scale = scale;
             }
             let reduced = reduced_motion();
+            crate::motion::set_reduced_motion(reduced);
+            let now = crate::motion::now();
+            // The motion clock never runs backwards for the pill (the gallery's frozen clock can be set into the past).
+            pill.state_since = pill.state_since.min(now);
+            pill.content_since = pill.content_since.min(now);
+            pill.wave_at = pill.wave_at.min(now);
             let qf = quick_fix_view(&snap, reduced);
-            let view = match &qf {
+            let mut view = match &qf {
                 Some(q) => q.view.clone(),
                 None => pill_view(&snap, pill.hovered && pill.drag.is_none()),
             };
+            // Minimum dwell: a transcription that finishes in a few milliseconds still shows its label long enough to read.
+            let hold = qf.is_none()
+                && pill.last_kind == PillKind::Processing
+                && !matches!(view.kind, PillKind::Processing | PillKind::Listening | PillKind::Error)
+                && (now - pill.state_since) * 1000.0 < PROCESSING_MIN_MS as f64;
+            if hold {
+                view = PillView { kind: PillKind::Processing, label: pill.last_label.clone(), secondary: String::new() };
+            }
             let (tertiary_text, sizing_text, pop, tick, dx, dy, qf_moving) = match &qf {
                 Some(q) => (q.tertiary.clone(), q.sizing_label.clone(), q.pop, q.tick, q.dx, q.dy, q.moving),
                 None => (String::new(), String::new(), 0.0, 1.0, 0.0, 0.0, false),
             };
             // A rolling count keeps one change key, so the content does not re-fade on every frame.
             let change_key = if sizing_text.is_empty() { view.label.clone() } else { sizing_text.clone() };
-            let now = Instant::now();
 
             if view.kind != pill.last_kind || change_key != pill.last_label {
                 if view.kind != pill.last_kind {
+                    pill.prev_kind = pill.last_kind;
                     pill.state_since = now;
                     if view.kind == PillKind::Listening {
-                        pill.levels.clear();
+                        // Fresh bars, but the auto level keeps what it learned about this speaker.
+                        pill.wave.restart();
+                        pill.wave_at = now;
+                        pill.last_rms = 0.0;
+                        pill.dry_frames = 0;
+                        if let Some(src) = g.level_source.lock().as_ref() {
+                            src.swap(0, Ordering::Relaxed); // drop whatever was held before this recording
+                        }
                     }
+                    announce_pill(hwnd, &view);
                 }
                 pill.content_since = now;
                 pill.last_kind = view.kind;
                 pill.last_label = change_key;
             }
-            if view.kind == PillKind::Listening && from_timer {
-                pill.tick = pill.tick.wrapping_add(1);
-                // ~15 bars/s: one new measured level every second 33 ms frame.
-                if pill.tick % 2 == 0 {
-                    pill.levels.push_back(rms_to_level(snap.rms_level));
-                    while pill.levels.len() > crate::overlay::WAVE_BARS {
-                        pill.levels.pop_front();
-                    }
+            if view.kind == PillKind::Listening {
+                // Wall-clock dt, so the meter looks the same at any frame rate; sync() and the timer may both land here.
+                let dt = (now - pill.wave_at) as f32;
+                if dt >= 0.004 {
+                    let src = g.level_source.lock().clone();
+                    let rms = match src.map(|a| f32::from_bits(a.swap(0, Ordering::Relaxed))) {
+                        Some(v) if v > 0.0 => {
+                            pill.last_rms = v;
+                            pill.dry_frames = 0;
+                            v
+                        }
+                        // No audio callback fell inside this frame: hold the last level briefly instead of reading silence.
+                        Some(_) => {
+                            pill.dry_frames = pill.dry_frames.saturating_add(1);
+                            if pill.dry_frames <= 3 { pill.last_rms } else { 0.0 }
+                        }
+                        // No capture handle (gallery): the level that sync() last reported.
+                        None => snap.rms_level,
+                    };
+                    pill.wave.step(rms, dt);
+                    pill.wave_at = now;
                 }
             }
+            let age_ms = if reduced { f32::INFINITY } else { ((now - pill.state_since) * 1000.0) as f32 };
+            // The tick draws itself over 200 ms on every Done, after the text lines fold into its start (Quick Fix
+            // passes its own curve). The capsule pops on the accent spring as the check lands.
+            let from_lines = pill.prev_kind == PillKind::Processing;
+            let (tick, pop, tick_moving) = if qf.is_none() && view.kind == PillKind::Done && !reduced {
+                let ms = age_ms - if from_lines { crate::overlay::LINES_FOLD_MS * 0.6 } else { 0.0 };
+                let copied = matches!(snap.last_outcome, Some(ReadyOutcome::Copied));
+                let pop = if copied { 0.0 } else { pop_curve(ms) };
+                (motion::tick(ms.max(0.0)), pop, ms < crate::motion::HERO_MAX_MS)
+            } else {
+                (tick, pop, false)
+            };
 
             let px = label_px(scale);
             let weight = if matches!(view.kind, PillKind::IdleHover) { 600 } else { 500 };
@@ -1256,7 +1423,7 @@ pub mod win_gui {
             } else {
                 with_mask(&view.label, px, weight, |m| (m.w, m.h, m.cov.clone()))
             };
-            let sec_weight = if view.kind == PillKind::Fixed { 600 } else { 400 };
+            let sec_weight = if matches!(view.kind, PillKind::Fixed | PillKind::Error) { 600 } else { 400 };
             let (sw, sh, scov) = if view.secondary.is_empty() {
                 (0, 0, Vec::new())
             } else {
@@ -1279,43 +1446,90 @@ pub mod win_gui {
                 (final_w, padded)
             };
             let target_w = pill_window_width(scale, view.kind, lw, sw, tw) as f32;
-            if (target_w - pill.to_w).abs() > 0.5 {
-                pill.from_w = pill.cur_w;
-                pill.to_w = target_w;
-                pill.tween_start = now;
-            }
-            let tween_t =
-                if reduced { 1.0 } else { now.duration_since(pill.tween_start).as_secs_f32() * 1000.0 / TWEEN_MS };
-            pill.cur_w = if tween_t >= 1.0 {
-                pill.to_w
-            } else {
-                pill.from_w + (pill.to_w - pill.from_w) * ease_out_cubic(tween_t)
+            let target_h = PillMetrics::for_pill(scale, view.kind).window_height() as f32;
+            // One spring family: the pill blooms and changes on MORPH, answers a hover on SNAPPY, and settles home to
+            // idle without a bounce. A retarget mid-flight starts from where it is and how fast it is moving.
+            let spring = match view.kind {
+                PillKind::IdleHover => crate::motion::SNAPPY,
+                PillKind::Idle | PillKind::Disabled => crate::motion::SETTLE,
+                _ => crate::motion::MORPH,
             };
-            let fade_t =
-                if reduced { 1.0 } else { now.duration_since(pill.content_since).as_secs_f32() * 1000.0 / FADE_MS };
-            let tweening = tween_t < 1.0 || fade_t < 1.0 || qf_moving;
+            if target_w != pill.w.target() {
+                pill.w.retarget_with(target_w, spring, now);
+            }
+            if target_h != pill.h.target() {
+                pill.h.retarget_with(target_h, spring, now);
+            }
+            // The keycap goes down fast while the key is held and springs back up when it is let go.
+            let pressed = view.kind == PillKind::Listening;
+            if pressed && pill.press.target() != 1.0 {
+                pill.press.retarget_with(1.0, Spring::new(2.0 * crate::motion::PRESS_MS / 1000.0, 0.0), now);
+            } else if !pressed && pill.press.target() != 0.0 {
+                pill.press.retarget_with(0.0, crate::motion::ACCENT, now);
+            }
+            // Held for a drag, the pill lifts: a little bigger, a deeper shadow.
+            let lift_to = if pill.drag.is_some_and(|d| d.2) { 1.0 } else { 0.0 };
+            if pill.lift.target() != lift_to {
+                pill.lift.retarget_with(lift_to, crate::motion::SNAPPY, now);
+            }
+            let fade_ms = ((now - pill.content_since) * 1000.0) as f32;
+            // Labels wait 40 ms for the capsule to open, then fade in and rise 4 dp into place.
+            let content_t = if reduced { 1.0 } else { ((fade_ms - 40.0) / FADE_MS).clamp(0.0, 1.0) };
+            let content_opacity = crate::motion::STANDARD.eval(content_t);
+            let springs_moving =
+                !(pill.w.at_rest(now) && pill.h.at_rest(now) && pill.press.at_rest(now) && pill.lift.at_rest(now));
+            let tweening = springs_moving || content_t < 1.0 || qf_moving || tick_moving || hold;
 
-            let w = pill.cur_w.round().max(8.0) as usize;
-            let h = PillMetrics::for_scale(scale).window_height();
             let lbl = (lw > 0).then_some(TextMask { width: lw, height: lh, coverage: &lcov });
             let sec = (sw > 0).then_some(TextMask { width: sw, height: sh, coverage: &scov });
             let ter = (tw > 0).then_some(TextMask { width: tw, height: th, coverage: &tcov });
             pill.chips = if view.kind == PillKind::Fixed {
-                let acts = [(sw > 0).then_some(false), (tw > 0).then_some(true)];
+                let undo = qf.as_ref().map_or(ChipAction::Undo, |q| q.undo);
                 fixed_chips(scale, lw, [sw, tw])
                     .into_iter()
-                    .zip(acts.into_iter().flatten())
-                    .map(|((x0, x1), deeper)| (x0, x1, deeper))
+                    .enumerate()
+                    .map(|(i, (x0, x1))| (x0, x1, if i == 1 { ChipAction::Deeper } else { undo }))
+                    .collect()
+            } else if view.kind == PillKind::Error && sw > 0 {
+                // A failure the user can fix in Settings carries one chip there.
+                fixed_chips(scale, lw, [sw, 0])
+                    .into_iter()
+                    .map(|(x0, x1)| (x0, x1, ChipAction::Settings))
                     .collect()
             } else {
                 Vec::new()
             };
-            let levels: Vec<f32> = pill.levels.iter().copied().collect();
-            let phase = if reduced { 0.35 } else { now.duration_since(pill.state_since).as_secs_f32() };
+            let bars = pill.wave.bars();
+            // The edge light is honest: the smoothed mic level while listening, one fading flash on a real success.
+            let (ring, ring_moving) = match view.kind {
+                PillKind::Listening => (pill.wave.level().sqrt(), false),
+                // A clipboard fallback is neutral-positive: no flash (P5).
+                PillKind::Done | PillKind::Fixed if !reduced && !matches!(snap.last_outcome, Some(ReadyOutcome::Copied)) => {
+                    let t = (age_ms / RING_MS).clamp(0.0, 1.0);
+                    ((1.0 - t) * (1.0 - t), t < 1.0)
+                }
+                _ => (0.0, false),
+            };
+            let phase = if reduced { 0.35 } else { (now - pill.state_since) as f32 };
+
+            // Window size in whole pixels, even, around a fixed centre; the capsule itself stays sub-pixel inside it, so
+            // a springing width grows symmetrically and its edges never wobble by a pixel.
+            let lift = pill.lift.value(now).clamp(0.0, 1.0);
+            let grow = 1.0 + 0.02 * lift;
+            let (vw, vh) = (pill.w.value(now).max(8.0) * grow, pill.h.value(now).max(8.0) * grow);
+            let (w, h) = ((2.0 * (vw / 2.0).ceil()) as usize, (2.0 * (vh / 2.0).ceil()) as usize);
+            let base_h = PillMetrics::for_scale(scale).window_height() as f32;
+            let centre_y = pill.top as f32 + base_h / 2.0;
+            let wa = work_area_at(pill.cx, centre_y as i32);
+            let x = (pill.cx - w as i32 / 2).clamp(wa.left, (wa.right - w as i32).max(wa.left));
+            let y = ((centre_y - h as f32 / 2.0).floor() as i32).clamp(wa.top, (wa.bottom - h as i32).max(wa.top));
+            let rect = ((w as f32 - vw) / 2.0, (centre_y - y as f32 - vh / 2.0).clamp(0.0, (h as f32 - vh).max(0.0)), vw, vh);
+            pill.cap_x = rect.0;
+            let (ox, oy) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
             let frame = PillFrame {
                 scale,
                 kind: view.kind,
-                levels: &levels,
+                levels: &bars,
                 phase,
                 label: lbl,
                 secondary: sec,
@@ -1323,17 +1537,38 @@ pub mod win_gui {
                 pop,
                 tick,
                 opacity: 1.0,
-                content_opacity: ease_out_cubic(fade_t),
+                content_opacity,
+                press: pill.press.value(now),
+                ring,
+                polishing: matches!(snap.state, EngineState::Correcting),
+                age_ms,
+                from: pill.prev_kind,
+                rise: 4.0 * (1.0 - content_opacity),
+                lift,
+                chip_hover: pill.hover_chip.filter(|_| !pill.chips.is_empty()),
+                rect: Some(rect),
             };
-            let bgra = render_pill(w, h, &frame);
-
-            // Position: centred on the anchor, clamped into the monitor's work area.
-            let wa = work_area_at(pill.cx, pill.top + h as i32 / 2);
-            let x = (pill.cx - w as i32 / 2).clamp(wa.left, (wa.right - w as i32).max(wa.left));
-            let y = pill.top.clamp(wa.top, (wa.bottom - h as i32).max(wa.top));
-            let (ox, oy) = ((dx * scale).round() as i32, (dy * scale).round() as i32);
-            present_layered(hwnd, &bgra, w as i32, h as i32, x + ox, y + oy);
-            pill.frames_painted += 1;
+            let animate = tweening
+                || ring_moving
+                || (needs_frames(view.kind) && !(reduced && matches!(view.kind, PillKind::Processing | PillKind::Fixing)));
+            // A refresh that would draw exactly the last frame (a model sync with nothing new for the pill) paints
+            // nothing: idle stays at zero frames even while Settings or the coordinator are busy.
+            let sig = {
+                use std::hash::{Hash, Hasher};
+                let mut s = std::collections::hash_map::DefaultHasher::new();
+                (view.kind as u8, &pill.last_label, &view.secondary, &tertiary_text, w, h, x + ox, y + oy, frame.chip_hover).hash(&mut s);
+                (tick.to_bits(), pop.to_bits(), content_opacity.to_bits(), frame.press.to_bits(), ring.to_bits()).hash(&mut s);
+                s.finish()
+            };
+            if animate || sig != pill.last_sig || !pill.visible {
+                pill.last_sig = sig;
+                let _pf = crate::perf::frame("pill");
+                let mut buf = std::mem::take(&mut pill.buf);
+                render_pill_into(&mut buf, w, h, &frame);
+                present_layered(hwnd, &buf, w as i32, h as i32, x + ox, y + oy);
+                pill.buf = buf;
+                pill.frames_painted += 1;
+            }
             if !pill.visible {
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -1353,36 +1588,73 @@ pub mod win_gui {
             {
                 SetTimer(hwnd, IDT_QF_EXPIRE, (left as u32).max(30) + 20, None);
             }
-            let animate = tweening
-                || (needs_frames(view.kind) && !(reduced && matches!(view.kind, PillKind::Processing | PillKind::Fixing)));
-            // 60 frames a second only while Quick Fix moves; the waveform and the width tween stay at 30.
-            let interval = if qf_moving || view.kind == PillKind::Fixing { 16 } else { 33 };
-            if animate && (!pill.timer_on || pill.timer_ms != interval) {
-                SetTimer(hwnd, IDT_PILL_ANIM, interval, None);
-                pill.timer_on = true;
-                pill.timer_ms = interval;
-            } else if !animate && pill.timer_on {
-                KillTimer(hwnd, IDT_PILL_ANIM);
+            // Decided after drawing, from what this frame drew (see frameclock::stay_subscribed).
+            if crate::frameclock::stay_subscribed(animate) {
+                if !pill.timer_on {
+                    crate::frameclock::subscribe(hwnd);
+                    pill.timer_on = true;
+                }
+            } else if pill.timer_on {
+                crate::frameclock::unsubscribe(hwnd);
                 pill.timer_on = false;
             }
         });
     }
 
+    /// The pill's "pop" as the check lands: an impulse on the accent spring, peaking at 1 about 50 ms in, with a small
+    /// settle below zero before it rests.
+    fn pop_curve(ms: f32) -> f32 {
+        if ms <= 0.0 { 0.0 } else { crate::motion::ACCENT.sample(0.0, 50.9, 0.0, ms / 1000.0).0 }
+    }
+
+    thread_local! {
+        /// The layered window's backing DIB, kept between frames and recreated only when the size changes.
+        static SURFACE: RefCell<Option<(windows_sys::Win32::Graphics::Gdi::HDC, HBITMAP, windows_sys::Win32::Graphics::Gdi::HGDIOBJ, *mut u32, i32, i32)>> = const { RefCell::new(None) };
+    }
+
+    /// Test hook (gallery): the listener's last presented frame, `(w, h, premultiplied BGRA)`.
+    pub fn pill_pixels_for_test() -> Option<(i32, i32, Vec<u32>)> {
+        SURFACE.with(|s| {
+            let (_, _, _, bits, w, h) = *s.borrow().as_ref()?;
+            Some((w, h, unsafe { std::slice::from_raw_parts(bits, (w * h) as usize) }.to_vec()))
+        })
+    }
+
+    /// Puts a premultiplied frame on the layered pill window. The DIB and its DC live between frames (recreated only
+    /// when the size changes), so a frame is one copy and one `UpdateLayeredWindow`.
     unsafe fn present_layered(hwnd: HWND, bgra: &[u32], w: i32, h: i32, x: i32, y: i32) {
-        let hdc_screen = GetDC(std::ptr::null_mut());
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        let mut bmi: BITMAPINFO = std::mem::zeroed();
-        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let hbm: HBITMAP = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
-        if !hbm.is_null() && !bits.is_null() {
-            std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u32, bgra.len().min((w * h) as usize));
-            let old = SelectObject(hdc_mem, hbm as _);
+        SURFACE.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.as_ref().is_none_or(|c| c.4 != w || c.5 != h) {
+                if let Some((dc, bmp, old, _, _, _)) = s.take() {
+                    SelectObject(dc, old);
+                    DeleteObject(bmp as _);
+                    DeleteDC(dc);
+                }
+                let dc = CreateCompatibleDC(std::ptr::null_mut());
+                let mut bmi: BITMAPINFO = std::mem::zeroed();
+                bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                bmi.bmiHeader.biWidth = w;
+                bmi.bmiHeader.biHeight = -h;
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+                let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+                let bmp: HBITMAP = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+                if dc.is_null() || bmp.is_null() || bits.is_null() {
+                    if !bmp.is_null() {
+                        DeleteObject(bmp as _);
+                    }
+                    if !dc.is_null() {
+                        DeleteDC(dc);
+                    }
+                    return;
+                }
+                let old = SelectObject(dc, bmp as _);
+                *s = Some((dc, bmp, old, bits as *mut u32, w, h));
+            }
+            let Some((dc, _, _, bits, _, _)) = *s else { return };
+            std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits, bgra.len().min((w * h) as usize));
             let pt_src = POINT { x: 0, y: 0 };
             let pt_dst = POINT { x, y };
             let sz = SIZE { cx: w, cy: h };
@@ -1392,12 +1664,8 @@ pub mod win_gui {
                 SourceConstantAlpha: 255,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
-            let _ = UpdateLayeredWindow(hwnd, hdc_screen, &pt_dst, &sz, hdc_mem, &pt_src, 0, &blend, ULW_ALPHA);
-            SelectObject(hdc_mem, old);
-            DeleteObject(hbm as _);
-        }
-        DeleteDC(hdc_mem);
-        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            let _ = UpdateLayeredWindow(hwnd, std::ptr::null_mut(), &pt_dst, &sz, dc, &pt_src, 0, &blend, ULW_ALPHA);
+        });
     }
 
     /// Persisted position = top-left of the idle circle (stable across DPI and state changes).
@@ -1473,7 +1741,17 @@ pub mod win_gui {
 
     /// Diagnostics for the UI gallery / performance report.
     pub fn pill_debug_info() -> Option<(i32, i32, f32, bool, u64)> {
-        PILL.with(|p| p.borrow().as_ref().map(|x| (x.cx, x.top, x.cur_w, x.timer_on, x.frames_painted)))
+        PILL.with(|p| p.borrow().as_ref().map(|x| (x.cx, x.top, x.w.target(), x.timer_on, x.frames_painted)))
+    }
+
+    /// Test hook (filmstrips): paint the listener now, at whatever the motion clock says.
+    pub fn refresh_pill_for_test() {
+        if let Some(g) = GUI_GLOBALS.get() {
+            let ph = *g.pill_hwnd.lock() as HWND;
+            if !ph.is_null() {
+                unsafe { pill_refresh(ph, false) };
+            }
+        }
     }
 
     /// Test hook: force the hover-expanded state (the gallery cannot move the user's mouse).
@@ -1547,7 +1825,15 @@ pub mod win_gui {
                     };
                     TrackMouseEvent(&mut tme);
                 }
-                if moved_now {
+                // Chips answer the pointer at once (no hover fade): the one under it brightens.
+                let x = (lparam & 0xFFFF) as u16 as i16 as f32;
+                let chip_changed = PILL.with(|p| {
+                    let Ok(mut b) = p.try_borrow_mut() else { return false };
+                    let Some(pill) = b.as_mut() else { return false };
+                    let over = pill.chips.iter().position(|c| x - pill.cap_x >= c.0 && x - pill.cap_x < c.1);
+                    std::mem::replace(&mut pill.hover_chip, over) != over
+                });
+                if moved_now || chip_changed {
                     pill_refresh(hwnd, false);
                 }
                 0
@@ -1569,6 +1855,7 @@ pub mod win_gui {
                 PILL.with(|p| {
                     if let Some(pill) = p.try_borrow_mut().ok().as_mut().and_then(|b| b.as_mut()) {
                         pill.hover_tracking = false;
+                        pill.hover_chip = None;
                     }
                 });
                 // Small grace period so a pointer brushing the edge does not make it flicker.
@@ -1600,7 +1887,10 @@ pub mod win_gui {
                     let b = p.try_borrow().ok();
                     let pill = b.as_ref().and_then(|b| b.as_ref());
                     (
-                        pill.and_then(|pl| pl.chips.iter().find(|c| click_x >= c.0 && click_x < c.1).map(|c| c.2)),
+                        pill.and_then(|pl| {
+                            let x = click_x - pl.cap_x;
+                            pl.chips.iter().find(|c| x >= c.0 && x < c.1).map(|c| c.2)
+                        }),
                         pill.is_some_and(|pl| pl.last_kind == PillKind::Fixed),
                     )
                 });
@@ -1608,12 +1898,17 @@ pub mod win_gui {
                     snap_to_edges(hwnd);
                     save_pill_anchor(hwnd);
                     pill_refresh(hwnd, false);
-                } else if let Some(deeper) = chip {
-                    send(if deeper { UiAction::QuickFixDeeper } else { UiAction::QuickFixUndo });
+                } else if let Some(action) = chip {
+                    match action {
+                        ChipAction::Settings => crate::settings::open(Some(crate::settings::PAGE_MODELS)),
+                        ChipAction::Deeper => send(UiAction::QuickFixDeeper),
+                        ChipAction::LearningUndo => send(UiAction::LearningUndo),
+                        ChipAction::Undo => send(UiAction::QuickFixUndo),
+                    }
                 } else if on_fixed {
                     // A click beside the chips on a Fixed pill does nothing (it must not start dictation).
                 } else if let Some(g) = GUI_GLOBALS.get() {
-                    let (action, ready, is_error, disabled, idle) = {
+                    let (action, ready, is_error, disabled, idle, fix) = {
                         let m = g.model.lock();
                         (
                             m.config.pill_click_action,
@@ -1621,6 +1916,10 @@ pub mod win_gui {
                             matches!(m.state, EngineState::Error(_)),
                             matches!(m.state, EngineState::Disabled),
                             matches!(m.state, EngineState::Idle | EngineState::ReadyToPaste),
+                            match &m.state {
+                                EngineState::Error(e) => friendly_error(e).fix,
+                                _ => ErrorFix::None,
+                            },
                         )
                     };
                     if action == vi_core::PillClickAction::OpenComposer {
@@ -1629,6 +1928,13 @@ pub mod win_gui {
                             send(UiAction::OpenComposer);
                         }
                     } else if action == vi_core::PillClickAction::Nothing {
+                    } else if fix != ErrorFix::None {
+                        // A microphone error opens the Microphone page (with its privacy shortcut); a missing model, Speech models.
+                        crate::settings::open(Some(if fix == ErrorFix::Microphone {
+                            crate::settings::PAGE_AUDIO
+                        } else {
+                            crate::settings::PAGE_MODELS
+                        }));
                     } else if !ready {
                         // Recovery action: take the user straight to the thing that needs fixing.
                         crate::settings::open(Some(crate::settings::PAGE_MODELS));
@@ -1668,12 +1974,15 @@ pub mod win_gui {
                         });
                         pill_refresh(hwnd, false);
                     }
-                } else if wparam == IDT_PILL_ANIM {
-                    pill_refresh(hwnd, true);
                 } else if wparam == IDT_QF_EXPIRE {
                     KillTimer(hwnd, IDT_QF_EXPIRE);
                     pill_refresh(hwnd, false);
                 }
+                0
+            }
+            crate::frameclock::WM_APP_FRAME => {
+                crate::frameclock::frame_taken(hwnd);
+                pill_refresh(hwnd, true);
                 0
             }
             WM_DPICHANGED => {
@@ -1745,6 +2054,10 @@ pub mod win_gui {
         let idle = matches!(snap.state, EngineState::Idle | EngineState::ReadyToPaste);
         let ready = snap.active_model_ready() && snap.config.app_enabled;
         append(hmenu, MF_STRING | if idle && ready { 0 } else { MF_GRAYED }, IDM_START_DICTATION, "Start dictation");
+        // Only while a session is running: the visible way out of a recording that will not stop.
+        if matches!(snap.state, EngineState::Listening | EngineState::Processing | EngineState::Correcting) {
+            append(hmenu, MF_STRING, IDM_CANCEL_RECORDING, "Cancel recording");
+        }
 
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         append(hmenu, MF_STRING, IDM_OPEN_SETTINGS, "Open KeyReed…");
@@ -1847,6 +2160,7 @@ pub mod win_gui {
                     IDM_OUT_ASK => send(UiAction::SetOutputMode(OutputMode::AskBeforeInserting)),
                     IDM_COPY_LAST => send(UiAction::CopyLastDictation),
                     IDM_START_DICTATION => send(UiAction::StartDictation),
+                    IDM_CANCEL_RECORDING => send(UiAction::CancelRecording),
                     IDM_OPEN_COMPOSER => send(UiAction::OpenComposer),
                     IDM_AUTO_CTX => send(UiAction::ToggleAutoContext),
                     IDM_SHOW_PILL => send(UiAction::ToggleFloatingMicVisible),
@@ -1952,6 +2266,14 @@ pub mod win_gui {
             self.post_sync();
         }
 
+        /// Hands the listener the capture's level handle (f32 bits of the loudest RMS since its last `swap(0)`), or clears
+        /// it when the capture ends. Without one the waveform follows the `rms` passed to `sync`.
+        pub fn set_level_source(&self, src: Option<Arc<AtomicU32>>) {
+            if let Some(g) = GUI_GLOBALS.get() {
+                *g.level_source.lock() = src;
+            }
+        }
+
         pub fn set_mic_test(&self, status: MicTestStatus) {
             self.model.lock().mic_test = status;
             self.post_sync();
@@ -1959,6 +2281,12 @@ pub mod win_gui {
 
         pub fn set_microphones(&self, mics: Vec<String>) {
             self.model.lock().available_microphones = mics;
+            self.post_sync();
+        }
+
+        /// Shows the current style store in Settings (the coordinator owns the file).
+        pub fn set_style(&self, style: vi_core::style::StyleStore) {
+            self.model.lock().style = style;
             self.post_sync();
         }
 
@@ -2037,6 +2365,7 @@ pub mod win_gui {
             hint: None,
             processing_note: None,
             quick_fix: None,
+            style: Default::default(),
         }));
 
         let _ = GUI_GLOBALS.set(WinGuiGlobals {
@@ -2047,6 +2376,7 @@ pub mod win_gui {
             toast_buf: Mutex::new(None),
             review_buf: Mutex::new(None),
             composer_buf: Mutex::new(Vec::new()),
+            level_source: Mutex::new(None),
         });
 
         unsafe {
@@ -2126,6 +2456,7 @@ pub mod win_gui {
                     _ => dpi_scale(pill_hwnd),
                 };
                 let idle_w0 = pill_window_width(scale0, PillKind::Idle, 0, 0, 0) as i32;
+                let idle_h0 = PillMetrics::for_scale(scale0).window_height() as i32;
                 let (cx, top) = match initial_cfg.floating_pill_pos {
                     Some((sx, sy))
                         if !MonitorFromPoint(POINT { x: sx + idle_w0 / 2, y: sy + 4 }, MONITOR_DEFAULTTONULL)
@@ -2135,27 +2466,33 @@ pub mod win_gui {
                     }
                     _ => default_anchor(scale0),
                 };
-                let now = Instant::now();
+                let now = crate::motion::now();
                 PILL.with(|p| {
                     *p.borrow_mut() = Some(Pill {
                         cx,
                         top,
                         last_scale: scale0,
-                        cur_w: idle_w0 as f32,
-                        from_w: idle_w0 as f32,
-                        to_w: idle_w0 as f32,
-                        tween_start: now,
+                        w: Animated::new(idle_w0 as f32, crate::motion::MORPH, 0.25),
+                        h: Animated::new(idle_h0 as f32, crate::motion::MORPH, 0.25),
+                        press: Animated::new(0.0, crate::motion::ACCENT, 0.004),
+                        lift: Animated::new(0.0, crate::motion::SNAPPY, 0.004),
                         content_since: now,
                         state_since: now,
+                        prev_kind: PillKind::Idle,
                         last_kind: PillKind::Idle,
                         last_label: String::new(),
-                        levels: VecDeque::with_capacity(16),
-                        tick: 0,
+                        wave: WaveSim::new(),
+                        wave_at: now,
+                        last_rms: 0.0,
+                        dry_frames: 0,
                         hovered: false,
                         hover_tracking: false,
                         drag: None,
                         timer_on: false,
-                        timer_ms: 33,
+                        buf: Vec::new(),
+                        cap_x: 0.0,
+                        hover_chip: None,
+                        last_sig: 0,
                         chips: Vec::new(),
                         visible: false,
                         frames_painted: 0,

@@ -4,9 +4,14 @@
 //! - Runs on its own high-priority message-pump thread (`THREAD_PRIORITY_ABOVE_NORMAL`) so UI rendering or
 //!   model loading NEVER delays `LowLevelKeyboardProc` past Windows' `LowLevelHooksTimeout` (~300 ms).
 //! - Inspects ONLY modifier VK codes, `VK_ESCAPE`, and the configured shortcut VKs: ZERO keystroke logging or buffering.
+//!   One exception: while a modifier-only dictation chord is held, any key-down is seen once as "another key joined"
+//!   (so Right Ctrl + C cancels the recording). Its identity is never stored or logged.
 //! - Injects unassigned `VK_MENU_MASK` (`0xE8`) when `Win` or `Alt` chord triggers so releasing `Win`/`Alt`
 //!   never pops open the Windows Start Menu or app menu bar!
 //! - Dynamically installs and removes (`UnhookWindowsHookEx`) the hook when Push-to-Talk is independently toggled!
+//! - Runs a second `WH_MOUSE_LL` hook on the same thread for the three bindable buttons (middle, back, forward).
+//!   Moves, the wheel and left/right clicks return before any state is read, so a mouse never fires an action
+//!   it was not bound to.
 
 use crate::security::KEYREED_SYNTHETIC_TAG;
 use crossbeam_channel::Sender;
@@ -23,6 +28,8 @@ pub enum HotkeyEvent {
     CycleMode,
     CorrectSelection,
     OpenComposer,
+    /// A bound mouse button: start or stop dictation, as a click on the floating listener does.
+    ToggleDictation,
     VoiceCommandDown,
     VoiceCommandUp,
     /// A longer chord fired while a modifier-only dictation chord (its prefix) had already
@@ -37,6 +44,16 @@ pub enum ChordAction {
     OpenComposer,
     /// Held like dictation: `VoiceCommandDown` on press, `VoiceCommandUp` on release.
     VoiceCommand,
+    /// Only a mouse binding asks for this: a press toggles dictation.
+    Dictate,
+}
+
+/// The buttons KeyReed can bind. Left and right are never intercepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Middle,
+    Back,
+    Forward,
 }
 
 /// At most this many extra chords (one latch bit each).
@@ -56,6 +73,8 @@ struct HookSharedConfig {
     mode_cycle_spec: HotkeySpec,
     /// Extra chords; only entries with a trigger key (`vk != 0`) are used.
     chords: Vec<(HotkeySpec, ChordAction)>,
+    /// Bound mouse buttons; an unbound button is not in here and is never swallowed.
+    mouse: Vec<(MouseButton, ChordAction)>,
     cancel_vk: u16,
     active_recording_or_busy: Arc<AtomicBool>,
 }
@@ -73,6 +92,11 @@ impl HookSharedConfig {
             || (self.ptt_spec.vk != 0 && vk == self.ptt_spec.vk)
             || (self.mode_cycle_spec.vk != 0 && vk == self.mode_cycle_spec.vk)
             || self.chords.iter().any(|(c, _)| c.vk != 0 && c.vk == vk)
+    }
+
+    /// Dictation is a modifier chord (Right Ctrl, Ctrl+Win): a trigger key joining it means a shortcut for another app.
+    fn ptt_modifier_only(&self) -> bool {
+        self.ptt_spec.vk == 0 || is_modifier_vk(self.ptt_spec.vk)
     }
 }
 
@@ -100,10 +124,21 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         mods.ptt_blocked_by_chord = false;
     }
 
+    // A trigger key swallowed on press: swallow its auto-repeats and its release too, so the app never
+    // sees a lone key-up or repeats. Repeats fire nothing new; the release still runs the logic below.
+    if mods.swallowed.contains(&vk) {
+        d.swallow = true;
+        if is_down {
+            return d;
+        }
+        mods.swallowed.retain(|&k| k != vk);
+    }
+
     // Mode cycle chord
     if is_down && !mods.ptt_combo_latched && mods.matches_spec(&cfg.mode_cycle_spec, vk, true) {
         d.events.push(HotkeyEvent::CycleMode);
         d.swallow = true;
+        mods.latch_swallow(vk);
         return d;
     }
 
@@ -124,9 +159,11 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
                 ChordAction::CorrectSelection => HotkeyEvent::CorrectSelection,
                 ChordAction::OpenComposer => HotkeyEvent::OpenComposer,
                 ChordAction::VoiceCommand => HotkeyEvent::VoiceCommandDown,
+                ChordAction::Dictate => HotkeyEvent::ToggleDictation,
             });
             d.menu_mask = spec.win || spec.alt;
             d.swallow = !is_modifier_vk(spec.vk);
+            mods.latch_swallow(vk);
             return d;
         }
         if mods.chord_latch & bit != 0 && !mods.still_holding_spec(spec) {
@@ -137,6 +174,20 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         }
     }
 
+    // Another key joined a held modifier-only dictation chord (Right Ctrl + C): it is a shortcut for
+    // another app, so drop the recording and let the key through. No restart until all modifiers are up.
+    if is_down
+        && mods.ptt_combo_latched
+        && cfg.ptt_modifier_only()
+        && !is_modifier_vk(vk)
+        && vk != cfg.cancel_vk
+    {
+        mods.ptt_combo_latched = false;
+        mods.ptt_blocked_by_chord = true;
+        d.events.push(HotkeyEvent::PttSuperseded);
+        return d;
+    }
+
     // Push-to-Talk trigger
     if is_down && !mods.ptt_combo_latched && !mods.ptt_blocked_by_chord && mods.matches_spec(&cfg.ptt_spec, vk, true) {
         mods.ptt_combo_latched = true;
@@ -145,11 +196,40 @@ fn decide(cfg: &HookSharedConfig, mods: &mut ModifierState, vk: u16, is_down: bo
         // Suppress non-modifier trigger key so Space/F8 doesn't leak into active document;
         // pass pure modifiers through so standard Ctrl+C / Win+D keep working if pressed differently.
         d.swallow = cfg.ptt_spec.vk != 0 && !matches!(cfg.ptt_spec.vk, 0xA0..=0xA5 | 0x5B | 0x5C);
+        if d.swallow {
+            mods.latch_swallow(vk);
+        }
     } else if mods.ptt_combo_latched && !mods.still_holding_spec(&cfg.ptt_spec) {
         mods.ptt_combo_latched = false;
         d.events.push(HotkeyEvent::PttUp);
     }
     d
+}
+
+/// What the mouse hook does with one press or release of a bindable button.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MouseDecision {
+    events: Vec<HotkeyEvent>,
+    swallow: bool,
+}
+
+/// The mouse matcher (pure so it can be unit-tested): a bound button sends the same events its keyboard chord
+/// would, so the coordinator handles it identically. Only a bound button is swallowed — an unbound one, and
+/// every left/right click, is never seen here.
+fn decide_mouse(cfg: &HookSharedConfig, button: MouseButton, is_down: bool) -> MouseDecision {
+    let Some(action) = cfg.mouse.iter().find(|(b, _)| *b == button).map(|(_, a)| *a) else {
+        return MouseDecision::default();
+    };
+    let event = match (action, is_down) {
+        (ChordAction::VoiceCommand, true) => Some(HotkeyEvent::VoiceCommandDown),
+        (ChordAction::VoiceCommand, false) => Some(HotkeyEvent::VoiceCommandUp),
+        (_, false) => None,
+        (ChordAction::CorrectSelection, true) => Some(HotkeyEvent::CorrectSelection),
+        (ChordAction::OpenComposer, true) => Some(HotkeyEvent::OpenComposer),
+        (ChordAction::Dictate, true) => Some(HotkeyEvent::ToggleDictation),
+    };
+    // The release is swallowed too: the application must never see a lone button-up.
+    MouseDecision { events: event.into_iter().collect(), swallow: true }
 }
 
 /// Pure VK-matching state tracker (unit-testable across platforms).
@@ -170,11 +250,37 @@ pub struct ModifierState {
     /// An extra chord fired: dictation cannot start until every modifier is released, so a held
     /// Ctrl+Win left over from Ctrl+Win+G never starts a recording on key repeat.
     pub ptt_blocked_by_chord: bool,
+    /// Non-modifier trigger keys whose key-down was swallowed and whose release is still pending.
+    pub swallowed: Vec<u16>,
 }
 
 impl ModifierState {
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Re-reads the eight modifier keys (and held trigger keys) from the OS before each event, because the
+    /// hook never sees the release after Win+L, Ctrl+Alt+Del or a UAC prompt. `current_vk` is the key of the
+    /// event about to be applied, whose own state is left to the event.
+    pub fn resync(&mut self, down: impl Fn(u16) -> bool, current_vk: u16) {
+        self.lctrl = down(0xA2);
+        self.rctrl = down(0xA3);
+        self.lalt = down(0xA4);
+        self.ralt = down(0xA5);
+        self.lshift = down(0xA0);
+        self.rshift = down(0xA1);
+        self.lwin = down(0x5B);
+        self.rwin = down(0x5C);
+        if self.main_vk_down != 0 && self.main_vk_down != current_vk && !down(self.main_vk_down) {
+            self.main_vk_down = 0;
+        }
+        self.swallowed.retain(|&k| k == current_vk || down(k));
+    }
+
+    fn latch_swallow(&mut self, vk: u16) {
+        if !is_modifier_vk(vk) && !self.swallowed.contains(&vk) {
+            self.swallowed.push(vk);
+        }
     }
 
     pub fn any_ctrl(&self) -> bool {
@@ -225,7 +331,13 @@ impl ModifierState {
             // Single specific modifier key (e.g. Right Ctrl = 0xA3)
             is_down && current_vk == spec.vk
         } else {
-            is_down && current_vk == spec.vk
+            // Key chord: exact modifiers, so Ctrl+Shift+Win+G does not fire Ctrl+Win+G.
+            is_down
+                && current_vk == spec.vk
+                && (spec.ctrl || !self.any_ctrl())
+                && (spec.alt || !self.any_alt())
+                && (spec.shift || !self.any_shift())
+                && (spec.win || !self.any_win())
         }
     }
 
@@ -277,8 +389,8 @@ mod win_impl {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
         SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-        PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
-        WM_USER,
+        MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN,
+        WM_MBUTTONUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP,
     };
 
     pub const WM_ENABLE_HOOK: u32 = WM_USER + 10;
@@ -293,6 +405,11 @@ mod win_impl {
     }
 
     static HOOK_CTX: OnceCell<GlobalHookCtx> = OnceCell::new();
+
+    fn key_physically_down(vk: u16) -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
+    }
 
     unsafe fn send_menu_mask() {
         let mut inputs = [
@@ -364,9 +481,12 @@ mod win_impl {
                 let vk = kb.vkCode as u16;
 
                 let cfg = ctx.shared.lock();
+                let mut mods = ctx.mods.lock();
 
-                if cfg.is_relevant(vk) && (is_down || is_up) {
-                    let mut mods = ctx.mods.lock();
+                // While a modifier-only dictation chord is held every key is relevant (see header).
+                let relevant = cfg.is_relevant(vk) || (mods.ptt_combo_latched && cfg.ptt_modifier_only());
+                if relevant && (is_down || is_up) {
+                    mods.resync(key_physically_down, vk);
 
                     // Emergency Escape cancel while active — except when KeyReed's own dialog
                     // (e.g. "Ask before inserting") is in front: Escape must reach it as Cancel.
@@ -396,10 +516,48 @@ mod win_impl {
                     }
                     for ev in d.events {
                         match ev {
-                            HotkeyEvent::PttDown => crate::security::timing_mark("hook_ptt_down"),
-                            HotkeyEvent::PttUp => crate::security::timing_mark("hook_ptt_up"),
+                            HotkeyEvent::PttDown => crate::security::timing_mark_async("hook_ptt_down"),
+                            HotkeyEvent::PttUp => crate::security::timing_mark_async("hook_ptt_up"),
                             _ => {}
                         }
+                        let _ = ctx.tx.try_send(ev);
+                    }
+                    if d.swallow {
+                        return 1;
+                    }
+                }
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
+    /// The bindable button of one hook message, and whether it went down. Everything else (moves, the wheel,
+    /// left and right clicks) is not ours.
+    pub(super) fn mouse_button(msg: u32, mouse_data: u32) -> Option<(MouseButton, bool)> {
+        let down = msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
+        match msg {
+            WM_MBUTTONDOWN | WM_MBUTTONUP => Some((MouseButton::Middle, down)),
+            WM_XBUTTONDOWN | WM_XBUTTONUP => match (mouse_data >> 16) as u16 {
+                1 => Some((MouseButton::Back, down)),
+                2 => Some((MouseButton::Forward, down)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    unsafe extern "system" fn ll_mouse_proc(
+        code: i32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // The early test keeps moves and the wheel off every lock and every keystroke path.
+        if code >= 0 && lparam != 0 && matches!(wparam as u32, WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP) {
+            let ms = &*(lparam as *const MSLLHOOKSTRUCT);
+            if let Some((button, is_down)) = mouse_button(wparam as u32, ms.mouseData) {
+                if let Some(ctx) = HOOK_CTX.get().filter(|_| !CAPTURE_ACTIVE.load(Ordering::Relaxed)) {
+                    let d = decide_mouse(&ctx.shared.lock(), button, is_down);
+                    for ev in d.events {
                         let _ = ctx.tx.try_send(ev);
                     }
                     if d.swallow {
@@ -435,10 +593,15 @@ mod win_impl {
 
                 let mut hhook: HHOOK = if initially_enabled {
                     let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(ll_keyboard_proc), std::ptr::null_mut(), 0);
-                    crate::security::timing_mark(if h.is_null() { "hook_install_failed" } else { "hook_installed" });
+                    crate::security::timing_mark_async(if h.is_null() { "hook_install_failed" } else { "hook_installed" });
                     h
                 } else {
-                    crate::security::timing_mark("hook_initially_disabled");
+                    crate::security::timing_mark_async("hook_initially_disabled");
+                    std::ptr::null_mut()
+                };
+                let mut hmouse: HHOOK = if initially_enabled {
+                    SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), std::ptr::null_mut(), 0)
+                } else {
                     std::ptr::null_mut()
                 };
 
@@ -454,11 +617,18 @@ mod win_impl {
                                     0,
                                 );
                             }
+                            if hmouse.is_null() {
+                                hmouse = SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), std::ptr::null_mut(), 0);
+                            }
                         }
                         WM_DISABLE_HOOK => {
                             if !hhook.is_null() {
                                 let _ = UnhookWindowsHookEx(hhook);
                                 hhook = std::ptr::null_mut();
+                            }
+                            if !hmouse.is_null() {
+                                let _ = UnhookWindowsHookEx(hmouse);
+                                hmouse = std::ptr::null_mut();
                             }
                             if let Some(ctx) = HOOK_CTX.get() {
                                 ctx.mods.lock().reset();
@@ -478,6 +648,9 @@ mod win_impl {
                 }
                 if !hhook.is_null() {
                     let _ = UnhookWindowsHookEx(hhook);
+                }
+                if !hmouse.is_null() {
+                    let _ = UnhookWindowsHookEx(hmouse);
                 }
             })?;
 
@@ -504,6 +677,7 @@ impl GlobalHotkeyEngine {
             ptt_spec,
             mode_cycle_spec,
             chords: Vec::new(),
+            mouse: Vec::new(),
             cancel_vk: 0x1B, // VK_ESCAPE
             active_recording_or_busy,
         }));
@@ -533,6 +707,11 @@ impl GlobalHotkeyEngine {
     pub fn set_extra_chords(&self, mut chords: Vec<(HotkeySpec, ChordAction)>) {
         chords.truncate(MAX_EXTRA_CHORDS);
         self.shared.lock().chords = chords;
+    }
+
+    /// Replaces the mouse bindings: only bound buttons are matched, everything else is left alone.
+    pub fn set_mouse_bindings(&self, bindings: Vec<(MouseButton, ChordAction)>) {
+        self.shared.lock().mouse = bindings;
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -635,6 +814,7 @@ mod tests {
                 (chord(K), ChordAction::OpenComposer),
                 (chord(V), ChordAction::VoiceCommand),
             ],
+            mouse: Vec::new(),
             cancel_vk: 0x1B,
             active_recording_or_busy: Arc::new(AtomicBool::new(false)),
         }
@@ -696,5 +876,174 @@ mod tests {
         let mut m = ModifierState::default();
         assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]), [HotkeyEvent::PttDown]);
         assert_eq!(press(&cfg, &mut m, &[(0x5B, false)]), [HotkeyEvent::PttUp]);
+    }
+
+    fn key_cfg(ptt: HotkeySpec) -> HookSharedConfig {
+        let mut cfg = cfg_with_chords();
+        cfg.chords.clear();
+        cfg.ptt_spec = ptt;
+        cfg
+    }
+
+    const F8: u16 = 0x77;
+
+    #[test]
+    fn key_based_trigger_swallows_repeats_and_release() {
+        let f8 = HotkeySpec { ctrl: false, alt: false, shift: false, win: false, vk: F8, display_name: String::new() };
+        let cfg = key_cfg(f8);
+        let mut m = ModifierState::default();
+        let d = decide(&cfg, &mut m, F8, true);
+        assert_eq!(d.events, [HotkeyEvent::PttDown]);
+        assert!(d.swallow);
+        let rep = decide(&cfg, &mut m, F8, true);
+        assert!(rep.swallow && rep.events.is_empty());
+        let up = decide(&cfg, &mut m, F8, false);
+        assert!(up.swallow);
+        assert_eq!(up.events, [HotkeyEvent::PttUp]);
+        // Latch is gone: an unrelated later release of F8 is not swallowed.
+        assert!(!decide(&cfg, &mut m, F8, false).swallow);
+    }
+
+    #[test]
+    fn chord_key_up_and_repeats_are_swallowed_but_modifiers_are_not() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        press(&cfg, &mut m, &[(0xA2, true), (0x5B, true)]);
+        assert!(decide(&cfg, &mut m, K, true).swallow);
+        assert!(decide(&cfg, &mut m, K, true).swallow);
+        assert!(decide(&cfg, &mut m, K, false).swallow);
+        assert!(!decide(&cfg, &mut m, 0xA2, false).swallow);
+    }
+
+    #[test]
+    fn key_chords_need_exactly_their_modifiers() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        // Ctrl+Shift+Win+G must not fire Ctrl+Win+G.
+        let ev = press(&cfg, &mut m, &[(0xA2, true), (0xA0, true), (0x5B, true), (G, true)]);
+        assert!(!ev.contains(&HotkeyEvent::CorrectSelection));
+        m.reset();
+        // Ctrl+Alt+M (mode cycle) is exact too: with Shift added it does nothing.
+        assert!(press(&cfg, &mut m, &[(0xA2, true), (0xA4, true), (0xA0, true), (0x4D, true)]).is_empty());
+    }
+
+    #[test]
+    fn mode_cycle_does_not_repeat_while_held() {
+        let cfg = cfg_with_chords();
+        let mut m = ModifierState::default();
+        assert_eq!(press(&cfg, &mut m, &[(0xA2, true), (0xA4, true), (0x4D, true)]), [HotkeyEvent::CycleMode]);
+        assert!(press(&cfg, &mut m, &[(0x4D, true), (0x4D, true)]).is_empty());
+    }
+
+    #[test]
+    fn another_key_with_modifier_only_dictation_drops_the_recording() {
+        let mut cfg = key_cfg(HotkeySpec::right_ctrl());
+        assert!(cfg.ptt_modifier_only());
+        let mut m = ModifierState::default();
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        // Right Ctrl + C: dictation is dropped and C is not swallowed.
+        let d = decide(&cfg, &mut m, 0x43, true);
+        assert_eq!(d.events, [HotkeyEvent::PttSuperseded]);
+        assert!(!d.swallow);
+        // Right Ctrl auto-repeat must not restart it until everything is released.
+        assert!(press(&cfg, &mut m, &[(0x43, false), (0xA3, true)]).is_empty());
+        assert!(press(&cfg, &mut m, &[(0xA3, false)]).is_empty());
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        // Escape is the cancel key, not a chord partner.
+        assert!(decide(&cfg, &mut m, 0x1B, true).events.is_empty());
+        // A key-based dictation shortcut has no such interrupt.
+        cfg.ptt_spec = HotkeySpec { ctrl: false, alt: false, shift: false, win: false, vk: F8, display_name: String::new() };
+        assert!(!cfg.ptt_modifier_only());
+    }
+
+    /// The owner's setup end to end, matcher and controller: hold Right Ctrl, speak, let go.
+    /// A recording the pill started must also end on that release instead of recording until the cap.
+    #[test]
+    fn right_ctrl_drives_the_controller_and_ends_a_pill_session() {
+        use vi_core::ptt::{PttAction, PttController};
+        use vi_core::types::ActivationMode;
+        let cfg = key_cfg(HotkeySpec::right_ctrl());
+        let mut m = ModifierState::default();
+        let mut ptt = PttController::new(ActivationMode::HoldToTalk, 110, 1_800_000);
+
+        // A pill click starts the session; the dictation key then has to end it.
+        assert_eq!(ptt.on_floating_mic_click(0), PttAction::StartRecording);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        assert_eq!(ptt.on_shortcut_down(1_000), PttAction::None);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, false)]), [HotkeyEvent::PttUp]);
+        assert_eq!(ptt.on_shortcut_up(1_500), PttAction::StopAndProcess);
+        ptt.transition_to_idle();
+
+        // And the plain hold still starts and stops one recording.
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, true)]), [HotkeyEvent::PttDown]);
+        assert_eq!(ptt.on_shortcut_down(2_000), PttAction::StartRecording);
+        assert_eq!(press(&cfg, &mut m, &[(0xA3, false)]), [HotkeyEvent::PttUp]);
+        assert_eq!(ptt.on_shortcut_up(2_500), PttAction::StopAndProcess);
+    }
+
+    #[test]
+    fn resync_clears_stale_modifiers_and_trigger_latches() {
+        let mut m = ModifierState::default();
+        m.update_modifier(0x5B, true);
+        m.update_modifier(0xA2, true);
+        m.main_vk_down = F8;
+        m.swallowed = vec![F8, G];
+        // Win+L swallowed the releases: only Ctrl is physically down now.
+        m.resync(|vk| vk == 0xA2, 0x41);
+        assert!(m.lctrl && !m.lwin && !m.any_win());
+        assert_eq!(m.main_vk_down, 0);
+        assert!(m.swallowed.is_empty());
+        // The current event's own key is left to the event.
+        m.swallowed = vec![G];
+        m.resync(|_| false, G);
+        assert_eq!(m.swallowed, [G]);
+    }
+
+    fn cfg_with_mouse(bindings: &[(MouseButton, ChordAction)]) -> HookSharedConfig {
+        let mut cfg = cfg_with_chords();
+        cfg.mouse = bindings.to_vec();
+        cfg
+    }
+
+    #[test]
+    fn a_bound_mouse_button_fires_what_its_chord_would() {
+        let cfg = cfg_with_mouse(&[
+            (MouseButton::Middle, ChordAction::Dictate),
+            (MouseButton::Back, ChordAction::CorrectSelection),
+            (MouseButton::Forward, ChordAction::VoiceCommand),
+        ]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Middle, true).events, [HotkeyEvent::ToggleDictation]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Back, true).events, [HotkeyEvent::CorrectSelection]);
+        // A voice command is held like its chord: the release ends it.
+        assert_eq!(decide_mouse(&cfg, MouseButton::Forward, true).events, [HotkeyEvent::VoiceCommandDown]);
+        assert_eq!(decide_mouse(&cfg, MouseButton::Forward, false).events, [HotkeyEvent::VoiceCommandUp]);
+        // The press-and-release actions fire once, on the press.
+        assert!(decide_mouse(&cfg, MouseButton::Middle, false).events.is_empty());
+        assert!(decide_mouse(&cfg, MouseButton::Back, false).events.is_empty());
+    }
+
+    #[test]
+    fn only_a_bound_button_is_swallowed() {
+        let cfg = cfg_with_mouse(&[(MouseButton::Back, ChordAction::CorrectSelection)]);
+        assert!(decide_mouse(&cfg, MouseButton::Back, true).swallow, "it fires, so the app must not get the click");
+        assert!(decide_mouse(&cfg, MouseButton::Back, false).swallow, "nor a lone release");
+        assert!(!decide_mouse(&cfg, MouseButton::Middle, true).swallow, "unbound");
+        assert!(!decide_mouse(&cfg, MouseButton::Forward, false).swallow);
+        // Nothing bound at all: an old config with no mouse keys leaves every button alone.
+        assert!(!decide_mouse(&cfg_with_mouse(&[]), MouseButton::Middle, true).swallow);
+    }
+
+    /// Left and right clicks, moves and the wheel never reach the matcher.
+    #[test]
+    #[cfg(windows)]
+    fn other_mouse_events_are_not_ours() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        for msg in [WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MOUSEWHEEL, WM_MOUSEHWHEEL] {
+            assert!(super::win_impl::mouse_button(msg, 0).is_none(), "{msg:#x}");
+        }
+        assert_eq!(super::win_impl::mouse_button(WM_MBUTTONDOWN, 0), Some((MouseButton::Middle, true)));
+        assert_eq!(super::win_impl::mouse_button(WM_XBUTTONDOWN, 1 << 16), Some((MouseButton::Back, true)));
+        assert_eq!(super::win_impl::mouse_button(WM_XBUTTONUP, 2 << 16), Some((MouseButton::Forward, false)));
+        assert!(super::win_impl::mouse_button(WM_XBUTTONDOWN, 3 << 16).is_none(), "XBUTTON3 is not ours");
     }
 }

@@ -14,9 +14,8 @@ Both files are on the [latest release](https://github.com/Shanmukh-l33t/keyreed/
 
 | File | Use it when | Notes |
 | --- | --- | --- |
-| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `24.2 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
-| `keyreed-2.0.0-beta.1-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `47.0 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
-| `keyreed-2.0.0-beta.1-windows-x64-full-offline.zip` | You want everything offline in one download. | `1.10 GB` archive containing `keyreed.exe`, runtimes, `Parakeet TDT 0.6B v2`, `Moonshine Base`, `Moonshine Tiny`, and `Qwen3.5-0.8B-Q4_K_M`. Extract and run `keyreed.exe`. |
+| `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `24.4 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
+| `keyreed-2.1.0-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `47.3 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
 | `gector-bert-en-int8.tar.bz2` | Settings downloads it for you (Quick Fix grammar model). | `73.1 MB` archive of the Apache-2.0 `gector-bert-en` model (int8) with its LICENSE and NOTICE, pinned by SHA-256 in the app. |
 | `SHA256SUMS.txt` | You want to verify a download. | Checksums for the files above. |
 
@@ -43,12 +42,11 @@ The Windows files are not code-signed, so check the hash against the one publish
 Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256
 ```
 
-For release 2.0.0-beta.1:
+For release 2.1.0:
 
 ```text
-2c11bde55ee52bf91d2c762f10709825dd2af553212f51f726acd7d3f0021631  KeyReed-Setup-x64.exe
-4936c20ed3286bb6309e1a47caaad6ba2df6def7e6cd3c3f68c9edec3279c732  keyreed-2.0.0-beta.1-windows-x86_64-portable.zip
-b87365519ba2662d11debbeb263d01ad5f8ef9717b2e6d77ad5e77473d3f5c5f  keyreed-2.0.0-beta.1-windows-x64-full-offline.zip
+7ad5fdbbbe0d97b93eb09c7bb562346aef6844ec5cb5fea2bc427e382c52bcd1  KeyReed-Setup-x64.exe
+ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c  keyreed-2.1.0-windows-x86_64-portable.zip
 5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0  gector-bert-en-int8.tar.bz2
 ```
 
@@ -63,7 +61,7 @@ keyreed.exe --list-models
 keyreed.exe --download-model parakeet-tdt-0.6b-v3-int8
 ```
 
-Available ids: `parakeet-tdt-0.6b-v2-int8` (default), `parakeet-tdt-0.6b-v3-int8`, `moonshine-base-en-int8`, `moonshine-tiny-en-int8`, `sense-voice-small-int8`, `whisper-small.en-int8`.
+Available ids: `parakeet-tdt-0.6b-v2-int8` (default), `parakeet-tdt-0.6b-v3-int8`, `parakeet-tdt-0.6b-ultra-int8`, `parakeet-tdt-110m-en-int8`, `moonshine-base-en-int8`, `moonshine-tiny-en-int8`, `sense-voice-small-int8`, `whisper-small.en-int8`.
 
 ## Uninstall
 

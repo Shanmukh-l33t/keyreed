@@ -25,25 +25,29 @@
 
 # KeyReed
 
-**KeyReed is an open-source, local-first voice dictation app for Windows.** Hold a shortcut, speak, release. KeyReed transcribes on your own PC, cleans the text up, and types it into whatever application you were using.
+**KeyReed is an open-source, local-first voice dictation and writing app for Windows.** Hold a shortcut, speak, release. KeyReed transcribes on your own PC, cleans the text up, and types it into whatever application you were using. Ctrl+Win+G fixes the text you selected; Ctrl+Win+K opens a small window that rewrites or shortens it.
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** release **2.0.0-beta.1** (built and tested on Windows 11 x64). The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** **2.1.0**, released 18 November 2026. Its interface was checked with automated tests and screenshots; dictation was not re-run by hand for this release, so review your first dictations. The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
-## Quick Fix (2.0 beta)
+## What is new in 2.1
 
-Select text in any application and press **Ctrl + Win + G**. KeyReed proposes spelling and grammar corrections in a Review panel and replaces nothing until you confirm. Everything runs on your PC. The grammar model downloads once from Settings (or comes with the full offline archive). Change the shortcut, or turn on silent replace, in Settings.
+- **A new interface.** Light by default with a Dark mode switch in General, a raised Settings panel with a sliding selection and pages that rise in, and spring motion on a 60 Hz frame clock throughout. The listener shows lines of text while it works, and an idle window paints nothing.
+- **Your vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords when your dictionary has terms; before, they were passed to a greedy decoder that ignored them. Audio in is cleaner too: a polyphase windowed-sinc resampler, a 20 Hz DC blocker, a 30 ms windowed level gate that keeps quiet speech, and 200 ms of audio kept after key-up so the last word is not clipped.
+- **Quick Fix.** Select text in any application and press **Ctrl + Win + G**. KeyReed proposes spelling and grammar corrections in a Review panel and replaces nothing until you confirm. Undo is on the pill. Everything runs on your PC.
+- **The Composer.** **Ctrl + Win + K** (or Open the Composer in the tray menu) opens a small window with Fix, Improve, Shorter, Change tone, Summarise and your own instruction. It answers from the local writing model and starts no network call.
+- **Eight speech models**, including two new ones: Parakeet 110M (light English) and Parakeet Ultra (25 languages). The default is still Parakeet TDT 0.6B v2.
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`24.2 MB`) from the [2.0.0-beta.1 pre-release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.0.0-beta.1). The newest stable release is [0.5.1](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v0.5.1).
+1. Download **`KeyReed-Setup-x64.exe`** (`24.4 MB`) from the [2.1.0 release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0).
 2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
 5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. Prefer one offline download? Use `keyreed-2.0.0-beta.1-windows-x64-full-offline.zip` (1.10 GB), which already contains the speech and grammar models.
+No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.1.0-windows-x86_64-portable.zip` (`47.3 MB`), which holds the exe and its runtime DLLs but no models, so it cannot dictate until it downloads one. No full offline archive is built for this release.
 
 ## Why KeyReed
 
@@ -53,6 +57,7 @@ No Rust, Python, Visual Studio or command line needed. Prefer one offline downlo
 | **Local by default** | The default profile, Maximum Privacy (100% Offline), makes no network call for audio or text. |
 | **System-wide** | A global shortcut that works in any application, not a plugin for one editor. |
 | **Six writing modes** | Smart, Exact, Professional, Casual, Technical and Terminal / Code. |
+| **Speak it, fix it, write it** | Dictation, a selection fixer with a review panel, and a small writing window, all on your PC. |
 | **No GPU needed** | Speech recognition runs on the CPU. The optional grammar model uses a Vulkan GPU when present and falls back to the CPU. |
 | **Streams while you talk** | Speech is decoded during the recording, so a 47 s dictation was ready 0.5-0.7 s after release on a 2018 laptop CPU (synthetic test audio, [method](docs/research/08-e2e-speed-accuracy-worklog.md)). |
 | **Checked models** | Every model file is verified against a compile-time size and SHA-256 before it loads. |
@@ -77,11 +82,13 @@ The [website](https://keyreed-website.vercel.app) has an animated walkthrough of
 - **10-page instant-apply Settings & 4-step guided onboarding.** Organised sidebar navigation (`Get started`, `General`, `Dictation`, `Writing`, `Output`, `Microphone`, `Speech models`, `Processing`, `Privacy`, `About`) where every toggle, choice card, dropdown, and personal dictionary entry saves immediately.
 - **Writing modes.** See [below](#writing-modes). Cycle them with Ctrl+Shift+Space, or let automatic app-context adaptation choose.
 - **Grammar correction.** Deterministic Tier 0 rules first (fillers, stutters, spoken self-corrections, casing, your vocabulary), then an optional local grammar model (skipped when the sentence is already clean), then guards that fall back to Tier 0 if the model output drifts.
-- **Long dictation.** Up to 30 minutes per recording, decoded while you talk and split into paragraphs from your pauses.
-- **Personal vocabulary.** Teach it names and jargon in Settings (used both for Sherpa transducer hotword biasing and Tier 0 casing).
+- **Long dictation.** Up to 30 minutes per recording, decoded while you talk and split into paragraphs from your pauses. At the cap the recording is processed, not thrown away.
+- **Personal vocabulary.** Teach it names and jargon in Settings (a Term and a Sounds like row per entry). Those terms now bias the Parakeet decoder through `modified_beam_search`, not only the casing pass.
+- **Quick Fix.** Select text in another application and press **Ctrl + Win + G**. Spelling (the Windows spell checker) and grammar (the local `gector-bert-en` tagger) are proposed in a Review panel; Enter replaces, Esc dismisses, and Undo is on the pill for a few seconds. Review is the default; silent replace is a Settings switch.
+- **The Composer.** **Ctrl + Win + K**, or Open the Composer in the tray menu, gives you Fix, Improve, Shorter, Change tone, Summarise and your own instruction. The answer streams, Esc cancels, and you can replace the selection, insert, copy or regenerate. It runs on the local writing model.
 - **Output choice.** Auto Insert (default: types into the focused field, falls back to the clipboard for password fields or elevated windows), Clipboard Only, or Ask Before Inserting (3-option `Yes` / `No` / `Cancel` dialog).
-- **Microphone selection & diagnostics**, live level meter and plain-language health verdicts (`Sounds good`, `Quiet`, `No sound`, `Too loud`), automatic fallback to the default microphone when a device is unplugged, audio cues, **Reset to defaults**, and optional startup with Windows (off by default).
-- **Six speech models**, all verified against compile-time SHA-256 pins with measured CPU speeds, live MB/% download progress, cancellation, and one-click model switching. See [docs/architecture.md](docs/architecture.md#speech-models).
+- **Microphone selection & diagnostics**, live level meter and plain-language health verdicts (`Sounds good`, `Quiet`, `No sound`, `Too loud`), a button that opens Windows microphone privacy settings when capture fails, automatic fallback to the default microphone when a device is unplugged, audio cues, **Reset to defaults**, and optional startup with Windows (off by default).
+- **Eight speech models**, all verified against compile-time SHA-256 pins with measured CPU speeds, live MB/% download progress, cancellation, and one-click model switching. Parakeet TDT 0.6B v2 (default), v3 and Ultra cover English and 25 European languages; Parakeet 110M is the light English option. See [docs/architecture.md](docs/architecture.md#speech-models).
 - **Optional cloud profiles** (Balanced, Maximum Accuracy) for people who bring their own API key.
 
 ## Writing modes
@@ -102,11 +109,13 @@ Spoken symbols such as "forward slash" apply only in Terminal / Code. Without th
 | Action | Default |
 | --- | --- |
 | Record | Hold **Right Ctrl**, release to finish |
+| Fix the selected text | **Ctrl+Win+G** |
+| Open the Composer | **Ctrl+Win+K**, or Open the Composer in the tray menu |
 | Cancel a recording | **Esc** |
 | Cycle writing mode | **Ctrl+Shift+Space** |
 | Paste again (or in Clipboard Only mode) | **Ctrl+V** |
 
-Recordings are capped at 30 minutes. A lost key release or the cap discards the audio instead of typing something partial.
+Recordings are capped at 30 minutes; at the cap the recording is processed rather than discarded. Escape, a lost key release or a session lock cancels instead of typing something partial. Clicking the floating listener starts dictation by default.
 
 Useful command-line flags for `keyreed.exe`: `--help`, `--version`, `--settings`, `--list-models`, `--download-model <id>`, `--print-foreground`.
 
@@ -126,7 +135,9 @@ flowchart LR
 - The network is used to download a speech model, and by the cloud profiles if you turn them on.
 - Audio is kept in memory, is not written to a file on the normal path, and is wiped after decoding.
 - Cloud API keys are stored DPAPI-encrypted. KeyReed ships no key.
-- When KeyReed falls back to the clipboard, the text stays there until you replace it. You can exclude it from Windows Clipboard History in Settings (off by default).
+- When KeyReed falls back to the clipboard, the text stays there until you replace it. You can exclude it from Windows Clipboard History in Settings (on by default for new settings).
+- Quick Fix and the Composer run on this PC: spelling through the Windows spell checker, grammar and rewriting through the local models. They start no network call.
+- The style store and the edit watcher from the 2.0 plan are in the source with their tests, but nothing calls them yet, so no text of yours is read back or learned from in this build.
 - No independent network capture of the offline profile has been published yet.
 
 Details: [docs/architecture.md](docs/architecture.md).
@@ -135,9 +146,9 @@ Details: [docs/architecture.md](docs/architecture.md).
 
 | | |
 | --- | --- |
-| OS | 64-bit Windows 11 (built and tested). Windows 10 64-bit is supported by the code but was not re-tested for 0.5.0. |
+| OS | 64-bit Windows 11 (the interface was run and captured on it). Windows 10 64-bit is supported by the code but was not re-tested. |
 | CPU / GPU | x64, no GPU required. The optional grammar model uses a Vulkan GPU if present (`KEYREED_SLM_DEVICE=cpu` turns that off). |
-| Disk | A 23 MB installer plus about 460 MB for the default speech model. The full offline archive is 1.38 GB. |
+| Disk | A 24.4 MB installer plus about 460 MB for the default speech model, and 73 MB for Quick Fix's grammar model if you turn it on. |
 | RAM | On a 3-core, 4 GB test VM the app and local grammar runtime used roughly 1.6 GB together. More free memory is safer. An 8 GB PC has not been benchmarked. |
 | Other | A microphone that desktop apps may use. |
 
@@ -154,8 +165,12 @@ Rust 1.80 or newer. Release builds: `scripts/build-release.sh`; installer: `scri
 
 ## Known limits
 
+- Dictation was **not re-run by hand for 2.1.0**. Beam search with hotwords, the new resampler and the post-release tail have not been benchmarked on a real microphone. The interface was run on Windows 11 by the automated gallery (every page, state and animation, light and dark).
 - The Windows executable, bundled runtimes and installer are **unsigned**. SmartScreen behaviour has not been observed for this download.
-- Speed and accuracy figures come from one laptop (i7-8850H, Quadro P2000), mostly with synthetic speech. Live microphone dictation with real voices in noisy rooms has not been benchmarked.
+- Quick Fix has not been checked by hand in Chromium-based apps, Outlook or Word; the automated check ran in a plain Windows edit control. English only.
+- The Composer needs the local writing model (Qwen3.5 0.8B) installed; without it, a request stops with a message instead of sending anything. There is no Settings picker for it yet.
+- Voice commands, a "My style" Settings page, and learning from your edits are not wired up in this build, even though the style store and edit watcher exist in the source.
+- Speed and accuracy figures come from one laptop (i7-8850H, Quadro P2000) and an older build, mostly with synthetic speech. Live microphone dictation with real voices in noisy rooms has not been benchmarked.
 - Auto Insert types at about 600 characters per second into a plain text box, so very long dictations take a few seconds to appear.
 - The GPU grammar path was tested on one NVIDIA card only, and not on a machine without a Vulkan driver.
 - Hindi transcription accuracy is unscored. Do not treat one clip, or a text-only rewrite check, as a word error rate.
@@ -171,6 +186,8 @@ This is a list of open items taken from the release audits, not a promise of dat
 | --- | --- |
 | Done | Installer without bundled models, checked model downloads, tray GUI build (0.1.1) |
 | Done | Hold and toggle activation, six writing modes, Tier 0 rules, local grammar model, guards |
+| Done | Quick Fix with the Review panel and Undo, the Composer, vocabulary that reaches the decoder, eight speech models (2.1) |
+| Open | Voice commands, a "My style" page, and learning from your edits |
 | Open | Code signing and SmartScreen reputation |
 | Open | Physical-desktop validation: microphone loop, paste read-back, app-context rows |
 | Open | Windows 10 test pass and an 8 GB hardware benchmark |

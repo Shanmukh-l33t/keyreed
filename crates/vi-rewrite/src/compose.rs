@@ -38,11 +38,13 @@ pub struct ComposeJob {
     /// The selection, or the latest result for a follow-up. May be empty for Custom.
     pub source: String,
     pub style_block: Option<String>,
+    /// Sampling temperature: the presets explore a little, a fix-only pass (Quick Fix's fallback) does not.
+    pub temperature: f32,
 }
 
 impl ComposeJob {
     pub fn new(instruction: Instruction, source: &str) -> Self {
-        Self { deeper: false, instruction, tone: None, source: source.to_string(), style_block: None }
+        Self { deeper: false, instruction, tone: None, source: source.to_string(), style_block: None, temperature: 0.2 }
     }
 
     pub fn deeper(source: &str) -> Self {
@@ -194,7 +196,7 @@ pub fn request_body(job: &ComposeJob, ctx_tokens: u32) -> Result<(serde_json::Va
     }
     let body = serde_json::json!({
         "messages": msgs,
-        "temperature": 0.2,
+        "temperature": job.temperature,
         "max_tokens": limit,
         "cache_prompt": true,
         "chat_template_kwargs": { "enable_thinking": false }
@@ -507,6 +509,96 @@ pub fn diff_words(source: &str, result: &str) -> Vec<DiffSpan> {
     spans
 }
 
+/// Words of `s` with their byte range, in order. Whitespace is not a word.
+fn words_at(s: &str) -> Vec<(usize, usize, &str)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for t in tokens(s) {
+        let (start, end) = (at, at + t.len());
+        at = end;
+        if !t.starts_with(char::is_whitespace) {
+            out.push((start, end, t));
+        }
+    }
+    out
+}
+
+/// Word-level changes of `result` against `source`, as `(start, end, replacement)` byte ranges in
+/// `source`: one entry per changed run, so a fix-only answer arrives as word edits rather than a block.
+/// Whitespace-only differences are not edits. The runs are in source order and do not overlap.
+pub fn word_edits(source: &str, result: &str) -> Vec<(usize, usize, String)> {
+    let a = words_at(source);
+    let b = words_at(result);
+    let (n, m) = (a.len(), b.len());
+    if n.saturating_mul(m) > DIFF_CELL_LIMIT {
+        return match (a.first(), a.last()) {
+            (Some(first), Some(last)) => vec![(first.0, last.1, result.trim().to_string())],
+            _ => Vec::new(),
+        };
+    }
+    // The same longest common subsequence as `diff_words`, kept as matched index pairs.
+    let mut t = vec![0u32; (n + 1) * (m + 1)];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            t[i * (m + 1) + j] =
+                if a[i].2 == b[j].2 { t[(i + 1) * (m + 1) + j + 1] + 1 } else { t[(i + 1) * (m + 1) + j].max(t[i * (m + 1) + j + 1]) };
+        }
+    }
+    let mut pairs = Vec::with_capacity(n.min(m) + 1);
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if a[i].2 == b[j].2 {
+            pairs.push((i, j));
+            i += 1;
+            j += 1;
+        } else if t[(i + 1) * (m + 1) + j] >= t[i * (m + 1) + j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    pairs.push((n, m)); // sentinel: closes the last run
+
+    let mut out = Vec::new();
+    let (mut ai, mut bj) = (0, 0);
+    for (mi, mj) in pairs {
+        if mi > ai || mj > bj {
+            out.push(run_edits(source, &a, &b, (ai, mi), (bj, mj), result));
+        }
+        ai = mi + 1;
+        bj = mj + 1;
+    }
+    out
+}
+
+/// One changed run: the source words `a[i0..i1]` become the result words `b[j0..j1]`.
+fn run_edits(
+    source: &str,
+    a: &[(usize, usize, &str)],
+    b: &[(usize, usize, &str)],
+    (i0, i1): (usize, usize),
+    (j0, j1): (usize, usize),
+    result: &str,
+) -> (usize, usize, String) {
+    let rep = if j1 > j0 { result[b[j0].0..b[j1 - 1].1].to_string() } else { String::new() };
+    if i1 > i0 {
+        // Replaced or deleted words keep the surrounding spacing: a deletion takes the space after it,
+        // or, at the very end, the space before it.
+        let (start, end) = if j1 > j0 {
+            (a[i0].0, a[i1 - 1].1)
+        } else if i1 < a.len() {
+            (a[i0].0, a[i1].0)
+        } else {
+            (if i0 > 0 { a[i0 - 1].1 } else { a[i0].0 }, source.trim_end().len())
+        };
+        return (start, end, rep);
+    }
+    // Inserted words go after the previous word, with a space unless they are punctuation.
+    let at = if i0 > 0 { a[i0 - 1].1 } else { 0 };
+    let spaced = at > 0 && rep.chars().next().is_some_and(char::is_alphanumeric);
+    (at, at, if spaced { format!(" {rep}") } else { rep })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +752,73 @@ mod tests {
         // Moved words show as one removal and one addition, never a lost word.
         let d = diff_words("alpha beta gamma", "gamma alpha beta");
         assert_eq!(text_of(&d), "gamma alpha beta");
+    }
+
+    /// `source` with the edits applied, the way Quick Fix's review does it.
+    fn with_edits(source: &str, edits: &[(usize, usize, String)]) -> String {
+        let mut out = String::new();
+        let mut at = 0;
+        for (a, b, rep) in edits {
+            out.push_str(&source[at..*a]);
+            out.push_str(rep);
+            at = *b;
+        }
+        out.push_str(&source[at..]);
+        out
+    }
+
+    #[test]
+    fn word_edits_map_a_corrected_answer_back_onto_the_source() {
+        let src = "This are a test of the grammer checker.";
+        let res = "This is a test of the grammar checker.";
+        let e = word_edits(src, res);
+        assert_eq!(e, vec![(5, 8, "is".to_string()), (23, 30, "grammar".to_string())]);
+        assert_eq!(with_edits(src, &e), res);
+        // Nothing changed: no edits, and a whitespace-only difference is not an edit either.
+        assert!(word_edits(src, src).is_empty());
+        assert!(word_edits("a  b\n c", "a b c").is_empty());
+        assert_eq!(word_edits("", ""), Vec::new());
+    }
+
+    #[test]
+    fn word_edits_carry_offsets_into_multibyte_text() {
+        // "café" is five bytes, so every offset after it is shifted.
+        let src = "The café recieve it.";
+        let res = "The café receives it.";
+        let e = word_edits(src, res);
+        assert_eq!(e, vec![(10, 17, "receives".to_string())]);
+        assert_eq!(&src[e[0].0..e[0].1], "recieve");
+        assert_eq!(with_edits(src, &e), res);
+        let e = word_edits("Über 你好 wrld", "Über 你好 world");
+        assert_eq!(e, vec![(13, 17, "world".to_string())]);
+    }
+
+    #[test]
+    fn word_edits_handle_adjacent_insertions_and_deletions() {
+        // Neighbouring changes become one edit; the text either side is untouched.
+        let src = "I has recieve teh mail.";
+        let res = "I have received the mail.";
+        let e = word_edits(src, res);
+        assert_eq!(e, vec![(2, 17, "have received the".to_string())]);
+        assert_eq!(with_edits(src, &e), res);
+        // Changes with an unchanged word between them stay separate, in source order and not overlapping.
+        let src = "I recieve it and it dont work.";
+        let res = "I receive it and it doesn't work.";
+        let e = word_edits(src, res);
+        assert_eq!(e, vec![(2, 9, "receive".to_string()), (20, 24, "doesn't".to_string())]);
+        assert_eq!(with_edits(src, &e), res);
+        assert!(e.windows(2).all(|w| w[0].1 <= w[1].0), "{e:?}");
+        // An insertion brings its own space; a deleted word takes the space after it.
+        let e = word_edits("I have book", "I have a book");
+        assert_eq!(e, vec![(6, 6, " a".to_string())]);
+        assert_eq!(with_edits("I have book", &e), "I have a book");
+        let e = word_edits("one two three", "one three");
+        assert_eq!(with_edits("one two three", &e), "one three");
+        let e = word_edits("one two", "one");
+        assert_eq!(with_edits("one two", &e), "one");
+        // Inserted punctuation sits tight against the previous word.
+        let e = word_edits("hello world", "hello, world");
+        assert_eq!(with_edits("hello world", &e), "hello, world");
     }
 
     #[test]

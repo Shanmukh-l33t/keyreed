@@ -2,10 +2,15 @@
 // A console is attached only when a flag is present, so closing a terminal does not end the tray app.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
+mod composer_flow;
+#[cfg(windows)]
 mod gallery;
+mod learning;
 mod quickfix_flow;
 mod textjobs;
+mod voice;
 
+use crate::voice::CaptureTarget;
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{select, tick};
 use parking_lot::Mutex;
@@ -20,10 +25,11 @@ use vi_asr::{
     LocalAsrEngine,
 };
 use vi_audio::{list_input_devices, load_wav_16k_mono, ActiveCapture};
+use vi_core::style::{LearnState, LoadOutcome, StyleStore};
 use vi_core::{
     brand::{AUTOSTART_REG_VALUE, PRODUCT_NAME, PRODUCT_TAGLINE, SINGLE_INSTANCE_MUTEX, VERSION_STR},
-    AppCategory, AppConfig, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
-    PipelineMetrics, PipelineResult, PttAction, PttController, WritingMode,
+    AppCategory, AppConfig, AudioCueStyle, EngineState, ForegroundContext, HistoryEntry, HistoryStore, OutputMode,
+    HotkeySpec, MouseAction, PipelineMetrics, PipelineResult, PttAction, PttController, WritingMode,
 };
 use vi_rewrite::{slm::LlamaServerSupervisor, RewriteEngine};
 use vi_win32::{
@@ -32,12 +38,14 @@ use vi_win32::{
     harden_and_init_process, is_spec_physically_down, perf_trace_record,
     prompt_and_deliver_ask_before_inserting, read_autostart_value, read_clipboard_unicode,
     set_autostart_enabled, system_available_ram_mb, timing_mark, write_clipboard_unicode,
-    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, SingleInstanceGuard, UiAction,
+    ChordAction, DirectTypeOutcome, GlobalHotkeyEngine, HotkeyEvent, MouseButton, SingleInstanceGuard, UiAction,
 };
+#[cfg(windows)]
+use vi_core::editwatch::UndoToken;
 #[cfg(windows)]
 use vi_win32::ui::{
     classify_mic, delivery_reason_sentence, friendly_error, DownloadProgress, DownloadStage, MicTestStatus,
-    ReadyOutcome,
+    QuickFixStage, ReadyOutcome,
 };
 use zeroize::Zeroize;
 
@@ -158,7 +166,7 @@ impl RuntimePaths {
     /// Lists all catalog ASR model IDs currently installed on disk.
     fn list_installed_asr_ids(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for spec in vi_asr::catalog::ASR_CATALOG {
+        for spec in vi_asr::catalog::ASR_CATALOG.iter().chain(vi_asr::catalog::GRAMMAR_CATALOG) {
             if self.find_installed_model_root(spec.folder_name).is_some() {
                 out.push(spec.id.to_string());
             }
@@ -243,10 +251,67 @@ fn with_engine_or_rules<R>(
     }
 }
 
-/// Verifies and loads the configured local speech model (slow on a cold start: integrity check + ONNX init).
-/// Registers the Quick Fix chord with the hook. The Composer chord is left out of beta.1 (the bar is not wired).
+/// The chords the hook matches beside dictation and mode cycle: Quick Fix, the Composer and the voice command.
+fn extra_chords(cfg: &AppConfig) -> Vec<(HotkeySpec, ChordAction)> {
+    vec![
+        (cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection),
+        (cfg.composer_hotkey.clone(), ChordAction::OpenComposer),
+        (cfg.voice_command_hotkey.clone(), ChordAction::VoiceCommand),
+    ]
+}
+
+/// The mouse buttons the user bound. `Nothing` binds nothing, so that button is never intercepted.
+fn mouse_bindings(cfg: &AppConfig) -> Vec<(MouseButton, ChordAction)> {
+    [
+        (MouseButton::Middle, cfg.mouse_middle_action),
+        (MouseButton::Back, cfg.mouse_back_action),
+        (MouseButton::Forward, cfg.mouse_forward_action),
+    ]
+    .into_iter()
+    .filter_map(|(button, action)| {
+        let action = match action {
+            MouseAction::Nothing => return None,
+            MouseAction::Dictate => ChordAction::Dictate,
+            MouseAction::QuickFix => ChordAction::CorrectSelection,
+            MouseAction::VoiceCommand => ChordAction::VoiceCommand,
+            MouseAction::OpenComposer => ChordAction::OpenComposer,
+        };
+        Some((button, action))
+    })
+    .collect()
+}
+
+/// Registers KeyReed's chords and mouse bindings with the hook (at start, and after every save).
 fn register_extra_chords(hk: &GlobalHotkeyEngine, cfg: &AppConfig) {
-    hk.set_extra_chords(vec![(cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection)]);
+    hk.set_extra_chords(extra_chords(cfg));
+    hk.set_mouse_bindings(mouse_bindings(cfg));
+}
+
+/// The learning switch is a setting (setup and My style both edit it) while the store is what records, so the
+/// store follows the setting. Returns whether it changed.
+fn sync_learning_switch(cfg: &AppConfig, style: &mut StyleStore) -> bool {
+    let want = if cfg.learn_from_edits { LearnState::On } else { LearnState::Off };
+    if style.learn_from_edits == want {
+        return false;
+    }
+    style.learn_from_edits = want;
+    true
+}
+
+/// Writes the style store and hands the fresh copy to Settings: the coordinator owns the file.
+#[cfg(windows)]
+fn save_style(style: &StyleStore, path: &Path, gui: &vi_win32::ui::win_gui::WinGuiHandle) {
+    if let Err(e) = style.save_atomic(path) {
+        log::warn!("the style store could not be saved: {e:#}");
+    }
+    gui.set_style(style.clone());
+}
+
+/// Whether the speech engine should decode with hotword biasing: the model supports it and the
+/// personal dictionary is on and has at least one usable term.
+fn wants_hotword_decoding(cfg: &AppConfig) -> bool {
+    find_model_spec(&cfg.local_asr_model).is_some_and(|s| s.supports_hotwords)
+        && !cfg.dictionary.to_sherpa_hotwords().is_empty()
 }
 
 fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngine> {
@@ -270,13 +335,16 @@ fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngi
     } else {
         None
     };
-    let mut engine = LocalAsrEngine::load(
+    // The derived bpe.vocab lives here, outside the integrity-pinned model folder.
+    let hotword_cache = AppConfig::default_data_dir().join("cache");
+    let mut engine = LocalAsrEngine::load_with_hotwords(
         &paths.sherpa_lib_dir,
         &model_dir,
         spec.id,
         vad_opt,
         cfg.inference_threads.max(1),
         &cfg.preferred_language,
+        wants_hotword_decoding(cfg).then_some(hotword_cache.as_path()),
     )?;
     engine.warm_up();
     Ok(engine)
@@ -325,7 +393,8 @@ impl InferenceSupervisor {
 
     /// Non-blocking harvest of background ASR/SLM preparation threads during idle ticks.
     fn poll_background_ready(&mut self, cfg: &AppConfig) {
-        if let Some((id, rx)) = &self.pending_asr {
+        // Not during a live session: its engine comes back afterwards and must not overwrite a newer one.
+        if let (Some((id, rx)), None) = (&self.pending_asr, &self.live_asr) {
             if let Ok(res) = rx.try_recv() {
                 let id_owned = id.clone();
                 self.pending_asr = None;
@@ -434,7 +503,13 @@ impl InferenceSupervisor {
         }
     }
 
+    /// Loaded for this model and for the decoding mode the dictionary calls for.
     fn asr_ready(&self, cfg: &AppConfig) -> bool {
+        self.asr_usable(cfg) && self.asr.as_ref().is_some_and(|e| e.hotword_requested() == wants_hotword_decoding(cfg))
+    }
+
+    /// Loaded for this model, whatever its decoding mode (still fine to dictate with).
+    fn asr_usable(&self, cfg: &AppConfig) -> bool {
         self.asr.is_some() && self.loaded_asr_id == cfg.local_asr_model
     }
 
@@ -468,7 +543,7 @@ impl InferenceSupervisor {
     fn begin_live_session(&mut self, cfg: &AppConfig) {
         self.cancel_live_session();
         self.poll_background_ready(cfg);
-        self.session_cold_model = !self.asr_ready(cfg);
+        self.session_cold_model = !self.asr_usable(cfg);
         let use_cloud = cfg.processing_profile == vi_core::ProcessingProfile::MaxAccuracy
             && cfg.cloud.encrypted_api_key_b64.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
         if use_cloud {
@@ -476,7 +551,12 @@ impl InferenceSupervisor {
         }
         let hotwords = cfg.dictionary.to_sherpa_hotwords();
         let model_id = cfg.local_asr_model.clone();
-        let live_res = if self.asr_ready(cfg) {
+        // The dictionary switched hotword decoding on or off: dictate with the loaded engine now and
+        // reload in the background (harvested after this session).
+        if self.asr_usable(cfg) && !self.asr_ready(cfg) {
+            self.prewarm_asr(cfg);
+        }
+        let live_res = if self.asr_usable(cfg) {
             let eng = self.asr.take().unwrap();
             vi_asr::live::LiveAsr::start(move || Ok(eng), hotwords)
         } else if self.pending_asr.as_ref().map(|p| p.0 == model_id).unwrap_or(false) {
@@ -762,6 +842,9 @@ impl InferenceSupervisor {
         let mut warning_note = rw.warning_note.clone();
 
         if deliver_output {
+            // The modal prompt waits for the user, so ask BEFORE taking the gate (Quick Fix and Copy Last use it).
+            let ask_decision = (cfg.output_mode == OutputMode::AskBeforeInserting)
+                .then(|| vi_win32::ask_before_inserting_decision(&rw.final_text, fg_ctx));
             let _gate = vi_win32::input_gate();
             match cfg.output_mode {
                 OutputMode::Clipboard => {
@@ -778,7 +861,7 @@ impl InferenceSupervisor {
                         cfg.privacy.block_password_fields,
                         rw.requires_confirmation,
                         cfg.privacy.exclude_from_clipboard_history,
-                        None,
+                        ask_decision,
                     )? {
                         DirectTypeOutcome::TypedDirectly { .. } => {
                             delivered_via = OutputMode::DirectTyping;
@@ -870,15 +953,115 @@ impl InferenceSupervisor {
     }
 }
 
-fn play_subtle_earcon(enabled: bool, is_start: bool) {
-    if !enabled {
+/// A note of a cue: frequency in Hz, length in ms, and whether it rings out like a struck chime.
+#[cfg(windows)]
+type Note = (f32, u32, bool);
+
+/// The two halves of a style's cue: start (listening) and stop (text ready). Short and quiet by design,
+/// and consonant: a fifth or a fourth, never a bare high beep.
+#[cfg(windows)]
+fn cue_notes(style: AudioCueStyle, is_start: bool) -> &'static [Note] {
+    match (style, is_start) {
+        (AudioCueStyle::Soft, true) => &[(660.0, 40, false)],
+        (AudioCueStyle::Soft, false) => &[(880.0, 40, false)],
+        (AudioCueStyle::Bright, true) => &[(784.0, 32, false), (1175.0, 32, false)],
+        (AudioCueStyle::Bright, false) => &[(1175.0, 32, false), (784.0, 32, false)],
+        (AudioCueStyle::Chime, true) => &[(784.0, 120, true), (1047.0, 200, true)],
+        (AudioCueStyle::Chime, false) => &[(1047.0, 120, true), (784.0, 200, true)],
+        (AudioCueStyle::Click, true) => &[(2400.0, 8, false)],
+        (AudioCueStyle::Click, false) => &[(1800.0, 8, false)],
+        (AudioCueStyle::None, _) => &[],
+    }
+}
+
+/// One cue as a mono 16-bit 44.1 kHz WAV: what `PlaySoundW` reads from memory. `volume` (0-100) scales the
+/// samples, so the cue carries its own level and no other audio is touched.
+#[cfg(windows)]
+fn cue_wav(style: AudioCueStyle, is_start: bool, volume: u8) -> Vec<u8> {
+    const RATE: u32 = 44_100;
+    const FADE: u32 = RATE * 5 / 1000;
+    let notes = cue_notes(style, is_start);
+    let data_len: u32 = notes.iter().map(|n| RATE * n.1 / 1000 * 2).sum();
+    let peak = 0.28 * volume.min(100) as f32 / 100.0;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // bytes per second
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for &(freq, ms, rings) in notes {
+        let frames = RATE * ms / 1000;
+        for i in 0..frames {
+            let ramp = i.min(frames - 1 - i).min(FADE) as f32 / FADE as f32;
+            // A struck note loses most of its level over its own length; a plain tone holds it.
+            let decay = if rings { (-4.0 * i as f32 / frames as f32).exp() } else { 1.0 };
+            let s = (std::f32::consts::TAU * freq * i as f32 / RATE as f32).sin() * ramp * decay * peak;
+            wav.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+        }
+    }
+    wav
+}
+
+/// A state that claims a session with no capture behind it is healed after this long.
+const STALE_STATE_HEAL: Duration = Duration::from_secs(2);
+/// A recording that receives no audio at all (muted, unplugged, dead stream) is ended after this long.
+const NO_AUDIO_END: Duration = Duration::from_secs(3);
+
+/// True while the state says a capture or a pipeline is behind it, so the coordinator can tell a
+/// lost transition from a real one.
+fn claims_a_session(state: &EngineState) -> bool {
+    matches!(state, EngineState::Listening | EngineState::Processing | EngineState::Correcting)
+}
+
+/// No frame since the press, or nothing but silence in the latest callback.
+fn capture_has_no_audio(first_frame_ms: f64, rms: f32) -> bool {
+    first_frame_ms <= 0.0 || rms <= 0.0
+}
+
+/// The buffer for one cue, built once per style, side and volume the user has actually tried. It lives for
+/// the process because `SND_MEMORY | SND_ASYNC` reads it while the cue plays.
+#[cfg(windows)]
+fn cue_buffer(style: AudioCueStyle, is_start: bool, volume: u8) -> &'static [u8] {
+    type Key = (AudioCueStyle, bool, u8);
+    static BUFFERS: std::sync::Mutex<Vec<(Key, &'static [u8])>> = std::sync::Mutex::new(Vec::new());
+    let key = (style, is_start, volume.min(100));
+    let mut buffers = BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, wav)) = buffers.iter().find(|(k, _)| *k == key) {
+        return wav;
+    }
+    let wav: &'static [u8] = Box::leak(cue_wav(key.0, key.1, key.2).into_boxed_slice());
+    buffers.push((key, wav));
+    wav
+}
+
+/// The start/stop cue: queued to the default output device and never waited on, so the coordinator
+/// is not held for it and it does not depend on the system beep driver being present. `force` plays it
+/// from the Settings "Play" button even while cues are switched off.
+fn play_subtle_earcon(cfg: &AppConfig, is_start: bool, force: bool) {
+    if !(cfg.audio_cues_enabled || force) || cfg.audio_cue_style == AudioCueStyle::None {
         return;
     }
     #[cfg(windows)]
-    unsafe {
-        let freq = if is_start { 660u32 } else { 880u32 };
-        let _ = windows_sys::Win32::System::Diagnostics::Debug::Beep(freq, 28);
+    {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        let wav = cue_buffer(cfg.audio_cue_style, is_start, cfg.audio_cue_volume);
+        unsafe {
+            PlaySoundW(
+                wav.as_ptr() as *const u16,
+                std::ptr::null_mut(),
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
     }
+    #[cfg(not(windows))]
+    let _ = is_start;
 }
 
 fn parse_mode_str(s: &str) -> WritingMode {
@@ -1852,6 +2035,64 @@ fn run_windows_live_e2e_test(wav_dir: Option<PathBuf>, screenshot_out: Option<Pa
     Ok(())
 }
 
+/// The route rule's answer for this configuration (plan P3.5). A writing model counts only when its
+/// weight file is on disk, so an uninstalled one reports as unavailable instead of failing at submit.
+#[cfg(windows)]
+fn route_for(cfg: &AppConfig) -> vi_core::route::Route {
+    let installed = !RuntimePaths::discover(cfg).find_gguf_candidates(&cfg.local_llm_model).is_empty();
+    let local = installed.then_some(cfg.local_llm_model.as_str());
+    vi_core::route::route(cfg.processing_profile, cfg.text_jobs_allow_cloud, &cfg.cloud, local)
+}
+
+/// The cloud target a text job carries, or `None` when the route is local. The key is only decrypted
+/// when the route already chose the cloud.
+#[cfg(windows)]
+fn job_cloud(cfg: &AppConfig, route: &vi_core::route::Route) -> Option<vi_core::textjob::CloudTarget> {
+    if !route.cloud {
+        return None;
+    }
+    let key = cfg.cloud.encrypted_api_key_b64.as_deref().and_then(|b| dpapi_decrypt_from_b64(b).ok()).unwrap_or_default();
+    route.target(&cfg.cloud, key)
+}
+
+/// Opens the Composer bar on the selection (plan P3.4). One function for the tray item, the pill and the
+/// Composer chord, so the three can never drift. `held` is the selection a voice-command tap already captured;
+/// without it the selection is copied again, and a window that refuses the copy opens the bar empty.
+#[cfg(windows)]
+fn open_composer(
+    cfg: &AppConfig,
+    composer: &mut composer_flow::ComposerFlow,
+    gui: &vi_win32::ui::win_gui::WinGuiHandle,
+    held: Option<(ForegroundContext, vi_win32::selection::Captured)>,
+) {
+    let (ctx, captured, allowed) = match held {
+        Some((ctx, captured)) => (ctx, Some(captured), true),
+        None => {
+            let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+            // Never copy from KeyReed's own windows or where the selection service refuses.
+            let allowed = ctx.process_id != std::process::id()
+                && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
+            let captured = if allowed {
+                vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
+            } else {
+                None
+            };
+            (ctx, captured, allowed)
+        }
+    };
+    // One rule decides the route, for the label and for the job (plan P3.5).
+    let route = route_for(cfg);
+    let selection = captured.as_ref().map(|c| c.text.clone());
+    composer.open(captured, ctx.clone(), job_cloud(cfg, &route));
+    gui.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
+        selection,
+        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
+        route: route.label,
+        cloud: route.cloud,
+        unavailable: !route.allowed,
+    }));
+}
+
 #[cfg(windows)]
 fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     harden_and_init_process();
@@ -1908,12 +2149,29 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
     let (job_ev_tx, job_ev_rx) = crossbeam_channel::unbounded::<vi_core::textjob::TextJobEvent>();
     let qf_cfg = initial_cfg.clone();
     let job_tx = textjobs::spawn_text_worker(job_ev_tx, Box::new(move || quickfix_flow::load_engine(&qf_cfg)))?;
+    let learning = learning::Learning::spawn();
+    let learning_events = learning.events().clone();
 
     std::thread::Builder::new()
         .name("keyreed-coordinator".to_string())
         .spawn(move || {
             let mut cfg = initial_cfg;
             let mut history = HistoryStore::load_or_default(&hist_path);
+            // "My style" (plan F3): loaded once here, written after every change, and mirrored to Settings.
+            let style_path = StyleStore::default_path();
+            let mut style = match StyleStore::load(&style_path) {
+                Ok((s, LoadOutcome::SetAside(p))) => {
+                    log::warn!("the style file could not be read; it was kept as {}", p.display());
+                    s
+                }
+                Ok((s, _)) => s,
+                Err(e) => {
+                    log::warn!("the style store could not be loaded: {e:#}");
+                    StyleStore::default()
+                }
+            };
+            sync_learning_switch(&cfg, &mut style);
+            gui_for_worker.set_style(style.clone());
             let mut ptt = PttController::new(cfg.activation_mode, 110, 1_800_000);
             let _ = ptt.set_app_enabled(cfg.app_enabled);
             let _ = ptt.set_ptt_enabled(cfg.ptt_enabled);
@@ -1934,14 +2192,35 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
             let mut captured_fg_ctx = ForegroundContext::default();
             let mut last_external_fg_ctx = ForegroundContext::default();
             let mut last_completed_text = String::new();
-            // The selection the open Composer works on (memory only; dropped when the Composer closes).
-            let mut composer_target: Option<vi_win32::selection::Captured> = None;
+            let mut composer = composer_flow::ComposerFlow::default();
             let mut quick_fix = quickfix_flow::QuickFixFlow::default();
+            // Where this capture's transcript goes (plan P3.7); ordinary dictation delivers it.
+            let mut capture_target = CaptureTarget::Deliver;
+            // When the voice-command chord went down: a tap opens the Composer, a hold speaks.
+            let mut voice_pressed_ms: Option<u64> = None;
+            // When the Composer's microphone started: the dictation stops by itself at the cap.
+            let mut composer_dictate_ms: Option<u64> = None;
+            // The word the pill just announced, so its Undo chip can take it back.
+            let mut learned_undo: Option<UndoToken> = None;
             let mut saw_physical_key_down = false;
             let mut physical_key_up_ticks: u8 = 0;
             let mut transient_state_until: Option<Instant> = None;
+            // Watchdogs (see the ticker): a state with no capture, and a capture that sends no audio.
+            let mut idle_since: Option<Instant> = None;
+            let mut silence_since: Option<Instant> = None;
             let start_epoch = Instant::now();
             let now_ms = || start_epoch.elapsed().as_millis() as u64;
+
+            // Open the microphone once, stopped, so the first press starts capturing in milliseconds
+            // instead of paying the WASAPI open (see ActiveCapture::prewarm). Runs on this thread
+            // because the warm client is thread-local, and costs this startup only.
+            let t_warm = Instant::now();
+            let warm_ok = ActiveCapture::prewarm(cfg.selected_microphone.as_deref());
+            timing_mark(&format!(
+                "mic_prewarm ok={} ms={:.1}",
+                warm_ok,
+                t_warm.elapsed().as_secs_f64() * 1000.0
+            ));
 
             let ticker = tick(Duration::from_millis(75));
 
@@ -1973,13 +2252,51 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                             Ok(HotkeyEvent::CorrectSelection) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
-                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                    quick_fix.start(&cfg, &gui_for_worker, &job_tx, &supervisor.rewrite, &last_external_fg_ctx);
                                 }
                             }
-                            // The Composer chord and voice commands arrive with P3.4 and P3.7.
-                            Ok(HotkeyEvent::OpenComposer)
-                            | Ok(HotkeyEvent::VoiceCommandDown)
-                            | Ok(HotkeyEvent::VoiceCommandUp) => {}
+                            Ok(HotkeyEvent::OpenComposer) => {
+                                // With the bar already open this press is a click outside it: never reopen (that would
+                                // throw away a typed draft), only open a bar that is not there.
+                                if !composer.is_open() && matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    open_composer(&cfg, &mut composer, &gui_for_worker, None);
+                                }
+                            }
+                            Ok(HotkeyEvent::ToggleDictation) => {
+                                // A bound mouse button: the floating listener's click, without the pill.
+                                pending_action = ptt.on_floating_mic_click(now_ms());
+                            }
+                            // The voice-command chord: capture the selection on press, record while it is held, and on
+                            // release either speak the instruction (a hold) or open the Composer on it (a tap).
+                            // Without a selection nothing records and nothing opens.
+                            Ok(HotkeyEvent::VoiceCommandDown) => {
+                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    let armed = quick_fix.arm_voice(&cfg, &gui_for_worker, &last_external_fg_ctx);
+                                    if voice::may_record(CaptureTarget::VoiceCommand, true, armed) {
+                                        capture_target = CaptureTarget::VoiceCommand;
+                                        voice_pressed_ms = Some(now_ms());
+                                        // The microphone opens on the press so a hold never clips its first word;
+                                        // a tap throws those few milliseconds away unread.
+                                        pending_action = ptt.on_floating_mic_click(now_ms());
+                                    }
+                                }
+                            }
+                            Ok(HotkeyEvent::VoiceCommandUp) => {
+                                let held = voice_pressed_ms.take().map_or(0, |t| now_ms().saturating_sub(t));
+                                let armed = capture_target == CaptureTarget::VoiceCommand && ptt.is_recording();
+                                match voice::release(armed, held) {
+                                    Some(voice::ChordRelease::Speak) => pending_action = ptt.on_floating_mic_click(now_ms()),
+                                    Some(voice::ChordRelease::OpenComposer) => {
+                                        // Discard the tap's audio, then open the bar on the selection the press took.
+                                        pending_action = ptt.on_emergency_cancel("voice_tap");
+                                        open_composer(&cfg, &mut composer, &gui_for_worker, quick_fix.cancel_voice());
+                                    }
+                                    // The press never captured a selection (refused, or a dictation was running).
+                                    None => {
+                                        quick_fix.cancel_voice();
+                                    }
+                                };
+                            }
                             Ok(HotkeyEvent::CycleMode) => {
                                 cfg.default_writing_mode = cfg.default_writing_mode.next();
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2008,33 +2325,28 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             Ok(UiAction::FloatingMicClicked) => {
                                 pending_action = ptt.on_floating_mic_click(now_ms());
                             }
+                            Ok(UiAction::CancelRecording) => {
+                                // The tray and the pill's right-click both offer this while a session runs.
+                                pending_action = ptt.on_emergency_cancel("cancelled_from_menu");
+                            }
                             Ok(UiAction::StartDictation) => {
                                 if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
                                     pending_action = ptt.on_floating_mic_click(now_ms());
                                 }
                             }
                             Ok(UiAction::OpenComposer) => {
-                                if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
-                                    let ctx = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-                                    // Never copy from KeyReed's own windows or where the selection service refuses.
-                                    let allowed = ctx.process_id != std::process::id()
-                                        && vi_win32::selection::refusal_for(&ctx, vi_win32::typing::is_current_process_elevated()).is_none();
-                                    composer_target = if allowed {
-                                        vi_win32::selection::capture(&ctx).ok().filter(|c| !c.copied_line)
-                                    } else {
-                                        None
-                                    };
-                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Open(vi_win32::composer::ComposerRequest {
-                                        selection: composer_target.as_ref().map(|c| c.text.clone()),
-                                        app: if allowed { vi_win32::composer::app_label(&ctx.process_name) } else { String::new() },
-                                        // The writing model and the route rule come in P3.5 and P3.6.
-                                        route: "On this PC · built-in model".into(),
-                                        cloud: false,
-                                        unavailable: false,
-                                    }));
+                                if !composer.is_open() && matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste) {
+                                    open_composer(&cfg, &mut composer, &gui_for_worker, None);
                                 }
                             }
-                            Ok(UiAction::ComposerClosed) => drop(composer_target.take()),
+                            Ok(UiAction::ComposerClosed) => {
+                                composer.close();
+                                composer_dictate_ms = None;
+                                // A dictation into a closing Composer has nowhere to go: stop it and deliver nothing.
+                                if capture_target == CaptureTarget::Composer {
+                                    pending_action = ptt.on_emergency_cancel("composer_closed");
+                                }
+                            }
                             Ok(UiAction::SavePillPosition(x, y)) => {
                                 cfg.floating_pill_pos = Some((x, y));
                                 let _ = cfg.save_atomic(&cfg_path);
@@ -2129,12 +2441,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                             gui_dl.set_download(Some(progress(DownloadStage::Failed("this model isn't in KeyReed's catalog".into()), 0, None)), None);
                                             return;
                                         };
+                                        // The grammar tagger is found by Quick Fix itself; it must never become the dictation model.
+                                        let speech = spec.architecture != vi_asr::catalog::AsrArchitecture::GectorTagger;
                                         if let Some(existing_root) = rpaths.find_installed_model_root(spec.folder_name) {
                                             if vi_asr::integrity::prepare_installed_model(&existing_root, spec.id).is_ok() {
                                                 active_cl.store(false, Ordering::SeqCst);
                                                 let inst = rpaths.list_installed_asr_ids();
                                                 gui_dl.set_download(Some(progress(DownloadStage::Installed, 0, None)), Some(inst));
-                                                let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                if speech {
+                                                    let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                }
                                                 return;
                                             }
                                         }
@@ -2168,10 +2484,16 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                         match res {
                                             Ok(_) => {
                                                 gui_dl.set_download(Some(progress(DownloadStage::Installed, 0, None)), Some(inst));
-                                                let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                if speech {
+                                                    let _ = select_tx.send(UiAction::SelectAsrModel(spec.id.to_string()));
+                                                }
                                                 gui_dl.notify_toast(
                                                     &format!("{ui_name} is ready"),
-                                                    "Downloaded and verified. KeyReed will use it for your next dictation.",
+                                                    if speech {
+                                                        "Downloaded and verified. KeyReed will use it for your next dictation."
+                                                    } else {
+                                                        "Downloaded and verified. Quick Fix can check grammar now."
+                                                    },
                                                 );
                                             }
                                             Err(e) if e.to_string().to_ascii_lowercase().contains("cancel") => {
@@ -2324,6 +2646,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 let _ = cfg.save_atomic(&cfg_path);
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                             }
+                            // Settings "Play": the same cue the next recording start will use.
+                            Ok(UiAction::PreviewAudioCue) => play_subtle_earcon(&cfg, true, true),
                             Ok(UiAction::SaveUpdatedConfig { mut new_cfg, mut new_plaintext_api_key }) => {
                                 if let Some(ref mut key) = new_plaintext_api_key {
                                     if let Ok(enc) = dpapi_encrypt_to_b64(key) {
@@ -2350,29 +2674,62 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 new_cfg.floating_pill_pos = cfg.floating_pill_pos;
                                 cfg = *new_cfg;
                                 let _ = cfg.save_atomic(&cfg_path);
+                                if sync_learning_switch(&cfg, &mut style) {
+                                    save_style(&style, &style_path, &gui_for_worker);
+                                }
                                 gui_for_worker.sync(ptt.state().clone(), 0.0, Some(cfg.clone()));
                                 if llm_changed {
                                     // After saving: re-verifying a grammar model can take seconds.
                                     supervisor = InferenceSupervisor::new(&cfg);
                                 }
                             }
+                            Ok(UiAction::SaveStyleStore(new_style)) => {
+                                style = *new_style;
+                                sync_learning_switch(&cfg, &mut style);
+                                save_style(&style, &style_path, &gui_for_worker);
+                            }
                             Ok(UiAction::QuickFixUndo) => quick_fix.undo(&gui_for_worker),
+                            Ok(UiAction::LearningUndo) => {
+                                if let Some(token) = learned_undo.take() {
+                                    learning::undo_learning(&mut cfg, &token);
+                                    let _ = cfg.save_atomic(&cfg_path);
+                                    gui_for_worker.quick_fix(QuickFixStage::Notice("Unlearned".into()));
+                                }
+                            }
                             Ok(UiAction::ReviewDone { choice, text, accepted, .. }) => {
-                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker);
+                                quick_fix.on_review_done(choice, &text, accepted, &gui_for_worker, &learning);
                             }
                             Ok(UiAction::QuickFixIntroSeen) => {
                                 cfg.quick_fix_intro_seen = true;
                                 let _ = cfg.save_atomic(&cfg_path);
                             }
                             // The deeper pass is not in this build: the pill shows no Deeper chip.
-                            Ok(UiAction::QuickFixDeeper)
-                            // Composer actions: wired to the text-job worker and delivery in P3.3 and P3.4.
-                            | Ok(UiAction::ComposerSubmit { .. })
-                            | Ok(UiAction::ComposerFollowUp(_))
-                            | Ok(UiAction::ComposerRegenerate)
-                            | Ok(UiAction::ComposerCancel)
-                            | Ok(UiAction::ComposerDeliver { .. })
-                            | Ok(UiAction::ComposerDictate) => {}
+                            Ok(UiAction::QuickFixDeeper) => {}
+                            // The Composer's microphone: one click dictates into the bar. It stops by itself at the
+                            // cap (voice::DICTATE_CAP_MS); a second click cancels, as Esc does.
+                            Ok(UiAction::ComposerDictate) => {
+                                if capture_target == CaptureTarget::Composer && ptt.is_recording() {
+                                    pending_action = ptt.on_emergency_cancel("composer_dictate_cancelled");
+                                } else if matches!(ptt.state(), EngineState::Idle | EngineState::ReadyToPaste)
+                                    && voice::may_record(CaptureTarget::Composer, composer.is_open(), true)
+                                {
+                                    capture_target = CaptureTarget::Composer;
+                                    composer_dictate_ms = Some(now_ms());
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(true));
+                                    pending_action = ptt.on_floating_mic_click(now_ms());
+                                }
+                            }
+                            Ok(UiAction::ComposerSubmit { instruction, use_selection, draft }) => {
+                                composer.submit(&cfg, instruction, use_selection, draft, &job_tx, &supervisor.rewrite, &style);
+                            }
+                            Ok(UiAction::ComposerFollowUp(instruction)) => {
+                                composer.follow_up(&cfg, instruction, &job_tx, &supervisor.rewrite, &style);
+                            }
+                            Ok(UiAction::ComposerRegenerate) => {
+                                composer.regenerate(&cfg, &job_tx, &supervisor.rewrite, &style);
+                            }
+                            Ok(UiAction::ComposerCancel) => composer.cancel(),
+                            Ok(UiAction::ComposerDeliver { how, text }) => composer.deliver(how, &text, &cfg, &gui_for_worker),
                             Ok(UiAction::ClearHistory) => {
                                 history.clear_all();
                                 let _ = history.save_atomic(&hist_path);
@@ -2387,10 +2744,21 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
                     }
+                    recv(learning_events) -> ev => {
+                        if let Ok(learning::LearningEvent::Learned { word, token, dictionary }) = ev {
+                            // The worker hands back its dictionary, so the config and style files match what it kept.
+                            cfg.dictionary = dictionary;
+                            if cfg.save_atomic(&cfg_path).is_ok() {
+                                learned_undo = Some(token);
+                                gui_for_worker.quick_fix(QuickFixStage::Learned(word));
+                            }
+                        }
+                    }
                     recv(job_ev_rx) -> ev => {
-                        // Composer events join in P3.4.
                         if let Ok(ev) = ev {
-                            quick_fix.on_job_event(ev, &cfg, &gui_for_worker);
+                            // All flows see every event and ignore the jobs that are not theirs.
+                            quick_fix.on_job_event(ev.clone(), &cfg, &style, &gui_for_worker, &learning);
+                            composer.on_job_event(ev, &gui_for_worker);
                         }
                     }
                     recv(ticker) -> _ => {
@@ -2421,17 +2789,26 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
 
+                        // The Composer's dictation stops by itself: the words are kept, not thrown away.
+                        if let Some(started) = composer_dictate_ms {
+                            if capture_target == CaptureTarget::Composer && ptt.is_recording() && voice::dictate_expired(started, now_ms()) {
+                                pending_action = ptt.on_floating_mic_click(now_ms());
+                            }
+                        }
                         if pending_action == PttAction::None {
                             pending_action = ptt.on_tick(now_ms());
                         }
                         if let Some(mic) = &mut active_mic {
                             supervisor.session_first_frame_ms = mic.first_frame_ms();
-                            let chunk = mic.take_new_16k();
+                            // Drain only into a live session; otherwise the audio stays in the capture
+                            // buffer for the whole-buffer path at stop (cloud profile, failed live start).
+                            let chunk = if supervisor.live_asr.is_some() { mic.take_new_16k() } else { Vec::new() };
                             supervisor.feed_live_audio(&cfg, chunk);
                             if mic.is_disconnected() {
                                 // Microphone disconnected mid-recording: attempt seamless rebind to default device
                                 log::warn!("Active microphone disconnected mid-session; attempting default-device recovery");
                                 if let Ok( fallback_cap ) = ActiveCapture::start(None) {
+                                    gui_for_worker.set_level_source(Some(fallback_cap.level_handle()));
                                     active_mic = Some(fallback_cap);
                                     gui_for_worker.notify_warning(
                                         "Microphone disconnected",
@@ -2440,8 +2817,22 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 } else {
                                     pending_action = PttAction::StopAndProcess;
                                 }
+                            } else if capture_has_no_audio(mic.first_frame_ms(), mic.current_rms()) {
+                                // Muted, unplugged or a dead stream: end the recording instead of holding the
+                                // app in Listening until the cap.
+                                if silence_since.get_or_insert(Instant::now()).elapsed() >= NO_AUDIO_END {
+                                    silence_since = None;
+                                    log::warn!("no audio from the microphone for {} ms; cancelling", NO_AUDIO_END.as_millis());
+                                    pending_action = ptt.on_emergency_cancel("no_audio");
+                                    gui_for_worker.notify_warning(
+                                        "The microphone is silent",
+                                        "KeyReed heard nothing. Check that the microphone is plugged in and not muted.",
+                                    );
+                                }
                             } else {
-                                gui_for_worker.sync(EngineState::Listening, mic.current_rms(), None);
+                                silence_since = None;
+                                // The chip and the pill render this one value: the controller's own state.
+                                gui_for_worker.sync(ptt.state().clone(), mic.current_rms(), None);
                             }
                         } else {
                             if let Some(deadline) = transient_state_until {
@@ -2450,6 +2841,18 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     ptt.transition_to_idle();
                                     gui_for_worker.sync(ptt.state().clone(), 0.0, None);
                                 }
+                            }
+                            // A state that claims a session with no capture behind it is a lost transition, and
+                            // it makes every action gated on it dead. Heal it instead of staying deaf.
+                            if claims_a_session(ptt.state()) {
+                                if idle_since.get_or_insert(Instant::now()).elapsed() >= STALE_STATE_HEAL {
+                                    idle_since = None;
+                                    log::warn!("state {state:?} with no capture behind it; returning to Idle", state = ptt.state());
+                                    ptt.transition_to_idle();
+                                    gui_for_worker.sync(ptt.state().clone(), 0.0, None);
+                                }
+                            } else {
+                                idle_since = None;
                             }
                             supervisor.poll_background_ready(&cfg);
                             supervisor.maybe_unload_idle(cfg.idle_unload_seconds);
@@ -2463,32 +2866,50 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                         timing_mark("coordinator_start_recording");
                         supervisor.session_keydown_at = Some(Instant::now());
                         transient_state_until = None;
-                        let t_fg = Instant::now();
-                        let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
-                        let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
-                        captured_fg_ctx = if cur_fg.hwnd != 0 && (cur_fg.process_id != std::process::id() || practice) {
-                            last_external_fg_ctx = cur_fg.clone();
-                            cur_fg
-                        } else {
-                            last_external_fg_ctx.clone()
-                        };
-                        supervisor.session_target_id_ms = t_fg.elapsed().as_secs_f64() * 1000.0;
+                        // The microphone first: everything else can wait behind a running capture, the
+                        // first syllable cannot.
                         let t_mic = Instant::now();
                         match ActiveCapture::start(cfg.selected_microphone.as_deref()) {
                             Ok(cap) => {
                                 supervisor.session_mic_init_ms = t_mic.elapsed().as_secs_f64() * 1000.0;
-                                timing_mark("mic_started");
+                                timing_mark(&format!(
+                                    "mic_started warm={} start_ms={:.1}",
+                                    cap.was_warm(),
+                                    cap.start_ms()
+                                ));
+                                gui_for_worker.set_level_source(Some(cap.level_handle()));
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
-                                gui_for_worker.sync(EngineState::Listening, 0.0, None);
+                                // The cue goes out before the work that is not on the audio path.
+                                play_subtle_earcon(&cfg, true, false);
+                                gui_for_worker.sync(ptt.state().clone(), 0.0, None);
+                                let t_fg = Instant::now();
+                                let cur_fg = capture_foreground_context(cfg.privacy.redact_sensitive_window_titles);
+                                let practice = vi_win32::ui::win_gui::is_practice_target(cur_fg.hwnd as isize);
+                                captured_fg_ctx = if cur_fg.hwnd != 0 && (cur_fg.process_id != std::process::id() || practice) {
+                                    last_external_fg_ctx = cur_fg.clone();
+                                    cur_fg
+                                } else {
+                                    last_external_fg_ctx.clone()
+                                };
+                                supervisor.session_target_id_ms = t_fg.elapsed().as_secs_f64() * 1000.0;
                                 if cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy {
+                                    let t_live = Instant::now();
                                     supervisor.begin_live_session(&cfg);
                                     supervisor.prewarm_slm(&cfg);
+                                    timing_mark(&format!("live_session_ms={:.1}", t_live.elapsed().as_secs_f64() * 1000.0));
                                 }
-                                play_subtle_earcon(cfg.audio_cues_enabled, true);
+                                timing_mark(&format!("press_path_ms={:.1}", t_mic.elapsed().as_secs_f64() * 1000.0));
                             }
                             Err(e) => {
                                 timing_mark("mic_error");
+                                // No capture runs, so a voice command's held selection is let go unread.
+                                if capture_target == CaptureTarget::Composer {
+                                    gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                                }
+                                composer_dictate_ms = None;
+                                capture_target = CaptureTarget::Deliver;
+                                quick_fix.cancel_voice();
                                 let msg = format!("Mic error: {}", e);
                                 log::error!("{msg}");
                                 ptt.transition_to_error(&msg);
@@ -2499,29 +2920,42 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             }
                         }
                     }
-                    PttAction::CancelRecording { reason } => {
+                    PttAction::CancelRecording { .. } => {
                         if let Some(m) = active_mic.take() {
                             m.cancel_and_zeroize();
                         }
+                        // Escape, a disabled app or a closed Composer: nothing is transcribed and nothing is taken.
+                        if capture_target == CaptureTarget::Composer {
+                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                        }
+                        composer_dictate_ms = None;
+                        capture_target = CaptureTarget::Deliver;
+                        quick_fix.cancel_voice();
                         supervisor.cancel_live_session();
                         busy_flag.store(false, Ordering::Relaxed);
                         gui_for_worker.sync(ptt.state().clone(), 0.0, None);
-                        if reason == "recording_cap_discarded" {
-                            gui_for_worker.notify_toast(
-                                PRODUCT_NAME,
-                                "Recording discarded. The key release was lost or the time limit was reached. Hold the shortcut to start again.",
-                            );
-                        }
                     }
                     PttAction::StopAndProcess => {
                         timing_mark("coordinator_stop");
+                        // The coordinator is blocked in the pipeline from here on and cannot service a cancel,
+                        // so Escape must reach the user's app again instead of being swallowed.
+                        busy_flag.store(false, Ordering::Relaxed);
                         let cold = supervisor.session_cold_model && !supervisor.asr_ready(&cfg) && cfg.processing_profile != vi_core::ProcessingProfile::MaxAccuracy;
                         gui_for_worker.set_processing_note(if cold { Some("Loading model") } else { None });
                         gui_for_worker.sync(EngineState::Processing, 0.0, None);
+                        let taken = std::mem::take(&mut capture_target);
+                        composer_dictate_ms = None;
+                        if taken == CaptureTarget::Composer {
+                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Listening(false));
+                        }
+                        // A voice command is transcribed in Exact mode: the spoken words are the instruction,
+                        // not a draft to polish. Neither it nor the Composer delivers anything.
+                        let mode_override = (taken == CaptureTarget::VoiceCommand).then_some(WritingMode::Exact);
                         if let Some(m) = active_mic.take() {
                             supervisor.session_first_frame_ms = m.first_frame_ms();
                             let t_fin = Instant::now();
-                            let samples = m.stop_and_take_16k();
+                            // Keeps capturing 200 to 600 ms after release so the last word is not clipped.
+                            let samples = m.stop_with_release_tail_and_take_16k();
                             supervisor.session_chunk_finalize_ms = t_fin.elapsed().as_secs_f64() * 1000.0;
                             let gui_stage = gui_for_worker.clone();
                             let on_corr = move || {
@@ -2532,10 +2966,25 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 samples,
                                 &cfg,
                                 &captured_fg_ctx,
-                                None,
-                                true,
+                                mode_override,
+                                taken == CaptureTarget::Deliver,
                                 Some(&on_corr),
                             ) {
+                                Ok(res) if !res.final_text.is_empty() && taken != CaptureTarget::Deliver => {
+                                    match voice::route(taken, composer.is_open(), &res.final_text) {
+                                        voice::Transcript::Composer(text) => {
+                                            gui_for_worker.composer(vi_win32::composer::ComposerMsg::Dictated(text.to_string()));
+                                        }
+                                        voice::Transcript::VoiceCommand(instruction) => {
+                                            quick_fix.run_voice(instruction, &cfg, &gui_for_worker, &job_tx, &supervisor.rewrite);
+                                        }
+                                        // Dictation is delivered below; a closed Composer or silence puts it nowhere.
+                                        _ => {}
+                                    }
+                                    play_subtle_earcon(&cfg, false, false);
+                                    ptt.transition_to_idle();
+                                    gui_for_worker.sync(EngineState::Idle, 0.0, None);
+                                }
                                 Ok(res) if !res.final_text.is_empty() => {
                                     timing_mark(&format!(
                                         "clipboard_ready asr_ms={:.1} rewrite_ms={:.1} output_ms={:.2} total_ms={:.1} tier={}",
@@ -2558,7 +3007,7 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     ptt.transition_to_ready();
                                     gui_for_worker.set_outcome(outcome.clone());
                                     gui_for_worker.sync(EngineState::ReadyToPaste, 0.0, None);
-                                    play_subtle_earcon(cfg.audio_cues_enabled, false);
+                                    play_subtle_earcon(&cfg, false, false);
 
                                     if history.enabled {
                                         history.record(HistoryEntry {
@@ -2570,6 +3019,17 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                             duration_ms: res.metrics.audio_duration_ms,
                                         });
                                         let _ = history.save_atomic(&hist_path);
+                                    }
+
+                                    if learning::delivered_by_typing(res.delivered_via) {
+                                        learning.record_insertion(
+                                            &res.final_text,
+                                            None,
+                                            None,
+                                            &captured_fg_ctx,
+                                            cfg.learn_from_edits,
+                                            &cfg.dictionary,
+                                        );
                                     }
 
                                     let preview: String = res.final_text.chars().take(72).collect();
@@ -2672,6 +3132,59 @@ fn print_foreground() -> Result<()> {
     }
 }
 
+/// `%LOCALAPPDATA%\Keyreed\logs\keyreed.log`. Rotated once to `.log.1` when it is over 1 MB at start.
+fn log_file_path() -> PathBuf {
+    let path = AppConfig::default_data_dir().join("logs").join("keyreed.log");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    path
+}
+
+#[cfg(windows)]
+fn console_attached() -> bool {
+    unsafe { !windows_sys::Win32::System::Console::GetConsoleWindow().is_null() }
+}
+#[cfg(not(windows))]
+fn console_attached() -> bool {
+    true
+}
+
+/// The release exe has no console, so stderr is lost: log to a file unless a console is attached. A panic
+/// hook records the panic before `panic = "abort"` ends the process. Never log transcript text.
+fn init_logging(keep_stderr: bool) {
+    let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"));
+    if keep_stderr {
+        builder.init();
+        return;
+    }
+    let path = log_file_path();
+    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    builder.init();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("(no message)");
+        // Slice-boundary panics quote the text being sliced, which can be a transcript: withhold those.
+        let msg = if msg.contains("byte index") || msg.contains("char boundary") { "(message withheld: may quote text)" } else { msg };
+        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let name = std::thread::current().name().unwrap_or("unnamed").to_string();
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "[{secs}] PANIC thread '{name}' at {at}: {msg}");
+        }
+    }));
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     #[cfg(windows)]
@@ -2680,7 +3193,7 @@ fn main() -> Result<()> {
             windows_sys::Win32::System::Console::AttachConsole(0xFFFFFFFF);
         }
     }
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    init_logging(!args.is_empty() && console_attached());
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
@@ -2803,6 +3316,239 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_states_that_need_a_capture_are_healed() {
+        for st in [EngineState::Listening, EngineState::Processing, EngineState::Correcting] {
+            assert!(claims_a_session(&st), "{st:?}");
+        }
+        for st in [
+            EngineState::Idle,
+            EngineState::ReadyToPaste,
+            EngineState::Disabled,
+            EngineState::Error("Mic error: x".into()),
+        ] {
+            assert!(!claims_a_session(&st), "{st:?}");
+        }
+    }
+
+    #[test]
+    fn a_silent_or_frameless_capture_is_dry() {
+        assert!(capture_has_no_audio(0.0, 0.0), "no frame yet");
+        assert!(capture_has_no_audio(12.0, 0.0), "muted");
+        assert!(!capture_has_no_audio(12.0, 0.004), "a quiet room still moves the meter");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod earcon_tests {
+    use super::*;
+
+    fn le16(wav: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([wav[at], wav[at + 1]])
+    }
+    fn le32(wav: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]])
+    }
+
+    /// Every style is a valid mono 16-bit WAV whose body matches its header, short enough to stay subtle, and
+    /// different from every other style: that is what makes the choice audible.
+    #[test]
+    fn every_style_is_a_valid_wav_of_its_own_length() {
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        for style in AudioCueStyle::ALL {
+            for is_start in [true, false] {
+                let wav = cue_wav(style, is_start, 100);
+                assert_eq!(&wav[0..4], b"RIFF");
+                assert_eq!(&wav[8..12], b"WAVE");
+                assert_eq!(le16(&wav, 20), 1, "PCM");
+                assert_eq!(le16(&wav, 22), 1, "mono");
+                assert_eq!(le32(&wav, 24), 44_100);
+                assert_eq!(le16(&wav, 34), 16);
+                let declared = le32(&wav, 40) as usize;
+                assert_eq!(wav.len(), 44 + declared, "the body matches the header");
+                let expected: usize =
+                    cue_notes(style, is_start).iter().map(|n| (44_100 * n.1 / 1000 * 2) as usize).sum();
+                assert_eq!(declared, expected, "{style:?} start={is_start}");
+                assert!(declared <= 44_100, "a cue stays under half a second ({style:?})");
+                if declared == 0 {
+                    continue;
+                }
+                assert_eq!(le16(&wav, 44), 0, "the cue fades in, so it never starts with a click");
+                assert!(
+                    !seen.iter().any(|old| old[44..] == wav[44..]),
+                    "{style:?} start={is_start} is a copy of another cue"
+                );
+                seen.push(wav);
+            }
+        }
+    }
+
+    /// The setting scales the samples only: 0 is silent, 100 is the cue's designed peak, and the steps in
+    /// between rise. winmm has to accept the buffer or the cue would be silent on the real device.
+    #[test]
+    fn volume_scales_the_cue_from_silent_to_full_and_winmm_accepts_it() {
+        let peak = |v: u8| -> u16 {
+            let wav = cue_wav(AudioCueStyle::Soft, true, v);
+            wav[44..]
+                .chunks(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let full = 0.28 * i16::MAX as f32;
+        assert_eq!(peak(0), 0, "0 % is silent");
+        assert!((peak(100) as f32 - full).abs() < 40.0, "100 % is the cue's designed peak");
+        assert!(peak(25) < peak(50) && peak(50) < peak(75) && peak(75) < peak(100), "volume rises");
+        let wav = cue_wav(AudioCueStyle::Soft, true, 100);
+        let played = unsafe {
+            windows_sys::Win32::Media::Audio::PlaySoundW(
+                wav.as_ptr() as *const u16,
+                std::ptr::null_mut(),
+                windows_sys::Win32::Media::Audio::SND_MEMORY
+                    | windows_sys::Win32::Media::Audio::SND_ASYNC
+                    | windows_sys::Win32::Media::Audio::SND_NODEFAULT,
+            )
+        };
+        assert_ne!(played, 0, "winmm rejected the generated WAV (the cue would be silent)");
+    }
+
+    /// What the coordinator plays is the style and volume in the config, built once and then reused.
+    #[test]
+    fn the_configured_style_and_volume_reach_the_played_buffer() {
+        let mut cfg = AppConfig::default();
+        cfg.audio_cue_style = AudioCueStyle::Chime;
+        cfg.audio_cue_volume = 100;
+        let played = cue_buffer(cfg.audio_cue_style, true, cfg.audio_cue_volume);
+        assert_eq!(played, &cue_wav(AudioCueStyle::Chime, true, 100)[..]);
+        assert_eq!(played.as_ptr(), cue_buffer(AudioCueStyle::Chime, true, 100).as_ptr());
+    }
+
+    /// The cue must cost the press path nothing: it is queued, not played to completion. The first
+    /// call also builds the buffer and loads winmm, which is why it is measured separately.
+    #[test]
+    fn start_cue_does_not_block() {
+        let cfg = AppConfig::default();
+        let t = Instant::now();
+        play_subtle_earcon(&cfg, true, false);
+        let first = t.elapsed();
+        let t = Instant::now();
+        play_subtle_earcon(&cfg, true, false);
+        assert!(
+            t.elapsed() < Duration::from_millis(15),
+            "the cue blocked the coordinator (first call {first:?})"
+        );
+        println!("earcon: first call {first:?}, steady state {:?}", t.elapsed());
+    }
+}
+
+/// Press-to-audio measurement for the Hold-to-Talk path. Ignored by default because it needs a real
+/// microphone: `cargo test -p vi-app --release -- --ignored press_path_bench --nocapture`.
+#[cfg(all(test, windows))]
+mod press_path_bench {
+    use super::*;
+
+    const PRESSES: usize = 6;
+
+    /// `KEYREED_BENCH_MIC` picks the device, `KEYREED_BENCH_HOLD_MS` how long the clip lasts after
+    /// the first sample (a real press is held for about a second), `KEYREED_BENCH_GAP_MS` the silence
+    /// between clips.
+    fn bench_env() -> (Option<String>, u64, u64) {
+        let num = |name: &str, default: u64| {
+            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        };
+        let mic = std::env::var("KEYREED_BENCH_MIC").ok().filter(|s| !s.trim().is_empty());
+        (mic, num("KEYREED_BENCH_HOLD_MS", 0), num("KEYREED_BENCH_GAP_MS", 0))
+    }
+
+    /// One press in the order the StartRecording arm runs it: target app, microphone, first sample.
+    fn one_press(mic: Option<&str>, hold_ms: u64, gap_ms: u64) -> (bool, f64, f64, f64) {
+        if gap_ms > 0 {
+            std::thread::sleep(Duration::from_millis(gap_ms));
+        }
+        let t0 = Instant::now();
+        let _fg = capture_foreground_context(true);
+        let fg_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let cap = ActiveCapture::start(mic).expect("microphone");
+        let mic_ms = cap.start_ms();
+        let warm = cap.was_warm();
+        let mut first_ms = f64::NAN;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if cap.first_frame_ms() > 0.0 {
+                first_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if hold_ms > 0 {
+            std::thread::sleep(Duration::from_millis(hold_ms));
+        }
+        cap.stop_and_take_16k();
+        (warm, fg_ms, mic_ms, first_ms)
+    }
+
+    fn percentile(values: &[f64], p: f64) -> f64 {
+        let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if v.is_empty() {
+            return f64::NAN;
+        }
+        let rank = ((p / 100.0) * v.len() as f64).ceil() as usize;
+        v[rank.clamp(1, v.len()) - 1]
+    }
+
+    fn report(label: &str, rows: &[(bool, f64, f64, f64)]) {
+        for (warm, fg, mic, first) in rows {
+            println!("{label} warm={warm} fg_ms={fg:.1} mic_ms={mic:.1} press_to_first_audio_ms={first:.1}");
+        }
+        let firsts: Vec<f64> = rows.iter().map(|r| r.3).collect();
+        let mics: Vec<f64> = rows.iter().map(|r| r.2).collect();
+        println!(
+            "{label} n={} press_to_first_audio p50={:.1} p95={:.1} | mic_start p50={:.1} p95={:.1}",
+            rows.len(),
+            percentile(&firsts, 50.0),
+            percentile(&firsts, 95.0),
+            percentile(&mics, 50.0),
+            percentile(&mics, 95.0)
+        );
+        assert!(firsts.iter().all(|x| x.is_finite()), "a press never delivered audio");
+    }
+
+    /// The cold path: a fresh thread has no warm client, so every press pays the device open.
+    #[test]
+    #[ignore = "needs a real microphone"]
+    fn press_path_bench_cold() {
+        let (mic, hold, gap) = bench_env();
+        let rows: Vec<(bool, f64, f64, f64)> = (0..PRESSES)
+            .map(|_| {
+                let mic = mic.clone();
+                std::thread::spawn(move || one_press(mic.as_deref(), hold, gap)).join().unwrap()
+            })
+            .collect();
+        assert!(rows.iter().all(|r| !r.0), "a cold press reused a warm client");
+        report("cold", &rows);
+    }
+
+    /// The warm path: one prewarm, then every press starts the client it already owns.
+    #[test]
+    #[ignore = "needs a real microphone"]
+    fn press_path_bench_warm() {
+        let (mic, hold, gap) = bench_env();
+        assert!(ActiveCapture::prewarm(mic.as_deref()), "prewarm could not open the microphone");
+        let rows: Vec<(bool, f64, f64, f64)> = (0..PRESSES).map(|_| one_press(mic.as_deref(), hold, gap)).collect();
+        assert!(rows.iter().all(|r| r.0), "a warm press fell back to a cold open");
+        report("warm", &rows);
+        // A warm press must also replace the client it used, or only the first press is fast.
+        let later = ActiveCapture::start(mic.as_deref()).expect("microphone");
+        assert!(later.was_warm(), "clip did not leave a warm client");
+        later.stop_and_take_16k();
+    }
+}
+
+#[cfg(test)]
 mod slm_lock_tests {
     use super::*;
 
@@ -2846,6 +3592,49 @@ mod slm_lock_tests {
         holder.join().unwrap();
         // Free again: the shared engine is used.
         assert!(!with_engine_or_rules(&lock, SLM_LOCK_WAIT, |_, busy| busy));
+    }
+}
+
+#[cfg(test)]
+mod input_binding_tests {
+    use super::*;
+
+    #[test]
+    fn all_three_chords_are_registered_for_the_hook() {
+        let mut cfg = AppConfig::default();
+        cfg.composer_hotkey = vi_core::shortcut::chord(true, true, false, false, 0x4B);
+        let chords = extra_chords(&cfg);
+        assert_eq!(chords.len(), 3);
+        assert_eq!(chords[0], (cfg.quick_fix_hotkey.clone(), ChordAction::CorrectSelection));
+        assert_eq!(chords[1], (cfg.composer_hotkey.clone(), ChordAction::OpenComposer));
+        assert_eq!(chords[1].0.display_name, "Ctrl + Alt + K");
+        assert_eq!(chords[2], (cfg.voice_command_hotkey.clone(), ChordAction::VoiceCommand));
+    }
+
+    #[test]
+    fn each_mouse_slot_maps_to_its_action_and_nothing_binds_nothing() {
+        let mut cfg = AppConfig::default();
+        assert!(mouse_bindings(&cfg).is_empty(), "an unconfigured mouse is never intercepted");
+        cfg.mouse_middle_action = MouseAction::Dictate;
+        cfg.mouse_back_action = MouseAction::QuickFix;
+        cfg.mouse_forward_action = MouseAction::VoiceCommand;
+        assert_eq!(
+            mouse_bindings(&cfg),
+            [
+                (MouseButton::Middle, ChordAction::Dictate),
+                (MouseButton::Back, ChordAction::CorrectSelection),
+                (MouseButton::Forward, ChordAction::VoiceCommand),
+            ]
+        );
+        cfg.mouse_middle_action = MouseAction::OpenComposer;
+        cfg.mouse_back_action = MouseAction::Nothing;
+        assert_eq!(
+            mouse_bindings(&cfg),
+            [
+                (MouseButton::Middle, ChordAction::OpenComposer),
+                (MouseButton::Forward, ChordAction::VoiceCommand),
+            ]
+        );
     }
 }
 

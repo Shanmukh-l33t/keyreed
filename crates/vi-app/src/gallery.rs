@@ -21,7 +21,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    DispatchMessageW, FindWindowW, GetWindowRect, PeekMessageW, SetForegroundWindow, SetWindowPos,
+    ShowWindow, TranslateMessage, HWND_TOP, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW,
 };
 
 use windows_sys::Win32::Storage::Xps::PrintWindow;
@@ -33,7 +35,8 @@ fn pump_for(ms: u64) {
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while Instant::now() < until {
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            // Checks the time between messages too: animation frames can keep the queue busy for as long as they run.
+            while Instant::now() < until && PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                 if vi_win32::settings::pre_translate(&msg) {
                     continue;
                 }
@@ -51,6 +54,23 @@ fn window_rect(h: HWND) -> RECT {
         GetWindowRect(h, &mut rc);
     }
     rc
+}
+
+/// The Composer bar window, if it is open.
+fn composer_hwnd() -> HWND {
+    let cls: Vec<u16> = "KeyreedComposerClass".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) }
+}
+
+/// A real mouse click in screen pixels: the same path a person's click takes.
+fn click_at(x: i32, y: i32) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    unsafe {
+        SetCursorPos(x, y);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
 }
 
 /// Visible frame (excludes Windows 11's invisible resize borders and shadow).
@@ -132,6 +152,24 @@ fn capture(x: i32, y: i32, w: i32, h: i32, path: &Path, from: Option<HWND>) -> R
     Ok(())
 }
 
+/// `KEYREED_UI_PERF=1` frame timing as JSON (null when timing is off).
+fn perf_json() -> serde_json::Value {
+    let s = vi_win32::perf::summary();
+    if s.is_empty() {
+        return serde_json::Value::Null;
+    }
+    let r = |v: f32| (v * 100.0).round() / 100.0;
+    s.into_iter()
+        .map(|(k, v)| {
+            (k.to_string(), serde_json::json!({
+                "frames": v.frames, "frame_ms_p50": r(v.frame_p50), "frame_ms_p95": r(v.frame_p95), "frame_ms_max": r(v.frame_max),
+                "interval_ms_p50": r(v.interval_p50), "interval_ms_p95": r(v.interval_p95),
+            }))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
 struct Gallery {
     dir: PathBuf,
     gui: WinGuiHandle,
@@ -151,6 +189,14 @@ impl Gallery {
         let cy = (rc.top + rc.bottom) / 2;
         let (cw, ch) = ((w + 80).max(340), (h + 60).max(100)); // wide states (Quick Fix chips) must not be cropped
         capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")), None)?;
+        // The listener's own pixels too, with transparency (scripts/design/shots.py rgba turns them into PNGs).
+        if let Some((pw, ph, px)) = win_gui::pill_pixels_for_test() {
+            let mut raw = Vec::with_capacity(8 + px.len() * 4);
+            raw.extend_from_slice(&pw.to_le_bytes());
+            raw.extend_from_slice(&ph.to_le_bytes());
+            px.iter().for_each(|p| raw.extend_from_slice(&p.to_le_bytes()));
+            std::fs::write(self.dir.join(format!("{name}.rgba")), raw)?;
+        }
         let dbg = win_gui::pill_debug_info();
         self.report.push(serde_json::json!({
             "shot": name,
@@ -193,10 +239,68 @@ impl Gallery {
         Ok(())
     }
 
-    fn shot_settings(&mut self, name: &str, note: &str) -> Result<()> {
-        let cls: Vec<u16> = "KeyreedSettingsClass\0".encode_utf16().collect();
-        let h = unsafe { FindWindowW(cls.as_ptr(), std::ptr::null()) };
+    /// This process's own Settings window: the class name alone can also match the user's installed app.
+    fn settings_hwnd() -> Result<HWND> {
+        let h = vi_win32::settings::hwnd();
         anyhow::ensure!(!h.is_null(), "Settings window not found");
+        Ok(h)
+    }
+
+    /// The window as the desktop shows it: DWM's rounded corners and shadow are composited outside PrintWindow,
+    /// so this one is a plain screen capture with some desktop around the window.
+    fn shot_settings_on_desktop(&mut self, name: &str, note: &str) -> Result<()> {
+        let h = Self::settings_hwnd()?;
+        let rc = frame_rect(h);
+        let pad = 28;
+        // This one reads the screen, so the window has to be on top of the other windows for a moment.
+        unsafe { SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        pump_for(120);
+        capture(
+            rc.left - pad,
+            rc.top - pad,
+            rc.right - rc.left + 2 * pad,
+            rc.bottom - rc.top + 2 * pad,
+            &self.dir.join(format!("{name}.bmp")),
+            None,
+        )?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "settings",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
+    /// Pixels as a person sees them (BitBlt of the screen). PrintWindow ignores child-window regions, so it
+    /// shows controls that were clipped away entirely; the shots that prove controls are reachable use this.
+    fn shot_settings_live(&mut self, name: &str, note: &str) -> Result<()> {
+        let h = Self::settings_hwnd()?;
+        // Briefly on top, so nothing of the desktop covers the pixels being measured.
+        let top = |after: *mut std::ffi::c_void| unsafe {
+            SetWindowPos(h, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        };
+        top(-1isize as *mut std::ffi::c_void);
+        unsafe {
+            ShowWindow(h, 9 /* SW_RESTORE */);
+            SetForegroundWindow(h);
+        }
+        pump_for(800);
+        let rc = frame_rect(h);
+        let shot = capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), None);
+        top(-2isize as *mut std::ffi::c_void);
+        shot?;
+        self.report.push(serde_json::json!({
+            "shot": name,
+            "kind": "settings-live",
+            "note": note,
+            "window_px": {"w": rc.right - rc.left, "h": rc.bottom - rc.top},
+        }));
+        Ok(())
+    }
+
+    fn shot_settings(&mut self, name: &str, note: &str) -> Result<()> {
+        let h = Self::settings_hwnd()?;
         let rc = frame_rect(h);
         capture(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, &self.dir.join(format!("{name}.bmp")), Some(h))?;
         self.report.push(serde_json::json!({
@@ -228,7 +332,9 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.shot_pill("pill_01_idle", "Idle: icon only")?;
     let idle_timer = win_gui::pill_debug_info().map(|d| d.3).unwrap_or(true);
     let idle_frames_before = win_gui::pill_debug_info().map(|d| d.4).unwrap_or(0);
+    let idle_cpu = vi_win32::current_process_cpu_ms();
     pump_for(2000);
+    let idle_cpu_pct = (vi_win32::current_process_cpu_ms() - idle_cpu) / 2000.0 * 100.0;
     let idle_frames_after = win_gui::pill_debug_info().map(|d| d.4).unwrap_or(0);
 
     win_gui::set_pill_hover_for_test(true);
@@ -239,18 +345,23 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
 
     // Synthetic speech-like envelope fed through the same sync() path as live capture.
     let env = [0.002f32, 0.01, 0.05, 0.12, 0.2, 0.09, 0.03, 0.15, 0.26, 0.18, 0.07, 0.02, 0.11, 0.22, 0.14, 0.05];
+    vi_win32::perf::reset();
+    let listen_cpu = vi_win32::current_process_cpu_ms();
     let t0 = Instant::now();
     let mut i = 0;
-    while t0.elapsed() < Duration::from_millis(1400) {
+    while t0.elapsed() < Duration::from_millis(3000) {
         g.gui.sync(EngineState::Listening, env[i % env.len()], None);
         i += 1;
         pump_for(70);
     }
+    let listening_cpu_pct = (vi_win32::current_process_cpu_ms() - listen_cpu) / t0.elapsed().as_secs_f64() / 10.0;
+    let listening_perf = perf_json();
     g.shot_pill("pill_03_listening", "Listening: bars follow the RMS values passed to sync() (synthetic levels in this gallery)")?;
     g.gui.sync(EngineState::Listening, 0.0, None);
     pump_for(900);
     g.shot_pill("pill_04_listening_silence", "Listening with silence: bars rest at the floor")?;
 
+    vi_win32::perf::reset();
     g.gui.sync(EngineState::Processing, 0.0, None);
     pump_for(450);
     g.shot_pill("pill_05_processing", "Processing (ASR)")?;
@@ -287,6 +398,47 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     pump_for(1800);
     g.shot_pill("pill_16_hint_expired", "Hint collapses back to idle by itself")?;
 
+    // ---- Filmstrips: key transitions frozen at fixed instants on the motion clock (design v3, section 10.3) ----
+    const FILM_MS: [f64; 10] = [0.0, 16.0, 33.0, 50.0, 83.0, 116.0, 166.0, 233.0, 300.0, 450.0];
+    let film = |g: &mut Gallery, name: &str, trigger: &dyn Fn(&WinGuiHandle)| -> Result<()> {
+        // Frozen from the live now: the shots take longer than 450 ms of live time, so when the live clock takes over
+        // again every motion the strip started has already ended.
+        let t0 = vi_win32::motion::now() * 1000.0;
+        vi_win32::motion::set_time_override(Some(t0));
+        trigger(&g.gui);
+        pump_for(80);
+        for ms in FILM_MS {
+            vi_win32::motion::set_time_override(Some(t0 + ms));
+            win_gui::refresh_pill_for_test();
+            pump_for(40);
+            g.shot_pill(&format!("film_{name}_{:03}", ms as u32), &format!("{name} at {ms} ms"))?;
+        }
+        vi_win32::motion::set_time_override(None);
+        pump_for(100);
+        Ok(())
+    };
+    g.gui.sync(EngineState::Idle, 0.0, None);
+    pump_for(500);
+    film(&mut g, "p1_hover", &|_| win_gui::set_pill_hover_for_test(true))?;
+    win_gui::set_pill_hover_for_test(false);
+    pump_for(600);
+    film(&mut g, "p2_listen", &|gui| gui.sync(EngineState::Listening, 0.14, None))?;
+    for i in 0..14 {
+        g.gui.sync(EngineState::Listening, env[i % env.len()], None);
+        pump_for(60);
+    }
+    film(&mut g, "p3_transcribe", &|gui| gui.sync(EngineState::Processing, 0.0, None))?;
+    pump_for(400);
+    film(&mut g, "p4_inserted", &|gui| {
+        gui.set_outcome(ReadyOutcome::Inserted);
+        gui.sync(EngineState::ReadyToPaste, 0.0, None);
+    })?;
+    pump_for(300);
+    film(&mut g, "p4b_settle_idle", &|gui| gui.sync(EngineState::Idle, 0.0, None))?;
+    pump_for(400);
+    film(&mut g, "p11_hint", &|gui| gui.flash_hint("Professional Writing", ""))?;
+    pump_for(1900);
+
     // ---- Quick Fix pill (plan F1 and F4): mid-motion and settled ----
     g.gui.quick_fix(QuickFixStage::Working);
     pump_for(250);
@@ -310,14 +462,21 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.gui.quick_fix(QuickFixStage::Notice("Spelling only".into()));
     pump_for(400);
     g.shot_pill("pill_24_spelling_only", "Grammar model missing: spelling and rules only")?;
-    g.gui.quick_fix(QuickFixStage::Refused("Select some text first".into()));
+    g.gui.quick_fix(QuickFixStage::Refused { text: "Select some text first".into(), settings: false });
     pump_for(60);
     g.shot_pill("pill_25a_refused_shake", "Refusal, mid shake")?;
     pump_for(400);
     g.shot_pill("pill_25b_refused", "Refusal, at rest")?;
-    g.gui.quick_fix(QuickFixStage::Refused("Administrator window".into()));
+    g.gui.quick_fix(QuickFixStage::Refused { text: "Administrator window".into(), settings: false });
     pump_for(400);
     g.shot_pill("pill_25c_refused_admin", "Refusal: administrator window")?;
+    // The one refusal with a fix: the grammar model is missing, so the pill offers Settings.
+    g.gui.quick_fix(QuickFixStage::Refused {
+        text: "The grammar model isn't installed; install it in Settings › Speech models.".into(),
+        settings: true,
+    });
+    pump_for(400);
+    g.shot_pill("pill_25d_refused_grammar", "Grammar model missing: one sentence and an Open Settings chip")?;
     pump_for(1800);
     g.shot_pill("pill_26_quick_fix_gone", "Everything returns to idle by itself; the animation timer is off")?;
 
@@ -414,20 +573,102 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     composer_bar::set_state_for_test(None, None, true);
     pump_for(200);
     g.shot_composer("composer_07_editing", "The result as a native edit box after a click")?;
+    // ---- Real clicks, the way a person clicks: focus, presets while typing, the listening mic, outside clicks ----
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    // The input takes the caret from a click, then the draft is typed; the presets now have text to work on.
+    let (ix, iy) = composer_bar::click_point(None).expect("input point");
+    click_at(ix, iy);
+    composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
+    pump_for(250);
+    g.shot_composer(
+        "composer_08_typed_focus",
+        "Nothing selected, a draft typed, the input focused: the presets act on the draft, so they are live",
+    )?;
+    // A real click on a preset while the input had the caret: it submits, and the presets dim while it runs.
+    let (cx, cy) = composer_bar::click_point(Some(0)).expect("chip point");
+    click_at(cx, cy);
+    pump_for(300);
+    g.shot_composer(
+        "composer_09_preset_click_while_typing",
+        "A real click on Fix with the input focused submitted the draft; the presets are dimmed while it runs",
+    )?;
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    g.gui.composer(ComposerMsg::Listening(true));
+    pump_for(200);
+    g.shot_composer(
+        "composer_10_listening",
+        "The microphone is recording into the bar: the mic chip shows the listening state; a second click cancels",
+    )?;
+    // A click outside an empty bar closes it.
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    let rc = window_rect(composer_hwnd());
+    click_at(rc.left - 140, rc.top + 30);
+    // The desktop needs a moment to repaint where the layered window was.
+    pump_for(800);
+    let closed = composer_bar::hwnd().is_null();
+    capture(rc.left - 20, rc.top - 20, (rc.right - rc.left) + 40, (rc.bottom - rc.top) + 40, &g.dir.join("composer_11_after_outside_click.bmp"), None)?;
+    g.report.push(serde_json::json!({
+        "shot": "composer_11_after_outside_click",
+        "kind": "composer",
+        "note": "A real click outside an empty bar: the bar folded away, leaving the desktop",
+        "bar_closed": closed,
+    }));
+    anyhow::ensure!(closed, "a click outside an empty bar closes it");
+    // A click outside a bar with a draft keeps it: Esc is the way out, so nothing typed is lost.
+    g.gui.composer(ComposerMsg::Open(local(None)));
+    pump_for(400);
+    composer_bar::set_state_for_test(Some("Draft a short apology for the delay"), None, false);
+    pump_for(150);
+    let rc = window_rect(composer_hwnd());
+    click_at(rc.left - 140, rc.top + 30);
+    pump_for(350);
+    let kept = !composer_bar::hwnd().is_null();
+    g.shot_composer(
+        "composer_12_outside_click_keeps_draft",
+        "A click outside with a draft on screen keeps the bar (Esc closes it): typed text is never thrown away",
+    )?;
+    anyhow::ensure!(kept, "a click outside keeps a draft");
+    // A drag: the window moves, and the resting rectangle follows it, so a later update cannot snap it back.
+    let before = window_rect(composer_hwnd());
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+        SetWindowPos(composer_hwnd(), std::ptr::null_mut(), before.left + 60, (before.top - 40).max(0), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    pump_for(150);
+    // Any later message resizes the bar from its resting rectangle: that is what used to snap it back.
+    composer_bar::set_state_for_test(None, Some(1), false);
+    pump_for(200);
+    let after = window_rect(composer_hwnd());
+    let moved = (after.left, after.top);
+    g.shot_composer(
+        "composer_13_after_move",
+        &format!(
+            "After a move of (+60,-40) and a later update: the bar stayed at {moved:?} with its content whole, not offset or torn"
+        ),
+    )?;
+    anyhow::ensure!(
+        after.left == before.left + 60 && after.top == (before.top - 40).max(0),
+        "the bar keeps the spot it was dragged to: before {:?}, after {:?}",
+        (before.left, before.top),
+        (after.left, after.top)
+    );
     g.gui.composer(ComposerMsg::Open(ComposerRequest { cloud: true, route: "Cloud · api.groq.com · gpt-oss-20b".into(), ..local(None) }));
     pump_for(500);
-    g.shot_composer("composer_08_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
+    g.shot_composer("composer_14_no_selection_cloud", "Nothing selected (presets need text), cloud route")?;
     g.gui.composer(ComposerMsg::Open(ComposerRequest { unavailable: true, ..local(None) }));
     pump_for(400);
     composer_bar::set_state_for_test(Some("Draft a thank-you note"), None, false);
     composer_bar::submit_for_test(usize::MAX);
     pump_for(300);
-    g.shot_composer("composer_09_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
+    g.shot_composer("composer_15_unavailable", "No writing model and cloud off: one sentence and Open Settings")?;
     composer_bar::close();
     pump_for(30);
     // Mid-fold is a 140 ms window; on a busy machine (debug build) the fold may already be over.
     if !composer_bar::hwnd().is_null() {
-        g.shot_composer("composer_10_folding", "Closing: folding back into the pill")?;
+        g.shot_composer("composer_16_folding", "Closing: folding back into the pill")?;
     }
     pump_for(400);
 
@@ -444,12 +685,132 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         (vi_win32::settings::PAGE_PROCESSING, "settings_07_processing"),
         (vi_win32::settings::PAGE_PRIVACY, "settings_08_privacy"),
         (vi_win32::settings::PAGE_ABOUT, "settings_09_about"),
+        // Added after the 2.0 shots so the existing names keep their meaning: the learned-habits page.
+        (vi_win32::settings::PAGE_MYSTYLE, "settings_10_mystyle"),
     ];
     for (p, name) in pages {
         vi_win32::settings::show_page_for_test(p, 0);
         pump_for(500);
         g.shot_settings(name, "Settings page")?;
     }
+    // Settings at rest paints nothing; a flipped switch animates only that switch.
+    let transitions_perf = perf_json();
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    vi_win32::perf::reset();
+    pump_for(2000);
+    let settings_idle_frames = vi_win32::perf::frames("settings") + vi_win32::perf::frames("settings_ctrl");
+    for _ in 0..4 {
+        vi_win32::settings::flip_toggle_for_test();
+        pump_for(400);
+    }
+    let toggle_perf = perf_json();
+
+    // Settings filmstrips: the selection sliding and the page rising in, a switch, a writing-mode card.
+    let sfilm = |g: &mut Gallery, name: &str, trigger: &dyn Fn()| -> Result<()> {
+        let t0 = vi_win32::motion::now() * 1000.0;
+        vi_win32::motion::set_time_override(Some(t0));
+        trigger();
+        pump_for(120);
+        for ms in FILM_MS {
+            vi_win32::motion::set_time_override(Some(t0 + ms));
+            vi_win32::settings::repaint_for_test();
+            pump_for(50);
+            g.shot_settings(&format!("film_{name}_{:03}", ms as u32), &format!("{name} at {ms} ms"))?;
+        }
+        vi_win32::motion::set_time_override(None);
+        pump_for(300);
+        Ok(())
+    };
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    sfilm(&mut g, "s3_page_writing", &|| vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_WRITING, 0))?;
+    sfilm(&mut g, "s5_choice", &|| vi_win32::settings::select_mode_for_test(2))?;
+    vi_win32::settings::select_mode_for_test(0);
+    pump_for(400);
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    sfilm(&mut g, "s4_toggle", &vi_win32::settings::flip_toggle_for_test)?;
+    vi_win32::settings::flip_toggle_for_test();
+    pump_for(400);
+
+    // The Sounds group on the Microphone page, with the cue volume at its top step.
+    let mut loud = AppConfig::default();
+    loud.first_run_completed = true;
+    loud.audio_cue_volume = 100;
+    g.gui.sync(EngineState::Idle, 0.0, Some(loud));
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_AUDIO, 0);
+    pump_for(500);
+    g.shot_settings("settings_12_sounds", "Microphone page: cue choice, its own volume at 100 %, Play")?;
+
+    // The frameless window on the desktop: rounded corners and the DWM shadow, no stock title bar.
+    g.shot_settings_on_desktop("settings_12_on_desktop", "Frameless Settings on the desktop: rounded corners, shadow, KeyReed's header")?;
+
+    // Delete-all is KeyReed's own card now: the page dims behind it, Cancel has the focus, Delete is red.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MYSTYLE, 0);
+    vi_win32::settings::confirm_delete_for_test();
+    pump_for(400);
+    g.shot_settings("settings_13_confirm_delete", "Delete-all confirmation: in-app card instead of the system dialog")?;
+    vi_win32::settings::dismiss_modal_for_test();
+    pump_for(300);
+    // The Speech models page is taller than the window: the scrolled view must stay inside the content column,
+    // and the Quick Fix grammar row sits at its end.
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);
+    vi_win32::settings::scroll_to_for_test(400);
+    pump_for(500);
+    g.shot_settings("settings_06_models_scrolled", "Speech models page scrolled: no overlap with the header or sidebar")?;
+    g.gui.set_download(
+        Some(DownloadProgress {
+            model_id: "gector-bert-en-int8".into(),
+            stage: DownloadStage::Downloading,
+            done_bytes: 24 * 1024 * 1024,
+            total_bytes: Some(70 * 1024 * 1024),
+        }),
+        None,
+    );
+    pump_for(400);
+    g.shot_settings("settings_11_grammar_downloading", "Quick Fix grammar row: download in progress")?;
+    g.gui.set_download(None, Some(installed.clone()));
+    vi_win32::settings::scroll_to_for_test(0);
+    pump_for(200);
+
+    // Taller pages: the Dictation page's Mouse group sits below the fold, so the page must scroll to its end
+    // and every control there must be reachable. The wheel goes to the focused control, not the canvas, so a
+    // notch sent to a control has to scroll the page as well (that is what made the page feel stuck).
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
+    pump_for(400);
+    vi_win32::settings::scroll_to_for_test(i32::MAX);
+    pump_for(400);
+    let (bottom, content, view) = vi_win32::settings::scroll_state_for_test();
+    g.shot_settings_live(
+        "settings_02_dictation_bottom",
+        &format!("Dictation scrolled to its end: offset {bottom} of {content} (view {view}); Mouse group reachable"),
+    )?;
+    // The "Forward button" combo of that group is on screen here.
+    let handled = vi_win32::settings::wheel_over_control_for_test(322, 120);
+    pump_for(200);
+    let (after_wheel, _, _) = vi_win32::settings::scroll_state_for_test();
+    anyhow::ensure!(
+        handled && after_wheel < bottom,
+        "a wheel notch over a control must scroll the page ({bottom} -> {after_wheel}, handled {handled})"
+    );
+    g.report.push(serde_json::json!({
+        "shot": "settings_wheel_over_control",
+        "kind": "check",
+        "note": format!("wheel over the Forward-button combo scrolled the page {bottom} -> {after_wheel} (content {content}, view {view})"),
+    }));
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_MODELS, 0);
+    pump_for(300);
+    let (_, models_h, models_view) = vi_win32::settings::scroll_state_for_test();
+    vi_win32::settings::scroll_to_for_test((models_h - models_view) / 2);
+    pump_for(400);
+    g.shot_settings_live(
+        "settings_06_models_middle",
+        &format!("Speech models scrolled to the middle: offset {} of {} (view {models_view})", (models_h - models_view) / 2, models_h - models_view),
+    )?;
+    vi_win32::settings::scroll_to_for_test(0);
+    pump_for(200);
+
     // Shortcut capture field (P2.7) on the Dictation page.
     vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_DICTATION, 0);
     pump_for(400);
@@ -520,6 +881,12 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         "scale_percent": scale_pct,
         "idle_animation_timer_running": idle_timer,
         "idle_frames_painted_in_2s": idle_frames_after.saturating_sub(idle_frames_before),
+        "idle_cpu_percent_of_one_core": idle_cpu_pct,
+        "settings_idle_frames_painted_in_2s": settings_idle_frames,
+        "listening_cpu_percent_of_one_core": listening_cpu_pct,
+        "perf_listening": listening_perf,
+        "perf_pill_transitions_and_settings_pages": transitions_perf,
+        "perf_settings_toggle": toggle_perf,
         "shots": g.report,
     });
     std::fs::write(dir.join("gallery_report.json"), serde_json::to_string_pretty(&report)?)?;

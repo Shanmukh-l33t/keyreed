@@ -61,6 +61,8 @@ window.KR_CODE={
    "<span class=\"sx-a\">#[derive(Debug, Clone, Serialize, Deserialize)]</span>",
    "<span class=\"sx-k\">pub</span> <span class=\"sx-k\">struct</span> <span class=\"sx-t\">PrivacySettings</span> {",
    "    <span class=\"sx-c\">/// Exclude dictated clipboard writes from Windows Clipboard History (Win+V) and Cloud Sync.</span>",
+   "    <span class=\"sx-c\">/// On by default; only a config that does not mention the key gets the default, saved choices stay.</span>",
+   "    <span class=\"sx-a\">#[serde(default = \"default_true\")]</span>",
    "    <span class=\"sx-k\">pub</span> exclude_from_clipboard_history: <span class=\"sx-k\">bool</span>,",
    "    <span class=\"sx-c\">/// Block direct typing into password fields (always recommended true).</span>",
    "    <span class=\"sx-k\">pub</span> block_password_fields: <span class=\"sx-k\">bool</span>,",
@@ -73,19 +75,17 @@ window.KR_CODE={
    "<span class=\"sx-k\">impl</span> <span class=\"sx-t\">Default</span> <span class=\"sx-k\">for</span> <span class=\"sx-t\">PrivacySettings</span> {",
    "    <span class=\"sx-k\">fn</span> <span class=\"sx-f\">default</span>() -&gt; <span class=\"sx-k\">Self</span> {",
    "        <span class=\"sx-k\">Self</span> {",
-   "            exclude_from_clipboard_history: <span class=\"sx-k\">false</span>,",
+   "            exclude_from_clipboard_history: <span class=\"sx-k\">true</span>,",
    "            block_password_fields: <span class=\"sx-k\">true</span>,",
    "            redact_sensitive_window_titles: <span class=\"sx-k\">true</span>,",
    "            ram_only_audio: <span class=\"sx-k\">true</span>,",
-   "        }",
-   "    }",
-   "}"
+   "        }"
   ],
   "hl": [
-   8,
-   9,
-   16,
-   18
+   10,
+   11,
+   18,
+   20
   ]
  },
  "pin": {
@@ -146,7 +146,7 @@ window.KR_CODE={
    "]",
    " ",
    "<span class=\"sx-t\">[workspace.package]</span>",
-   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"2.0.0-beta.1\"</span>",
+   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"2.1.0\"</span>",
    "<span class=\"sx-f\">edition</span> = <span class=\"sx-s\">\"2021\"</span>",
    "<span class=\"sx-f\">license</span> = <span class=\"sx-s\">\"MIT OR Apache-2.0\"</span>",
    " ",

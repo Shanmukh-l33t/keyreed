@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, "feat/**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,6 +26,8 @@ jobs:
 
   rust:
     name: Rust tests
+    # The release-candidate branch is built, not tested, at the owner's request; the owner tests on Windows.
+    if: github.ref != 'refs/heads/feat/hex-informed-2.1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +41,7 @@ jobs:
 
   windows:
     name: Windows build & tests
+    if: github.ref != 'refs/heads/feat/hex-informed-2.1'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,3 +49,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo build --release
+
+  # Builds the MSVC exe (manifest and icon embedded by crates/vi-app/build.rs) and swaps it into the published
+  # v2.0.0-beta.1 portable zip, so a candidate can be tried on Windows without the model and runtime assets.
+  # The NSIS installer is not built here: its plugin needs an i686 clang toolchain that windows-latest lacks.
+  windows-release-candidate:
+    name: Windows release candidate (portable zip)
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/hex-informed-2.1'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p vi-app
+      - name: Assemble portable zip from the published beta
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.0.0-beta.1 -p '*portable.zip' -D base
+          $zip = Get-ChildItem base -Filter *portable.zip | Select-Object -First 1
+          if (-not $zip) { throw 'published portable zip not found' }
+          Expand-Archive -Path $zip.FullName -DestinationPath stage
+          $old = Get-ChildItem stage -Recurse -Filter keyreed.exe | Select-Object -First 1
+          if (-not $old) { throw 'keyreed.exe not found in the published zip' }
+          Copy-Item target\release\keyreed.exe $old.FullName -Force
+          New-Item -ItemType Directory -Force out | Out-Null
+          $name = "keyreed-$($env:GITHUB_SHA.Substring(0, 8))-portable-candidate.zip"
+          Compress-Archive -Path stage\* -DestinationPath "out\$name"
+          $hash = (Get-FileHash "out\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content -Encoding ascii out\SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyreed-windows-candidate
+          path: out/*

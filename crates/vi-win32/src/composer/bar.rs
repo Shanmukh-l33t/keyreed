@@ -7,6 +7,12 @@
 //! Ctrl+Enter submits, or copies a result; Ctrl+R regenerates; Tab moves through the chips; Esc closes, or stops a
 //! running request and keeps the prompt.
 //!
+//! A click outside the bar (another app, the desktop, the pill) closes it only when nothing would be lost: no
+//! request running and nothing typed or shown. Otherwise Esc closes it (stopping a request first).
+//!
+//! Drag: row 1 outside the context chip moves the bar (HTCAPTION); the resting rectangle follows every move, so
+//! painting, the native children and later resizes stay on the new spot instead of snapping back.
+//!
 //! Motion (F4): opening, the window grows out of the pill to the bar's size while the content stays put (it is
 //! revealed, not squeezed), the chips arrive 20 ms apart and the caret appears when the bloom ends; closing folds
 //! back into the pill faster; streamed words rise 4 px and fade in. Reduced motion: a short cross-fade only.
@@ -97,6 +103,10 @@ pub enum ComposerMsg {
     Open(ComposerRequest),
     Token(String),
     Done(String),
+    /// A dictated transcript: it goes into the input, ready to edit or send. The bar stays open.
+    Dictated(String),
+    /// The microphone is recording into the input (the mic chip shows the listening state).
+    Listening(bool),
     /// One plain sentence; `settings` adds an "Open Settings" action (missing writing model).
     Failed { message: String, settings: bool },
 }
@@ -133,6 +143,8 @@ struct Bar {
     /// Keyboard focus on a chip (None: the input has it).
     chip_focus: Option<usize>,
     hover: Option<Hit>,
+    /// The microphone is recording into the input.
+    listening: bool,
     opened: Instant,
     closing: Option<Instant>,
     /// Screen rectangles: where the bloom starts (the pill) and the bar's resting place.
@@ -148,6 +160,43 @@ struct Bar {
 
 thread_local! {
     static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+    /// The click-away watch's hook, while the bar is open.
+    static CLICK_HOOK: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+/// A low-level mouse hook: the bar is layered and does not own another app's windows or the desktop, so a press is
+/// the only reliable sign of a click outside it (a lost activation can happen with nobody clicking).
+unsafe extern "system" fn click_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && lparam != 0 && wparam as u32 == WM_LBUTTONDOWN {
+        let pt = (*(lparam as *const MSLLHOOKSTRUCT)).pt;
+        let outside = peek(|b| {
+            let mut r: RECT = std::mem::zeroed();
+            GetWindowRect(b.hwnd, &mut r);
+            b.closing.is_none() && !inside(&r, pt.x, pt.y)
+        })
+        .unwrap_or(false);
+        if outside {
+            outside_click();
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
+
+fn watch_clicks() {
+    CLICK_HOOK.with(|c| {
+        if c.get() == 0 {
+            c.set(unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(click_proc), std::ptr::null_mut(), 0) } as isize);
+        }
+    });
+}
+
+fn unwatch_clicks() {
+    CLICK_HOOK.with(|c| {
+        let h = c.replace(0);
+        if h != 0 {
+            unsafe { UnhookWindowsHookEx(h as HHOOK) };
+        }
+    });
 }
 
 /// Reads the bar without risking a second borrow (window messages can arrive while it is being changed).
@@ -219,6 +268,18 @@ fn place(pill: &RECT, work: &RECT, w: i32, h: i32, gap: i32) -> RECT {
         (work.bottom - h).max(work.top)
     };
     RECT { left, top, right: left + w, bottom: top + h }
+}
+
+/// A click outside the bar closes it only when nothing would be lost: nothing is on screen (no request running, no
+/// result, no failure to read) and nothing is typed. Otherwise Esc closes it, so typed text is never thrown away.
+pub fn outside_click_closes(has_content: bool, typed: &str) -> bool {
+    !has_content && typed.trim().is_empty()
+}
+
+/// A preset works on text: the kept selection, the latest result, or the draft typed into the input. It is dead only
+/// while a request runs (the bar dims it then) or when there is nothing at all to work on.
+fn presets_ready(has_selection: bool, has_result: bool, draft: &str, streaming: bool) -> bool {
+    !streaming && (has_selection || has_result || !draft.trim().is_empty())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -349,8 +410,7 @@ impl Bar {
     }
 
     fn presets_enabled(&self) -> bool {
-        // Presets work on text: the selection, or the latest result as a follow-up.
-        self.replaces() || matches!(self.stage, Stage::Result { .. })
+        presets_ready(self.replaces(), self.result_text().is_some(), &input_text(self), matches!(self.stage, Stage::Streaming { .. }))
     }
 
     fn hit(&self, x: i32, y: i32) -> Option<Hit> {
@@ -413,6 +473,7 @@ impl Bar {
 // ---------------------------------------------------------------------------------------------------------------
 
 unsafe fn paint(b: &Bar, hdc: HDC, client_w: i32, client_h: i32, ox: i32, oy: i32) {
+    let _pf = crate::perf::frame("composer");
     let t = theme();
     let g = b.geo();
     let Some(mut cv) = Canvas::new(client_w.max(1), client_h.max(1)) else { return };
@@ -456,10 +517,14 @@ unsafe fn paint(b: &Bar, hdc: HDC, client_w: i32, client_h: i32, ox: i32, oy: i3
     let (bc, bw) = if focused { (t.accent_fill, (1.5 * b.dpi as f32 / 96.0).max(1.0)) } else { (t.control_border, 1.0) };
     cv.round_rect_stroke(ix as f32, iy as f32, iw as f32, ih as f32, s(10) as f32, bw, bc, 1.0);
     let (mx, my, mw, mh) = at(&g.mic);
-    if b.hover == Some(Hit::Mic) {
+    if b.listening {
+        // Recording: the mic chip is the active control, and a second click cancels.
+        cv.circle((mx + mw / 2) as f32, (my + mh / 2) as f32, mw as f32 / 2.0, t.accent_fill, 1.0);
+    } else if b.hover == Some(Hit::Mic) {
         cv.circle((mx + mw / 2) as f32, (my + mh / 2) as f32, mw as f32 / 2.0, t.hover, 1.0);
     }
-    cv.text("\u{E720}", mx, my, mw, mh, f(F::Icon), t.text2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    let mic_fg = if b.listening { t.on_accent } else { t.text2 };
+    cv.text("\u{E720}", mx, my, mw, mh, f(F::Icon), mic_fg, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     // The result card: streamed words rise 4 px and fade in; a failure is one plain sentence.
     if let Some(card) = &g.card {
@@ -509,7 +574,7 @@ unsafe fn paint(b: &Bar, hdc: HDC, client_w: i32, client_h: i32, ox: i32, oy: i3
     }
 
     // Row 3: preset chips, arriving one after another while the bar blooms.
-    let enabled = b.presets_enabled() && !matches!(b.stage, Stage::Streaming { .. });
+    let enabled = b.presets_enabled();
     for (i, r) in g.chips.iter().enumerate() {
         let k = if ms.is_finite() { ease_out((ms - BLOOM_MS * 0.5 - CHIP_STAGGER_MS * i as f32) / CHIP_IN_MS) } else { 1.0 };
         if k <= 0.0 {
@@ -617,6 +682,19 @@ pub fn apply(msg: ComposerMsg) {
                 }
             }
         }),
+        ComposerMsg::Dictated(text) => update(|b| {
+            // A single-line input: the transcript's line breaks become spaces.
+            let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let wide = to_wide(&words);
+            unsafe {
+                SetWindowTextW(b.input, wide.as_ptr());
+                // The caret sits after the last word, so the user can keep talking or type on.
+                let end = wide.len().saturating_sub(1);
+                SendMessageW(b.input, EM_SETSEL, end, end as LPARAM);
+                SendMessageW(b.input, EM_SETREADONLY, 0, 0);
+            }
+        }),
+        ComposerMsg::Listening(on) => update(|b| b.listening = on),
         ComposerMsg::Failed { message, settings } => update(|b| b.stage = Stage::Failed { message, settings }),
     }
 }
@@ -714,6 +792,7 @@ fn open(req: ComposerRequest) {
             stage: Stage::Empty,
             chip_focus: None,
             hover: None,
+            listening: false,
             opened: Instant::now(),
             closing: None,
             from,
@@ -741,6 +820,7 @@ fn open(req: ComposerRequest) {
         BAR.with(|b| *b.borrow_mut() = Some(bar));
         ShowWindow(hwnd, SW_SHOW);
         let _ = crate::typing::force_foreground_window(hwnd as isize);
+        watch_clicks();
         SetTimer(hwnd, IDT_BAR_ANIM, 16, None);
     }
 }
@@ -798,7 +878,7 @@ fn delivered_text(b: &Bar) -> Option<String> {
     }
 }
 
-fn submit(b: &mut Bar, instruction: Instruction) {
+fn submit(b: &mut Bar, instruction: Instruction, draft: Option<String>) {
     if b.req.unavailable {
         b.stage = Stage::Failed { message: "No writing model is installed and cloud text jobs are off.".into(), settings: true };
         return;
@@ -812,7 +892,7 @@ fn submit(b: &mut Bar, instruction: Instruction) {
     b.stage = Stage::Streaming { text: String::new(), arrived: Vec::new() };
     b.chip_focus = None;
     unsafe { SendMessageW(b.input, EM_SETREADONLY, 1, 0) };
-    send(if follow_up { UiAction::ComposerFollowUp(instruction) } else { UiAction::ComposerSubmit { instruction, use_selection: b.use_selection } });
+    send(if follow_up { UiAction::ComposerFollowUp(instruction) } else { UiAction::ComposerSubmit { instruction, use_selection: b.use_selection, draft } });
 }
 
 fn drop_result_editor(b: &mut Bar) {
@@ -833,8 +913,15 @@ fn act(hit: Hit) {
         let mut bb = cell.borrow_mut();
         let Some(b) = bb.as_mut() else { return After::Nothing };
         match hit {
-            Hit::Chip(i) if b.presets_enabled() && !matches!(b.stage, Stage::Streaming { .. }) => {
-                submit(b, preset(i));
+            Hit::Chip(i) if b.presets_enabled() => {
+                // A preset works on the selection, the result, or the draft typed into the input.
+                let draft = (!b.replaces() && b.result_text().is_none()).then(|| input_text(b)).filter(|t| !t.trim().is_empty());
+                submit(b, preset(i), draft);
+                After::Nothing
+            }
+            // Nothing to work on yet: the caret goes where the text would be, so the click is never silently dead.
+            Hit::Chip(_) => {
+                unsafe { SetFocus(b.input) };
                 After::Nothing
             }
             Hit::RemoveContext => {
@@ -909,9 +996,24 @@ fn escape() {
             unsafe { SendMessageW(b.input, EM_SETREADONLY, 0, 0) };
         });
     } else {
-        send(UiAction::ComposerClosed);
-        close();
+        dismiss();
     }
+}
+
+/// The bar goes away: the coordinator forgets the session, and the window folds back into the pill.
+fn dismiss() {
+    send(UiAction::ComposerClosed);
+    close();
+}
+
+/// A click outside the bar (another app, the desktop, the pill) closes it only when nothing would be lost.
+/// Returns whether it closed; otherwise the bar stays and Esc still closes it.
+pub fn outside_click() -> bool {
+    let closes = peek(|b| outside_click_closes(!matches!(b.stage, Stage::Empty), &input_text(b))).unwrap_or(false);
+    if closes {
+        dismiss();
+    }
+    closes
 }
 
 /// Keys that mean something to the bar, wherever the focus is inside it.
@@ -929,7 +1031,7 @@ fn key(vk: u16) -> bool {
         VK_RETURN if stage_result && !ctrl && chip.is_none() && !typed.trim().is_empty() => {
             BAR.with(|b| {
                 if let Some(b) = b.borrow_mut().as_mut() {
-                    submit(b, Instruction::Custom(typed.trim().to_string()));
+                    submit(b, Instruction::Custom(typed.trim().to_string()), None);
                 }
             });
             update(|_| {});
@@ -943,7 +1045,7 @@ fn key(vk: u16) -> bool {
             None if !typed.trim().is_empty() => {
                 BAR.with(|b| {
                     if let Some(b) = b.borrow_mut().as_mut() {
-                        submit(b, Instruction::Custom(typed.trim().to_string()));
+                        submit(b, Instruction::Custom(typed.trim().to_string()), None);
                     }
                 });
                 update(|_| {});
@@ -952,7 +1054,7 @@ fn key(vk: u16) -> bool {
         },
         0x52 if ctrl && stage_result => act(Hit::Regenerate), // Ctrl+R
         VK_TAB if !editing => update(|b| {
-            if !(b.presets_enabled() && !matches!(b.stage, Stage::Streaming { .. })) {
+            if !b.presets_enabled() {
                 b.chip_focus = None;
                 return;
             }
@@ -983,6 +1085,26 @@ unsafe extern "system" fn edit_subclass(h: HWND, msg: u32, wparam: WPARAM, lpara
         _ => {}
     }
     DefSubclassProc(h, msg, wparam, lparam)
+}
+
+/// The window was moved: the resting rectangle becomes the window's, and the children and pixels follow it.
+fn follow_move(hwnd: HWND) {
+    // Only at rest: the bloom moves the window itself, and its own rectangle must survive that.
+    if !peek(|b| b.closing.is_none() && b.motion().0 >= 1.0).unwrap_or(false) {
+        return;
+    }
+    BAR.with(|b| {
+        if let Ok(mut bb) = b.try_borrow_mut() {
+            if let Some(bar) = bb.as_mut() {
+                let mut r: RECT = unsafe { std::mem::zeroed() };
+                unsafe { GetWindowRect(hwnd, &mut r) };
+                // `from` stays the pill, so closing still folds back into it.
+                bar.to = r;
+                place_children(bar, 0, 0);
+            }
+        }
+    });
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
 }
 
 fn client_xy(lparam: LPARAM) -> (i32, i32) {
@@ -1023,8 +1145,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let mut r: RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut r);
             let (x, y) = (((lparam & 0xFFFF) as u16 as i16) as i32 - r.left, (((lparam >> 16) & 0xFFFF) as u16 as i16) as i32 - r.top);
-            let drag = peek(|b| y < b.s(INPUT_Y - 4) && b.hit(x, y).is_none() && x > b.s(W / 2 - 60) && x < b.s(W / 2 + 60)).unwrap_or(false);
+            let drag = peek(|b| y < b.s(INPUT_Y - 4) && b.hit(x, y).is_none()).unwrap_or(false);
             if drag { HTCAPTION as LRESULT } else { HTCLIENT as LRESULT }
+        }
+        // Moved (a drag, or Windows moving it): the resting rectangle follows, so the reveal offset stays zero and
+        // the next resize keeps the new spot instead of snapping the bar back to where it opened.
+        WM_MOVE | WM_EXITSIZEMOVE => {
+            follow_move(hwnd);
+            0
         }
         WM_MOUSEMOVE => {
             let (x, y) = client_xy(lparam);
@@ -1112,6 +1240,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_DESTROY => {
             KillTimer(hwnd, IDT_BAR_ANIM);
+            unwatch_clicks();
             BAR.with(|b| {
                 if let Some(bar) = b.borrow_mut().take() {
                     DeleteObject(bar.brush as _);
@@ -1140,12 +1269,29 @@ pub fn set_state_for_test(text: Option<&str>, chip: Option<usize>, edit_result: 
     update(|_| {});
 }
 
+/// Gallery hook: a screen point a simulated click aims at: preset chip `chip`, or the input when `None`.
+pub fn click_point(chip: Option<usize>) -> Option<(i32, i32)> {
+    let (r, wr) = BAR.with(|b| {
+        let b = b.borrow();
+        let bar = b.as_ref()?;
+        let g = bar.geo();
+        let r = match chip {
+            Some(i) => *g.chips.get(i)?,
+            None => g.input,
+        };
+        let mut wr: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(bar.hwnd, &mut wr) };
+        Some((r, wr))
+    })?;
+    Some((wr.left + (r.left + r.right) / 2, wr.top + (r.top + r.bottom) / 2))
+}
+
 /// Gallery hook: submits preset `i`, or the typed instruction for any other `i`, as Enter or a click would.
 pub fn submit_for_test(i: usize) {
     BAR.with(|b| {
         if let Some(bar) = b.borrow_mut().as_mut() {
             let instruction = if i < PRESETS.len() { preset(i) } else { Instruction::Custom(input_text(bar)) };
-            submit(bar, instruction);
+            submit(bar, instruction, None);
         }
     });
     update(|_| {});
@@ -1193,6 +1339,24 @@ mod tests {
         let m = lerp_rect(&a, &b, 0.5);
         assert_eq!((m.left, m.top, m.right, m.bottom), (50, 25, 155, 80));
         assert_eq!(lerp_rect(&a, &b, 1.0).right, 300);
+    }
+
+    #[test]
+    fn a_click_outside_closes_only_when_nothing_would_be_lost() {
+        assert!(outside_click_closes(false, ""), "an empty bar just folds away");
+        assert!(outside_click_closes(false, "   "), "whitespace is not text");
+        assert!(!outside_click_closes(false, "a draft"), "typed text is never thrown away");
+        assert!(!outside_click_closes(true, ""), "a result, a failure or a running request stays until Esc");
+        assert!(!outside_click_closes(true, "a draft"));
+    }
+
+    #[test]
+    fn presets_need_text_and_stop_while_a_request_runs() {
+        assert!(presets_ready(true, false, "", false), "the kept selection");
+        assert!(presets_ready(false, true, "", false), "the latest result");
+        assert!(presets_ready(false, false, "a draft", false), "the draft typed into the input");
+        assert!(!presets_ready(false, false, "  ", false), "an empty bar has nothing to work on");
+        assert!(!presets_ready(true, true, "a draft", true), "dimmed while streaming, with text or without");
     }
 
     #[test]

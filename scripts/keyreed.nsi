@@ -17,7 +17,7 @@
 !include "LogicLib.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "2.0.0-beta.1"
+!define APP_VERSION "2.1.0"
 
 !ifndef PAYLOAD_DIR
   !define PAYLOAD_DIR "..\dist\keyreed-win-x64-slim"
@@ -72,7 +72,7 @@ UninstPage custom un.WelcomeShow
 UninstPage custom un.FinishShow
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "2.0.0.0"
+VIProductVersion "2.1.0.0"
 VIAddVersionKey "ProductName" "KeyReed"
 VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
@@ -165,7 +165,8 @@ Section "KeyReed" SecApp
   !insertmacro STAGE "Preparing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::Exec 'taskkill /F /IM keyreed.exe'
-  nsExec::Exec 'taskkill /F /IM llama-server.exe'
+  ; Only KeyReed's own llama-server (under the install folder), never another app's.
+  nsExec::Exec `powershell -NoProfile -NonInteractive -Command "Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | Stop-Process -Force"`
 !endif
   !insertmacro STAGE "Installing application files"
   ClearErrors
@@ -205,7 +206,7 @@ Section "Uninstall"
   !insertmacro STAGE "Closing KeyReed"
 !ifndef SANDBOX_TEST
   nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
-  nsExec::ExecToLog 'taskkill /F /IM llama-server.exe'
+  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -Command "Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | Stop-Process -Force"`
 !endif
   !insertmacro STAGE "Removing shortcuts"
   Delete "${DESKTOP_LNK}"

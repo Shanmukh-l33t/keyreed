@@ -241,6 +241,37 @@ pub fn timing_mark(event: &str) {
             writeln!(f, "{ms} {event}")
         });
 }
+/// Like `timing_mark` but safe to call from the keyboard hook callback: the time is taken here and the
+/// file write happens on a writer thread, so the hook never blocks on disk. No-op without the env var.
+pub fn timing_mark_async(event: &'static str) {
+    static TX: std::sync::OnceLock<Option<std::sync::mpsc::Sender<(u128, &'static str)>>> = std::sync::OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let path = std::env::var("KEYREED_TIMING_LOG").ok()?;
+        let (tx, rx) = std::sync::mpsc::channel::<(u128, &'static str)>();
+        std::thread::Builder::new()
+            .name("keyreed-timing-log".into())
+            .spawn(move || {
+                use std::io::Write;
+                for (ms, ev) in rx {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut f| writeln!(f, "{ms} {ev}"));
+                }
+            })
+            .ok()?;
+        Some(tx)
+    });
+    if let Some(tx) = tx {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let _ = tx.send((ms, event));
+    }
+}
+
 pub fn read_autostart_value(value_name: &str) -> Result<Option<String>> {
     #[cfg(windows)]
     unsafe {

@@ -1,5 +1,6 @@
 use crate::brand::PRODUCT_SLUG;
 use crate::dictionary::PersonalDictionary;
+use crate::habits::Dialect;
 use crate::types::{ActivationMode, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivacySettings {
     /// Exclude dictated clipboard writes from Windows Clipboard History (Win+V) and Cloud Sync.
+    /// On by default; only a config that does not mention the key gets the default, saved choices stay.
+    #[serde(default = "default_true")]
     pub exclude_from_clipboard_history: bool,
     /// Block direct typing into password fields (always recommended true).
     pub block_password_fields: bool,
@@ -21,7 +24,7 @@ pub struct PrivacySettings {
 impl Default for PrivacySettings {
     fn default() -> Self {
         Self {
-            exclude_from_clipboard_history: false,
+            exclude_from_clipboard_history: true,
             block_password_fields: true,
             redact_sensitive_window_titles: true,
             ram_only_audio: true,
@@ -57,7 +60,7 @@ impl Default for CloudSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PillClickAction {
-    /// Not offered in 2.0 beta 1: the Composer is not wired to a writing model yet (the setting is kept for later).
+    /// Open the Composer bar on the selection: type or pick an instruction for it.
     OpenComposer,
     #[default]
     Dictate,
@@ -65,13 +68,86 @@ pub enum PillClickAction {
 }
 
 impl PillClickAction {
-    pub const ALL: [PillClickAction; 2] = [PillClickAction::Dictate, PillClickAction::Nothing];
+    pub const ALL: [PillClickAction; 3] = [PillClickAction::Dictate, PillClickAction::OpenComposer, PillClickAction::Nothing];
 
     pub fn label(self) -> &'static str {
         match self {
             PillClickAction::OpenComposer => "Open the Composer",
             PillClickAction::Dictate => "Start or stop dictation",
             PillClickAction::Nothing => "Nothing",
+        }
+    }
+}
+
+/// What a bound mouse button does. The keyboard chords' actions, offered on the three buttons a mouse has
+/// beside its left and right click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseAction {
+    #[default]
+    Nothing,
+    /// A press toggles dictation, like a click on the floating listener.
+    Dictate,
+    QuickFix,
+    /// Held: a tap opens the Composer on the selection, a hold speaks the instruction.
+    VoiceCommand,
+    OpenComposer,
+}
+
+impl MouseAction {
+    pub const ALL: [MouseAction; 5] = [
+        MouseAction::Nothing,
+        MouseAction::Dictate,
+        MouseAction::QuickFix,
+        MouseAction::VoiceCommand,
+        MouseAction::OpenComposer,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MouseAction::Nothing => "Nothing",
+            MouseAction::Dictate => "Start or stop dictation",
+            MouseAction::QuickFix => "Quick Fix",
+            MouseAction::VoiceCommand => "Voice command",
+            MouseAction::OpenComposer => "Open the Composer",
+        }
+    }
+}
+
+/// The start/stop cue the user picked. Each style is a short, quiet pair generated in memory, so there are no
+/// sound files and nothing to install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCueStyle {
+    /// The original low sine pair (660 Hz start, 880 Hz stop).
+    #[default]
+    Soft,
+    /// Two notes a fifth apart, the second one leading: brighter, still quiet.
+    Bright,
+    /// Two struck notes that ring out gently.
+    Chime,
+    /// A few milliseconds of tick: the least noticeable cue.
+    Click,
+    /// No cue at all, without turning recording sounds off for anything else.
+    None,
+}
+
+impl AudioCueStyle {
+    pub const ALL: [AudioCueStyle; 5] = [
+        AudioCueStyle::Soft,
+        AudioCueStyle::Bright,
+        AudioCueStyle::Chime,
+        AudioCueStyle::Click,
+        AudioCueStyle::None,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioCueStyle::Soft => "Soft",
+            AudioCueStyle::Bright => "Bright",
+            AudioCueStyle::Chime => "Chime",
+            AudioCueStyle::Click => "Click",
+            AudioCueStyle::None => "None",
         }
     }
 }
@@ -88,9 +164,10 @@ pub struct AppConfig {
     /// Fix the selected text in any application (plan F1). Proposed default, not yet checked against every app.
     #[serde(default = "default_quick_fix_hotkey")]
     pub quick_fix_hotkey: HotkeySpec,
-    /// Quick Fix shows every change in the Review panel before anything is replaced. Turning this off lets edits
-    /// the edit-class table marks silent be applied without asking.
-    #[serde(default = "default_true")]
+    /// Quick Fix shows every change in the Review panel before anything is replaced. Off by default: a fix the
+    /// edit-class table marks silent is applied straight away, with Undo. Structure, non-silent edits and the
+    /// writing-model fallback always go to Review whatever this says.
+    #[serde(default)]
     pub quick_fix_always_review: bool,
     /// The one-time explanation in the Review panel was dismissed.
     #[serde(default)]
@@ -98,6 +175,16 @@ pub struct AppConfig {
     /// Open the Composer (plan F2).
     #[serde(default = "default_composer_hotkey")]
     pub composer_hotkey: HotkeySpec,
+    /// Hold with text selected and say what to do with it (plan P3.7).
+    #[serde(default = "default_voice_command_hotkey")]
+    pub voice_command_hotkey: HotkeySpec,
+    /// What the middle, back and forward mouse buttons do (all `Nothing` until the user binds one).
+    #[serde(default)]
+    pub mouse_middle_action: MouseAction,
+    #[serde(default)]
+    pub mouse_back_action: MouseAction,
+    #[serde(default)]
+    pub mouse_forward_action: MouseAction,
     pub output_mode: OutputMode,
     pub default_writing_mode: WritingMode,
     pub auto_context_mode: bool,
@@ -116,7 +203,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub pill_click_action: PillClickAction,
     /// Play subtle non-intrusive earcon tones on start/ready/error.
-    pub audio_cues_enabled: bool,
+        pub audio_cues_enabled: bool,
+    /// Which cue pair, and its own volume: it never touches system or dictation audio.
+    #[serde(default)]
+    pub audio_cue_style: AudioCueStyle,
+    #[serde(default = "default_audio_cue_volume")]
+    pub audio_cue_volume: u8,
     /// Show subtle completion notification when clipboard text is ready.
     pub notify_on_ready: bool,
     /// Unload heavy local models after N seconds of inactivity (0 = keep warm in RAM).
@@ -133,6 +225,16 @@ pub struct AppConfig {
     pub privacy: PrivacySettings,
     pub cloud: CloudSettings,
     pub dictionary: PersonalDictionary,
+    /// Text jobs (Quick Fix, Composer, voice commands) may use the configured cloud endpoint. Never used under the
+    /// Maximum Privacy profile (plan P3.5).
+    #[serde(default)]
+    pub text_jobs_allow_cloud: bool,
+    /// Learn words and habits from the corrections the user makes to KeyReed's own text (plan F3, P4.2).
+    #[serde(default = "default_true")]
+    pub learn_from_edits: bool,
+    /// Spelling the user asked for; `Auto` follows the learned dialect (plan P4.6).
+    #[serde(default)]
+    pub dialect: Dialect,
 }
 
 impl Default for AppConfig {
@@ -146,9 +248,13 @@ impl Default for AppConfig {
             cancel_hotkey: HotkeySpec::cancel_escape(),
             mode_cycle_hotkey: HotkeySpec::ctrl_shift_space(),
             quick_fix_hotkey: default_quick_fix_hotkey(),
-            quick_fix_always_review: true,
+            quick_fix_always_review: false,
             quick_fix_intro_seen: false,
             composer_hotkey: default_composer_hotkey(),
+            voice_command_hotkey: default_voice_command_hotkey(),
+            mouse_middle_action: MouseAction::Nothing,
+            mouse_back_action: MouseAction::Nothing,
+            mouse_forward_action: MouseAction::Nothing,
             output_mode: OutputMode::DirectTyping,
             default_writing_mode: WritingMode::Smart,
             auto_context_mode: true,
@@ -160,6 +266,8 @@ impl Default for AppConfig {
             show_floating_mic: true,
             pill_click_action: PillClickAction::Dictate,
             audio_cues_enabled: true,
+            audio_cue_style: AudioCueStyle::Soft,
+            audio_cue_volume: default_audio_cue_volume(),
             notify_on_ready: true,
             idle_unload_seconds: 300,
             inference_threads: 4,
@@ -169,6 +277,9 @@ impl Default for AppConfig {
             privacy: PrivacySettings::default(),
             cloud: CloudSettings::default(),
             dictionary: PersonalDictionary::default(),
+            text_jobs_allow_cloud: false,
+            learn_from_edits: true,
+            dialect: Dialect::Auto,
         }
     }
 }
@@ -177,12 +288,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Loud enough to notice, quiet enough not to startle: the cue's designed peak at 100 %.
+fn default_audio_cue_volume() -> u8 {
+    40
+}
+
 fn default_quick_fix_hotkey() -> HotkeySpec {
     crate::shortcut::chord(true, false, false, true, 0x47) // Ctrl + Win + G
 }
 
 fn default_composer_hotkey() -> HotkeySpec {
     crate::shortcut::chord(true, false, false, true, 0x4B) // Ctrl + Win + K
+}
+
+fn default_voice_command_hotkey() -> HotkeySpec {
+    crate::shortcut::chord(true, false, false, true, 0x48) // Ctrl + Win + H
 }
 
 impl AppConfig {
@@ -307,11 +427,50 @@ mod tests {
     }
 
     #[test]
+    fn audio_cue_style_and_volume_default_and_parse_leniently() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.audio_cue_style, AudioCueStyle::Soft);
+        assert_eq!(cfg.audio_cue_volume, 40);
+        // A file written before the cue styles existed keeps both defaults.
+        let (old, dropped) = AppConfig::parse_lenient(r#"{"audio_cues_enabled": true}"#);
+        assert!(dropped.is_empty());
+        assert_eq!((old.audio_cue_style, old.audio_cue_volume), (AudioCueStyle::Soft, 40));
+        let (picked, dropped) = AppConfig::parse_lenient(r#"{"audio_cue_style": "chime", "audio_cue_volume": 100}"#);
+        assert!(dropped.is_empty());
+        assert_eq!((picked.audio_cue_style, picked.audio_cue_volume), (AudioCueStyle::Chime, 100));
+        // A style this version does not know is dropped; the rest of the file still loads.
+        let (bad, dropped) = AppConfig::parse_lenient(r#"{"audio_cue_style": "theremin", "audio_cue_volume": 65}"#);
+        assert_eq!(dropped, vec!["audio_cue_style".to_string()]);
+        assert_eq!((bad.audio_cue_style, bad.audio_cue_volume), (AudioCueStyle::Soft, 65));
+    }
+
+    #[test]
     fn default_config_uses_auto_insert_and_offline_privacy() {
         let cfg = AppConfig::default();
         assert_eq!(cfg.output_mode, OutputMode::DirectTyping);
         assert_eq!(cfg.processing_profile, ProcessingProfile::MaxPrivacyOffline);
         assert_eq!(cfg.local_asr_model, "parakeet-tdt-0.6b-v2-int8");
+        // New 2.1 keys: cloud stays off for text jobs, learning stays on, and an older file keeps both defaults.
+        assert!(!cfg.text_jobs_allow_cloud && cfg.learn_from_edits);
+        assert_eq!(cfg.dialect, Dialect::Auto, "spelling follows what is learned until the user picks one");
+        let (old, dropped) = AppConfig::parse_lenient(r#"{"processing_profile": "max_privacy_offline"}"#);
+        assert!(dropped.is_empty() && !old.text_jobs_allow_cloud && old.learn_from_edits && old.dialect == Dialect::Auto);
+        let (picked, _) = AppConfig::parse_lenient(r#"{"dialect": "british"}"#);
+        assert_eq!(picked.dialect, Dialect::British);
+    }
+
+    #[test]
+    fn clipboard_history_exclusion_defaults_on_but_keeps_a_saved_choice() {
+        assert!(AppConfig::default().privacy.exclude_from_clipboard_history);
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert!(c.privacy.exclude_from_clipboard_history);
+        // An older file whose privacy block predates the key.
+        let old = r#"{"privacy": {"block_password_fields": true, "redact_sensitive_window_titles": true, "ram_only_audio": true}}"#;
+        let (c, dropped) = AppConfig::parse_lenient(old);
+        assert!(dropped.is_empty() && c.privacy.exclude_from_clipboard_history);
+        let saved = r#"{"privacy": {"exclude_from_clipboard_history": false, "block_password_fields": true, "redact_sensitive_window_titles": true, "ram_only_audio": true}}"#;
+        let (c, _) = AppConfig::parse_lenient(saved);
+        assert!(!c.privacy.exclude_from_clipboard_history);
     }
 
     #[test]
@@ -334,12 +493,23 @@ mod tests {
     }
 
     #[test]
-    fn quick_fix_asks_before_replacing_by_default() {
+    fn quick_fix_replaces_without_asking_by_default() {
         let (c, _) = AppConfig::parse_lenient("{}");
-        assert!(c.quick_fix_always_review);
-        assert!(!c.quick_fix_intro_seen);
-        let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": false}"#);
         assert!(!c.quick_fix_always_review);
+        assert!(!c.quick_fix_intro_seen);
+        // An older config that never had the key keeps working, and the switch still turns review on.
+        let (c, _) = AppConfig::parse_lenient(r#"{"quick_fix_always_review": true}"#);
+        assert!(c.quick_fix_always_review);
+    }
+
+    #[test]
+    fn the_voice_command_chord_has_a_default_and_keeps_a_saved_one() {
+        let (c, _) = AppConfig::parse_lenient("{}");
+        assert_eq!(c.voice_command_hotkey.display_name, "Ctrl + Win + H");
+        let saved = r#"{"voice_command_hotkey": {"ctrl": true, "alt": false, "shift": false, "win": false, "vk": 72, "display_name": "Ctrl + H"}}"#;
+        let (c, dropped) = AppConfig::parse_lenient(saved);
+        assert!(dropped.is_empty());
+        assert_eq!(c.voice_command_hotkey.display_name, "Ctrl + H");
     }
 
     #[test]
@@ -360,6 +530,38 @@ mod tests {
         let (c, dropped) = AppConfig::parse_lenient(&old.to_string());
         assert!(dropped.is_empty());
         assert_eq!(c.pill_click_action, PillClickAction::Nothing);
+    }
+
+    #[test]
+    fn every_pill_click_action_is_offered_including_the_composer() {
+        assert_eq!(PillClickAction::ALL.len(), 3);
+        assert_eq!(PillClickAction::ALL[1], PillClickAction::OpenComposer);
+        assert_eq!(PillClickAction::OpenComposer.label(), "Open the Composer");
+    }
+
+    /// The mouse slots are opt-in: a config that predates them keeps every button unbound.
+    #[test]
+    fn mouse_buttons_default_to_nothing_and_keep_a_saved_choice() {
+        let (c, dropped) = AppConfig::parse_lenient("{}");
+        assert!(dropped.is_empty());
+        assert_eq!(
+            (c.mouse_middle_action, c.mouse_back_action, c.mouse_forward_action),
+            (MouseAction::Nothing, MouseAction::Nothing, MouseAction::Nothing)
+        );
+        // A full old file, saved before the keys existed, loads with them on Nothing too.
+        let mut old = serde_json::to_value(AppConfig::default()).unwrap();
+        let o = old.as_object_mut().unwrap();
+        for k in ["mouse_middle_action", "mouse_back_action", "mouse_forward_action"] {
+            o.remove(k);
+        }
+        let (c, dropped) = AppConfig::parse_lenient(&old.to_string());
+        assert!(dropped.is_empty());
+        assert_eq!(c.mouse_middle_action, MouseAction::Nothing);
+        let (c, _) = AppConfig::parse_lenient(r#"{"mouse_back_action": "quick_fix"}"#);
+        assert_eq!(c.mouse_back_action, MouseAction::QuickFix);
+        // Every action the Settings combo offers has a label.
+        assert_eq!(MouseAction::ALL.len(), 5);
+        assert!(MouseAction::ALL.iter().all(|a| !a.label().is_empty()));
     }
 
     #[test]

@@ -13,23 +13,28 @@ use crate::canvas::{rgb, text_width, Canvas, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT
 use crate::overlay::scaled_icon;
 use crate::ui::win_gui::{brand_hicon, globals, send, to_wide, ui_font_face};
 use crate::ui::{
-    asr_ui_info, friendly_error, hotkey_conflict, hotkey_presets, DownloadStage, MicVerdict,
+    asr_ui_info, friendly_error, hotkey_conflict, hotkey_presets, DownloadStage, ErrorFix, MicVerdict, ReadyOutcome,
     SharedUiModel, UiAction, ASR_UI_CATALOG,
 };
 use std::cell::RefCell;
 use std::time::Instant;
 use vi_core::brand::{PRODUCT_NAME, PRODUCT_TAGLINE, SETTINGS_WINDOW_CLASS, VERSION_STR};
-use vi_core::{ActivationMode, AppConfig, EngineState, HotkeySpec, OutputMode, ProcessingProfile, WritingMode};
+use vi_core::habits::Dialect;
+use vi_core::{
+    ActivationMode, AppConfig, AudioCueStyle, EngineState, HotkeySpec, MouseAction, OutputMode,
+    ProcessingProfile, WritingMode,
+};
 use vi_core::shortcut::{CaptureStep, ShortcutCapture, ShortcutRole};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW, InvalidateRect,
-    MonitorFromPoint, SetBkColor, SetTextColor, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    PAINTSTRUCT,
+    BeginPaint, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW,
+    IntersectClipRect, InvalidateRect, MonitorFromPoint, RestoreDC, SaveDC, SetBkColor, SetTextCharacterExtra, SetTextColor,
+    SetWindowRgn,
+    HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -40,19 +45,21 @@ pub const PAGE_START: usize = 0;
 pub const PAGE_GENERAL: usize = 1;
 pub const PAGE_DICTATION: usize = 2;
 pub const PAGE_WRITING: usize = 3;
-pub const PAGE_OUTPUT: usize = 4;
-pub const PAGE_AUDIO: usize = 5;
-pub const PAGE_MODELS: usize = 6;
-pub const PAGE_PROCESSING: usize = 7;
-pub const PAGE_PRIVACY: usize = 8;
-pub const PAGE_ABOUT: usize = 9;
+pub const PAGE_MYSTYLE: usize = 4;
+pub const PAGE_OUTPUT: usize = 5;
+pub const PAGE_AUDIO: usize = 6;
+pub const PAGE_MODELS: usize = 7;
+pub const PAGE_PROCESSING: usize = 8;
+pub const PAGE_PRIVACY: usize = 9;
+pub const PAGE_ABOUT: usize = 10;
 
 /// (label, Segoe Fluent/MDL2 glyph)
-const NAV: [(&str, char); 10] = [
+const NAV: [(&str, char); 11] = [
     ("Get started", '\u{E80F}'),
     ("General", '\u{E713}'),
     ("Dictation", '\u{E765}'),
     ("Writing", '\u{E70F}'),
+    ("My style", '\u{E790}'),
     ("Output", '\u{E77F}'),
     ("Microphone", '\u{E720}'),
     ("Speech models", '\u{E8F1}'),
@@ -66,15 +73,31 @@ const REPO_URL: &str = "https://github.com/Shanmukh-l33t/keyreed";
 // Logical (96-DPI) geometry.
 const WIN_W: i32 = 940;
 const WIN_H: i32 = 660;
+/// The frameless header: KeyReed's own title row (mark, name, window buttons), drawn on the canvas.
+const HEADER_H: i32 = 52;
+/// First navigation row, below the header.
+const NAV_Y: i32 = HEADER_H + 20;
+/// Distance between navigation items (36 tall, 2 apart).
+const NAV_PITCH: i32 = 38;
 const SIDEBAR_W: i32 = 236;
 const X0: i32 = SIDEBAR_W + 40;
 const CW: i32 = WIN_W - X0 - 40;
 const ROW_H: i32 = 56;
 const ROW_H_SHORT: i32 = 46;
+/// One wheel notch: a whole settings row, so the page lands on row boundaries instead of between them.
+const WHEEL_STEP: i32 = 56;
 const PAD: i32 = 16;
+/// The confirmation card (replaces the stock MessageBox).
+const MODAL_W: i32 = 460;
+const MODAL_H: i32 = 196;
 
 // Control ids.
 const ID_NAV: i32 = 100;
+const HEADER_MIN: i32 = 90;
+const HEADER_CLOSE: i32 = 91;
+/// The confirmation card's two buttons (see `ask`).
+const MODAL_CANCEL: i32 = 92;
+const MODAL_CONFIRM: i32 = 93;
 const G_ENABLED: i32 = 201;
 const G_AUTOSTART: i32 = 202;
 const G_PILL: i32 = 203;
@@ -82,22 +105,50 @@ const G_PILL_CLICK: i32 = 204;
 const G_PILL_RESET: i32 = 205;
 const G_SOUNDS: i32 = 206;
 const G_NOTIFY: i32 = 207;
+const G_DARK: i32 = 208;
 const D_HOTKEY: i32 = 301;
 const D_HOLD: i32 = 302;
 const D_TOGGLE: i32 = 303;
 const D_PTT: i32 = 304;
 const D_QF_KEY: i32 = 305;
 const D_QF_REVIEW: i32 = 306;
+const D_VOICE_KEY: i32 = 307;
+const D_COMPOSER_KEY: i32 = 308;
+/// The middle, back and forward button rows of the "Mouse" group, in that order.
+const D_MOUSE: i32 = 320;
 const W_MODE: i32 = 400;
 const W_AUTOCTX: i32 = 410;
+/// The "Edit" button of the personal dictionary row on the Writing page.
 const W_VOCAB: i32 = 411;
+// Personal dictionary editor: one Term field, one Sounds like field and one Remove button per visible row.
+const V_TERM: i32 = 1100;
+const V_SOUND: i32 = 1110;
+const V_DEL: i32 = 1120;
+const V_ADD: i32 = 1130;
+const V_DONE: i32 = 1131;
+const V_PREV: i32 = 1132;
+const V_NEXT: i32 = 1133;
+/// Visible rows per page of the dictionary editor.
+const DICT_ROWS: usize = 8;
+const DICT_MAX_TERMS: usize = 500;
+const DICT_MAX_TERM_CHARS: usize = 64;
+const DICT_MAX_SOUNDS_CHARS: usize = 400;
 const O_TYPE: i32 = 501;
 const O_CLIP: i32 = 502;
 const O_ASK: i32 = 503;
 const O_COPYLAST: i32 = 505;
 const A_MIC: i32 = 601;
 const A_TEST: i32 = 602;
+/// The "Sounds" group on the Microphone page: cue style, its own volume, and a Play button.
+const A_CUE: i32 = 605;
+const A_VOL: i32 = 606;
+const A_PLAY: i32 = 607;
+/// "Open privacy settings" under a failed or silent microphone test (shared by the Microphone page and setup).
+const MIC_PRIVACY: i32 = 604;
 const M_ACT: i32 = 700;
+/// The Quick Fix grammar model's row: outside the speech-model action range, and its own install path.
+const M_GRAMMAR: i32 = M_ACT + 8;
+const GRAMMAR_MODEL_ID: &str = "gector-bert-en-int8";
 const P_PROF: i32 = 800;
 const P_KEY: i32 = 810;
 const P_KEY_SAVE: i32 = 811;
@@ -107,6 +158,8 @@ const V_PWD: i32 = 850;
 const V_REDACT: i32 = 851;
 const V_CLIPHIST: i32 = 852;
 const V_CLEAR_HIST: i32 = 853;
+/// Text jobs (Composer, Quick Fix, voice commands) may use the cloud key. Never under Maximum Privacy.
+const V_CLOUD_JOBS: i32 = 854;
 const AB_RELEASES: i32 = 901;
 const AB_UPDATES: i32 = 902;
 const AB_GITHUB: i32 = 903;
@@ -124,44 +177,38 @@ const S_PRACTICE: i32 = 1008;
 const S_BACK: i32 = 1010;
 const S_NEXT: i32 = 1011;
 const S_SKIP: i32 = 1012;
+// My style page (also the setup switch, which flips the same setting).
+const Y_LEARN: i32 = 1300;
+const Y_DIALECT: i32 = 1301;
+const Y_ITEM: i32 = 1310;
+const Y_CAND: i32 = 1330;
+const Y_CAND_DISMISS: i32 = Y_CAND + 16;
+const Y_APP: i32 = 1400;
+const Y_PREV: i32 = 1420;
+const Y_NEXT: i32 = 1421;
+const Y_RESET: i32 = 1422;
+const Y_EXPORT: i32 = 1423;
+const Y_DELETE: i32 = 1424;
+/// Learned habits per page of the list.
+const STYLE_ITEMS_PER_PAGE: usize = 6;
+const STYLE_CANDIDATES_SHOWN: usize = 5;
+const STYLE_APPS_SHOWN: usize = 12;
 
 const IDT_SAVED: usize = 9001;
+/// One-shot: how long the finished model step shows "ready" before setup moves on.
+const IDT_ADVANCE: usize = 9003;
+const ADVANCE_MS: u32 = 700;
+/// Posted when a dictionary field loses focus; the commit runs once focus has settled.
+const WM_DICT_COMMIT: u32 = WM_APP + 1;
 const WM_MOUSELEAVE_U: u32 = 0x02A3;
 
 // ------------------------------------------------------------------------------------------------
 // Theme (light, derived from the KeyReed emerald brand; high-contrast uses system colours)
 // ------------------------------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-pub(crate) struct Theme {
-    pub(crate) bg: u32,
-    pub(crate) sidebar: u32,
-    pub(crate) surface: u32,
-    pub(crate) border: u32,
-    /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
-    pub(crate) control_border: u32,
-    pub(crate) divider: u32,
-    pub(crate) text: u32,
-    pub(crate) text2: u32,
-    pub(crate) text3: u32,
-    pub(crate) accent: u32,
-    pub(crate) accent_fill: u32,
-    pub(crate) accent_press: u32,
-    pub(crate) accent_soft: u32,
-    pub(crate) hover: u32,
-    pub(crate) hover_card: u32,
-    pub(crate) on_accent: u32,
-    pub(crate) warn_fg: u32,
-    pub(crate) warn_bg: u32,
-    pub(crate) err_fg: u32,
-    pub(crate) err_bg: u32,
-    pub(crate) ok_fg: u32,
-    pub(crate) ok_bg: u32,
-    pub(crate) track: u32,
-    pub(crate) disabled_bg: u32,
-    pub(crate) focus: u32,
-    pub(crate) hc: bool,
-}
+pub(crate) use crate::tokens::Theme;
+use crate::motion::Animated;
+use crate::tokens::{elevation, radius};
 
 #[repr(C)]
 struct HighContrastW {
@@ -180,27 +227,37 @@ pub(crate) fn high_contrast_on() -> bool {
 
 static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Re-reads which colour scheme Settings should use: Windows "Choose your default app mode"
-/// (HKCU\...\Themes\Personalize\AppsUseLightTheme). If the value is missing or unreadable the
-/// light theme is used. `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
+/// Re-reads which colour scheme KeyReed's windows use: light unless the person turned on Dark mode in General (kept
+/// in HKCU\Software\KeyReed, value DarkMode). `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
+/// The listener stays dark in both.
 pub(crate) fn refresh_dark_mode() {
     let forced = std::env::var("KEYREED_UI_THEME").ok();
     let dark = match forced.as_deref() {
         Some("dark") => true,
         Some("light") => false,
-        _ => system_apps_use_dark(),
+        _ => dark_pref(),
     };
     DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn system_apps_use_dark() -> bool {
+const PREF_KEY: &str = r"Software\KeyReed";
+const PREF_DARK: &str = "DarkMode";
+
+/// The Dark mode switch: off (light) when never set or unreadable.
+fn dark_pref() -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
-    let key = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-    let val = to_wide("AppsUseLightTheme");
-    let mut data: u32 = 1;
+    let (key, val) = (to_wide(PREF_KEY), to_wide(PREF_DARK));
+    let mut data: u32 = 0;
     let mut len = std::mem::size_of::<u32>() as u32;
     let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut len) };
-    rc == 0 && data == 0
+    rc == 0 && data != 0
+}
+
+fn set_dark_pref(on: bool) {
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD};
+    let (key, val) = (to_wide(PREF_KEY), to_wide(PREF_DARK));
+    let data: u32 = on as u32;
+    unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), REG_DWORD, &data as *const u32 as *const _, 4) };
 }
 
 pub(crate) fn theme() -> Theme {
@@ -239,71 +296,15 @@ pub(crate) fn theme() -> Theme {
                 track: gray,
                 disabled_bg: win,
                 focus: txt,
+                focus_ring: txt,
+                working: txt,
+                shadows: false,
                 hc: true,
             };
         }
     }
-    if DARK.load(std::sync::atomic::Ordering::Relaxed) {
-        // Same emerald identity on the listener's dark green-black. Every text/control pair is checked
-        // against WCAG 2.2 AA (text 4.5:1, control boundaries 3:1); see docs/design/02-dark-theme.md.
-        return Theme {
-            bg: rgb(0x0F, 0x17, 0x13),
-            sidebar: rgb(0x0B, 0x12, 0x0F),
-            surface: rgb(0x17, 0x23, 0x1D),
-            border: rgb(0x26, 0x35, 0x2D),
-            control_border: rgb(0x6F, 0x84, 0x79),
-            divider: rgb(0x1F, 0x2C, 0x25),
-            text: rgb(0xE8, 0xF1, 0xEC),
-            text2: rgb(0xA9, 0xBB, 0xB2),
-            text3: rgb(0x8D, 0xA3, 0x98),
-            accent: rgb(0x5E, 0xE0, 0xB0),
-            accent_fill: rgb(0x34, 0xD3, 0x99),
-            accent_press: rgb(0x10, 0xB9, 0x81),
-            accent_soft: rgb(0x14, 0x3C, 0x2E),
-            hover: rgb(0x22, 0x32, 0x2A),
-            hover_card: rgb(0x1C, 0x2B, 0x24),
-            on_accent: rgb(0x04, 0x24, 0x1A),
-            warn_fg: rgb(0xF8, 0xCE, 0x85),
-            warn_bg: rgb(0x3B, 0x2C, 0x10),
-            err_fg: rgb(0xFD, 0xA4, 0xAF),
-            err_bg: rgb(0x3E, 0x17, 0x22),
-            ok_fg: rgb(0x7B, 0xE8, 0xBC),
-            ok_bg: rgb(0x10, 0x34, 0x26),
-            track: rgb(0x3A, 0x4B, 0x42),
-            disabled_bg: rgb(0x14, 0x1E, 0x19),
-            focus: rgb(0xE8, 0xF1, 0xEC),
-            hc: false,
-        };
-    }
-    Theme {
-        bg: rgb(0xF7, 0xF9, 0xF8),
-        sidebar: rgb(0xEE, 0xF3, 0xF0),
-        surface: rgb(0xFF, 0xFF, 0xFF),
-        border: rgb(0xDD, 0xE5, 0xE1),
-        control_border: rgb(0x7F, 0x8F, 0x87),
-        divider: rgb(0xEA, 0xEF, 0xEC),
-        text: rgb(0x0E, 0x1A, 0x14),
-        text2: rgb(0x4A, 0x5A, 0x52),
-        // text3 >= 4.5:1 on every surface it is drawn on (was 3.4-3.9). accent_fill carries white text at 5.5:1 (was 3.8).
-        text3: rgb(0x5B, 0x6B, 0x63),
-        accent: rgb(0x06, 0x5F, 0x46),
-        accent_fill: rgb(0x04, 0x78, 0x57),
-        accent_press: rgb(0x06, 0x4E, 0x3B),
-        accent_soft: rgb(0xE0, 0xF2, 0xE9),
-        hover: rgb(0xE4, 0xEB, 0xE7),
-        hover_card: rgb(0xF3, 0xF7, 0xF5),
-        on_accent: rgb(0xFF, 0xFF, 0xFF),
-        warn_fg: rgb(0x8A, 0x4B, 0x08),
-        warn_bg: rgb(0xFE, 0xF4, 0xD7),
-        err_fg: rgb(0xA3, 0x14, 0x3C),
-        err_bg: rgb(0xFF, 0xE8, 0xEB),
-        ok_fg: rgb(0x06, 0x5F, 0x46),
-        ok_bg: rgb(0xDC, 0xF5, 0xE8),
-        track: rgb(0xD8, 0xE1, 0xDC),
-        disabled_bg: rgb(0xEF, 0xF2, 0xF0),
-        focus: rgb(0x0E, 0x1A, 0x14),
-        hc: false,
-    }
+    // Every text/control pair of both palettes is checked against WCAG 2.2 AA (`both_themes_meet_wcag_aa`).
+    if DARK.load(std::sync::atomic::Ordering::Relaxed) { crate::tokens::DARK } else { crate::tokens::LIGHT }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -318,6 +319,8 @@ pub(crate) enum F {
     BodySemi,
     Caption,
     CaptionSemi,
+    /// Section labels: small caps-height uppercase with open tracking, like the website's mono eyebrows.
+    Eyebrow,
     Icon,
     IconSmall,
     IconLarge,
@@ -347,6 +350,7 @@ impl Fonts {
                 (F::BodySemi, mk(face, 14.0, 600)),
                 (F::Caption, mk(face, 12.0, 400)),
                 (F::CaptionSemi, mk(face, 12.0, 600)),
+                (F::Eyebrow, mk(face, 11.0, 600)),
                 (F::Icon, mk(icon_face, 16.0, 400)),
                 (F::IconSmall, mk(icon_face, 12.0, 400)),
                 (F::IconLarge, mk(icon_face, 24.0, 400)),
@@ -420,6 +424,7 @@ enum C {
     Warn,
     Err,
     Ok,
+    Working,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -473,22 +478,25 @@ enum Kind {
     Combo { items: Vec<String>, sel: usize },
     Edit { text: String, password: bool, multiline: bool, cue: String },
     /// "Press your shortcut" field: shows `spec` as keycaps; Space or a click starts a capture.
-    Shortcut { spec: HotkeySpec, role: ShortcutRole },
-}
+        Shortcut { spec: HotkeySpec, role: ShortcutRole },
+        /// A window button in the frameless header: minimize, or close.
+        WinBtn { close: bool },
+    }
 
-impl Kind {
-    fn tag(&self) -> u8 {
-        match self {
-            Kind::Nav { .. } => 0,
-            Kind::Toggle { .. } => 1,
-            Kind::Choice { .. } => 2,
-            Kind::Button { .. } => 3,
-            Kind::Combo { .. } => 4,
-            Kind::Edit { .. } => 5,
-            Kind::Shortcut { .. } => 6,
+    impl Kind {
+        fn tag(&self) -> u8 {
+            match self {
+                Kind::Nav { .. } => 0,
+                Kind::Toggle { .. } => 1,
+                Kind::Choice { .. } => 2,
+                Kind::Button { .. } => 3,
+                Kind::Combo { .. } => 4,
+                Kind::Edit { .. } => 5,
+                Kind::Shortcut { .. } => 6,
+                Kind::WinBtn { .. } => 7,
+            }
         }
     }
-}
 
 #[derive(Clone, PartialEq, Debug)]
 struct Ctrl {
@@ -511,7 +519,7 @@ struct Builder {
 
 impl Builder {
     fn new() -> Self {
-        Builder { items: Vec::new(), ctrls: Vec::new(), y: 28, group_start: None, rows_in_group: 0 }
+        Builder { items: Vec::new(), ctrls: Vec::new(), y: HEADER_H + 24, group_start: None, rows_in_group: 0 }
     }
 
     fn text(&mut self, rr: R, s: impl Into<String>, font: F, color: C, flags: u32) {
@@ -519,7 +527,8 @@ impl Builder {
     }
 
     fn title(&mut self, title: &str, subtitle: &str) {
-        self.text(r(X0, self.y, CW, 36), title, F::Title, C::Text, DT_SINGLELINE);
+        // 40 tall: the 30 px display face's descenders ("g" in Writing) need the whole cell.
+        self.text(r(X0, self.y, CW, 40), title, F::Display, C::Text, DT_SINGLELINE);
         self.y += 40;
         if !subtitle.is_empty() {
             self.text(r(X0, self.y, CW, 40), subtitle, F::Body, C::Text2, DT_WORDBREAK);
@@ -531,7 +540,7 @@ impl Builder {
 
     fn section(&mut self, label: &str) {
         self.y += 4;
-        self.text(r(X0, self.y, CW, 18), label, F::CaptionSemi, C::Text2, DT_SINGLELINE);
+        self.text(r(X0, self.y, CW, 18), label, F::Eyebrow, C::Text3, DT_SINGLELINE);
         self.y += 24;
     }
 
@@ -586,7 +595,8 @@ impl Builder {
     }
 
     fn toggle_row(&mut self, id: i32, label: &str, desc: &str, on: bool, enabled: bool) {
-        let w = 96;
+        // Just the switch: its position and fill show the state (the accessible name still says On or Off).
+        let w = 52;
         let wrap = desc.chars().count() as i32 * 6 > CW - 2 * PAD - w - 20;
         let (y0, h) = self.row_ex(label, desc, C::Text2, w, wrap);
         self.ctrl(id, Kind::Toggle { on }, r(X0 + CW - PAD - w, y0 + (h - 32) / 2, w, 32), Bg::Surface, &format!("{label}: {}", if on { "On" } else { "Off" }));
@@ -656,27 +666,43 @@ struct St {
     practice_text: String,
     key_draft: String,
     last_page: usize,
-    /// Logical scroll offset of the content column (non-zero only when the work area is too short).
+    /// Logical scroll offset of the content column (non-zero only when the layout is taller than the view).
     scroll: i32,
+    /// Logical height of the current page's content (some pages, e.g. eight speech models, are taller than the window).
+    content_h: i32,
     /// Logical client height.
     view_h: i32,
-    /// Toggles sliding to a new state: (control id, start). Empty unless a switch was just flipped.
-    anims: Vec<(i32, Instant)>,
+    /// Switch thumbs (0 off .. 1 on) and choice-card selections (0 .. 1), each on its own spring. A control without
+    /// an entry is at rest at its state.
+    springs: Vec<(i32, Animated)>,
+    /// Top edge (logical px) of the navigation selection: one object that slides between items, never a duplicate.
+    nav_y: Animated,
+    /// Page entrance: motion-clock start and direction (0 rises; -1 / +1 slides in from the left / right). Until it
+    /// ends, the page's own controls are drawn into the canvas and their windows stay hidden.
+    enter: Option<(f64, i32)>,
+    /// The control to focus when the entrance ends (it is hidden until then).
+    pending_focus: Option<i32>,
 }
 
-const IDT_ANIM: usize = 9002;
-const TOGGLE_MS: f32 = 150.0;
+/// Logical top edge of navigation item `page` (and of the selection when it rests there).
+fn nav_top(page: usize) -> f32 {
+    (NAV_Y + page as i32 * NAV_PITCH) as f32
+}
 
-/// 0..1 progress of a toggle slide, eased out (cubic). 1.0 when no slide is running.
-fn toggle_progress(st: &St, id: i32) -> f32 {
-    st.anims
-        .iter()
-        .find(|(i, _)| *i == id)
-        .map(|(_, t0)| {
-            let p = (t0.elapsed().as_secs_f32() * 1000.0 / TOGGLE_MS).clamp(0.0, 1.0);
-            1.0 - (1.0 - p).powi(3)
-        })
-        .unwrap_or(1.0)
+/// A switch's or choice card's spring value and speed at `now`, or its resting value `rest`.
+fn spring_state(st: &St, id: i32, rest: f32, now: f64) -> (f32, f32) {
+    st.springs.iter().find(|(i, _)| *i == id).map_or((rest, 0.0), |(_, a)| a.state(now))
+}
+
+/// How far into its entrance the page is, for an item whose top is `y` (logical, unscrolled): `(opacity, dx, dy)` in
+/// logical pixels. Groups lower on the page start a little later (up to three steps).
+fn enter_state(st: &St, y: i32, now: f64) -> (f32, f32, f32) {
+    let Some((t0, dir)) = st.enter else { return (1.0, 0.0, 0.0) };
+    let band = ((y - (HEADER_H + 24)).max(0) / 120).min(3) as usize;
+    let ms = ((now - t0) * 1000.0) as f32 - crate::motion::stagger_ms(band) * 2.0;
+    let p = crate::motion::STANDARD.eval((ms / (crate::motion::PAGE_MS - 42.0)).clamp(0.0, 1.0));
+    let travel = 1.0 - p;
+    if dir == 0 { (p, 0.0, 8.0 * travel) } else { (p, 12.0 * dir as f32 * travel, 0.0) }
 }
 
 thread_local! {
@@ -686,6 +712,85 @@ thread_local! {
     static CAPTURE: RefCell<Option<(i32, ShortcutCapture)>> = const { RefCell::new(None) };
     /// Why the last captured chord was refused; shown under that row until the next capture.
     static SHORTCUT_REFUSAL: RefCell<Option<(i32, String)>> = const { RefCell::new(None) };
+    /// Setup step 4: the practice box holds text (a dictation arrived).
+    static PRACTICE_HEARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Setup step 4: why the last practice attempt produced nothing (0 none, 1 nothing heard, 3 failed).
+    static PRACTICE_NOTE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// The step-3 "Ready" beat is already counting down to the next step.
+    static ADVANCE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Writing page: `Some(page)` while the personal dictionary editor is open, showing that page of rows.
+    static VOCAB_VIEW: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// The dictionary editor shows one blank row at the end for a new term.
+    static VOCAB_DRAFT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// My style: the page of learned habits on show.
+    static STYLE_PAGE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The confirmation card on show, if any: the window's own replacement for the stock dialog box.
+    static MODAL: RefCell<Option<Modal>> = const { RefCell::new(None) };
+}
+
+/// What confirming the card does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ModalAction {
+    /// Nothing to confirm: a notice with one OK button.
+    Notice,
+    DeleteLearned,
+    ResetAll,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct Modal {
+    title: String,
+    body: String,
+    confirm: String,
+    action: ModalAction,
+}
+
+impl Modal {
+    fn destructive(&self) -> bool {
+        self.action != ModalAction::Notice
+    }
+
+    /// Destructive cards get Cancel (the default button); a notice only has OK.
+    fn cancel(&self) -> Option<&'static str> {
+        self.destructive().then_some("Cancel")
+    }
+}
+
+/// Where the card sits: centred on the design size.
+fn modal_card() -> R {
+    r((WIN_W - MODAL_W) / 2, (WIN_H - MODAL_H) / 2, MODAL_W, MODAL_H)
+}
+
+/// Shows the card and hands the keyboard to its default button (Cancel where the action destroys something).
+fn ask(title: &str, body: &str, confirm: &str, action: ModalAction) {
+    MODAL.with(|m| {
+        *m.borrow_mut() = Some(Modal { title: title.into(), body: body.into(), confirm: confirm.into(), action })
+    });
+    rebuild(true);
+}
+
+fn ask_delete_learned() {
+    ask(
+        "Delete everything KeyReed learned?",
+        "Every learned word and habit, the suggestions and the excluded apps go. Your switches and other settings stay.",
+        "Delete",
+        ModalAction::DeleteLearned,
+    );
+}
+
+/// Drops the card and puts focus back on something reachable.
+fn close_modal() {
+    MODAL.with(|m| *m.borrow_mut() = None);
+    rebuild(false);
+    let page = ST.with(|s| s.borrow().as_ref().map(|st| st.page).unwrap_or(PAGE_GENERAL));
+    if unsafe { GetFocus() }.is_null() {
+        focus_ctrl(ID_NAV + page as i32);
+    }
+}
+
+/// Controls that never scroll with the page: the navigation and the header's window buttons.
+fn fixed_in_place(k: &Kind) -> bool {
+    matches!(k, Kind::Nav { .. } | Kind::WinBtn { .. })
 }
 
 /// Window DPI, honouring the gallery's scale override.
@@ -717,6 +822,20 @@ fn commit(f: impl FnOnce(&mut AppConfig)) {
         c
     };
     send(UiAction::SaveUpdatedConfig { new_cfg: Box::new(cfg), new_plaintext_api_key: None });
+    flash_saved();
+}
+
+/// Applies one change to the style store on top of the latest copy; the coordinator saves it.
+fn commit_style(f: impl FnOnce(&mut vi_core::style::StyleStore)) {
+    let Some(g) = globals() else { return };
+    let style = {
+        let mut m = g.model.lock();
+        let mut s = m.style.clone();
+        f(&mut s);
+        m.style = s.clone();
+        s
+    };
+    send(UiAction::SaveStyleStore(Box::new(style)));
     flash_saved();
 }
 
@@ -797,7 +916,8 @@ pub fn open(page: Option<usize>) {
         let hinst = GetModuleHandleW(std::ptr::null());
         let cls = to_wide(SETTINGS_WINDOW_CLASS);
         let title = to_wide(&format!("{PRODUCT_NAME} Settings"));
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        // Frameless: the window is its own frame (WM_NCCALCSIZE / WM_NCHITTEST below); the edges still resize.
+        let style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             cls.as_ptr(),
@@ -815,11 +935,9 @@ pub fn open(page: Option<usize>) {
         if hwnd.is_null() {
             return;
         }
-        // Size for the DPI of the monitor the window landed on, then centre it.
+        // The client area is the whole window, so the design size is the window size. Centre it on the monitor.
         let dpi = window_dpi(hwnd);
-        let mut rc = RECT { left: 0, top: 0, right: sc(WIN_W, dpi), bottom: sc(WIN_H, dpi) };
-        AdjustWindowRectExForDpi(&mut rc, style, 0, WS_EX_CONTROLPARENT, dpi);
-        let (w, h) = (rc.right - rc.left, (rc.bottom - rc.top).min(wa.bottom - wa.top));
+        let (w, h) = (sc(WIN_W, dpi), sc(WIN_H, dpi).min(wa.bottom - wa.top));
         let x = wa.left + ((wa.right - wa.left) - w) / 2;
         let y = (wa.top + ((wa.bottom - wa.top) - h) / 2).max(wa.top);
         SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -848,7 +966,18 @@ pub fn pre_translate(msg: &MSG) -> bool {
             return false;
         }
         if msg.hwnd == h || IsChild(h, msg.hwnd) != 0 {
-            return IsDialogMessageW(h, msg) != 0;
+            // Any key or click while a page enters finishes the entrance first: motion never delays input.
+            if matches!(msg.message, WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MOUSEWHEEL)
+                && ST.with(|s| s.try_borrow().ok().is_some_and(|b| b.as_ref().is_some_and(|st| st.enter.is_some())))
+            {
+                finish_enter();
+            }
+            let handled = IsDialogMessageW(h, msg) != 0;
+            if handled {
+                // Tab can land on a control below the fold: bring it into view.
+                reveal_focused();
+            }
+            return handled;
         }
     }
     false
@@ -862,6 +991,55 @@ pub fn show_page_for_test(page: usize, step: usize) {
         }
     });
     navigate(page);
+}
+
+/// Gallery hook: (scroll offset, content height, visible height) of the page on show, in design units.
+pub fn scroll_state_for_test() -> (i32, i32, i32) {
+    ST.with(|s| s.borrow().as_ref().map(|st| (st.scroll, st.content_h, st.view_h)).unwrap_or((0, 0, 0)))
+}
+
+/// Gallery hook: one wheel notch sent to control `id`, as Windows sends it when the pointer is over that control.
+pub fn wheel_over_control_for_test(id: i32, delta: i32) -> bool {
+    unsafe {
+        let h = GetDlgItem(hwnd(), id);
+        !h.is_null() && SendMessageW(h, WM_MOUSEWHEEL, (((delta as i16 as u16) as usize) << 16) as WPARAM, 0) == 0
+    }
+}
+
+/// Gallery hooks: the Delete-all card (the one the My style page opens), and dismissing it again.
+pub fn confirm_delete_for_test() {
+    ask_delete_learned();
+}
+
+/// Test hook (gallery perf): flips the Notifications switch on the General page the way a click does.
+pub fn flip_toggle_for_test() {
+    on_command(G_NOTIFY, 0);
+}
+
+/// Test hook (filmstrips): chooses writing mode `i` the way a click does.
+pub fn select_mode_for_test(i: usize) {
+    on_command(W_MODE + i as i32, 0);
+}
+
+/// Test hook (filmstrips): repaints the whole window and its controls now, at whatever the motion clock says.
+pub fn repaint_for_test() {
+    let h = hwnd();
+    if !h.is_null() {
+        unsafe {
+            on_frame(h);
+            windows_sys::Win32::Graphics::Gdi::RedrawWindow(h, std::ptr::null(), std::ptr::null_mut(), 0x0001 | 0x0080 | 0x0100);
+        }
+    }
+}
+
+pub fn dismiss_modal_for_test() {
+    close_modal();
+}
+
+/// Gallery hook: scroll the content column of the page on show (logical offset, clamped like the wheel).
+pub fn scroll_to_for_test(offset: i32) {
+    let cur = ST.with(|s| s.borrow().as_ref().map(|st| st.scroll).unwrap_or(0));
+    scroll_by(offset - cur);
 }
 
 /// Gallery hook for the Quick Fix shortcut field on the Dictation page: 0 = recording, nothing held yet;
@@ -902,6 +1080,8 @@ fn navigate(page: usize) {
             if st.page != page {
                 st.page = page;
                 st.scroll = 0;
+                VOCAB_VIEW.with(|v| v.set(None));
+                VOCAB_DRAFT.with(|v| v.set(false));
                 changed = true;
                 if page != PAGE_START {
                     st.last_page = page;
@@ -911,6 +1091,7 @@ fn navigate(page: usize) {
         }
     });
     if changed {
+        begin_enter(0);
         rebuild(true);
     } else {
         refresh();
@@ -923,9 +1104,12 @@ fn navigate(page: usize) {
 
 fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>, Vec<Ctrl>) {
     let mut b = Builder::new();
+    // The frameless header's window buttons: real controls, so hover, press and focus draw as everywhere else.
+    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - PANEL_INSET - 96, 16, 40, 32), Bg::Content, "Minimize");
+    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - PANEL_INSET - 52, 16, 40, 32), Bg::Content, "Close");
     // Navigation
     for (i, (label, _)) in NAV.iter().enumerate() {
-        let y = 92 + i as i32 * 38;
+        let y = NAV_Y + i as i32 * 38;
         b.ctrl(ID_NAV + i as i32, Kind::Nav { page: i, selected: i == page }, r(12, y, SIDEBAR_W - 24, 36), Bg::Sidebar, label);
     }
     match page {
@@ -933,6 +1117,7 @@ fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>
         PAGE_GENERAL => page_general(&mut b, m),
         PAGE_DICTATION => page_dictation(&mut b, m),
         PAGE_WRITING => page_writing(&mut b, m),
+        PAGE_MYSTYLE => page_mystyle(&mut b, m),
         PAGE_OUTPUT => page_output(&mut b, m),
         PAGE_AUDIO => page_audio(&mut b, m),
         PAGE_MODELS => page_models(&mut b, m),
@@ -941,8 +1126,23 @@ fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>
         _ => page_about(&mut b, m),
     }
     if page != PAGE_START {
-        let (s, c) = if saved { ("Saved", C::Accent) } else { ("Changes save automatically", C::Text3) };
-        b.text(r(X0, WIN_H - 34, CW, 18), s, F::Caption, c, DT_SINGLELINE | DT_RIGHT);
+        // Only said when something was saved; changes always apply at once, so there is nothing to remind the user of.
+        if saved {
+            b.text(r(X0, WIN_H - 34, CW, 18), "Saved", F::Caption, C::Accent, DT_SINGLELINE | DT_RIGHT);
+        }
+    }
+    // The confirmation card (see `ask`): Cancel first, so Enter on the default button never deletes anything.
+    if let Some(md) = MODAL.with(|m| m.borrow().clone()) {
+        let card = modal_card();
+        let (bh, by) = (32, card.y + card.h - 24 - 32);
+        let cw = button_width(&md.confirm);
+        let confirm_x = card.x + card.w - 24 - cw;
+        if let Some(label) = md.cancel() {
+            let nw = button_width(label);
+            b.ctrl(MODAL_CANCEL, Kind::Button { style: BtnStyle::Secondary, label: label.into() }, r(confirm_x - 8 - nw, by, nw, bh), Bg::Surface, label);
+        }
+        let style = if md.destructive() { BtnStyle::Danger } else { BtnStyle::Primary };
+        b.ctrl(MODAL_CONFIRM, Kind::Button { style, label: md.confirm.clone() }, r(confirm_x, by, cw, bh), Bg::Surface, &md.confirm);
     }
     (b.items, b.ctrls)
 }
@@ -1014,14 +1214,18 @@ fn mic_test_block(b: &mut Builder, m: &SharedUiModel, test_id: i32) {
     b.text(r(X0 + PAD + (CW - 2 * PAD) / 2 - 60, y + 80, 120, 16), "Good", F::Caption, C::Text3, DT_SINGLELINE | DT_CENTER);
     b.text(r(X0 + CW - PAD - 120, y + 80, 120, 16), "Too loud", F::Caption, C::Text3, DT_SINGLELINE | DT_RIGHT);
     let mut h = 106;
+    // Windows can hand desktop apps silence when microphone privacy is off; one click opens that page.
+    let privacy_button = |b: &mut Builder, y: i32| {
+        let label = "Open privacy settings";
+        b.ctrl(MIC_PRIVACY, Kind::Button { style: BtnStyle::Secondary, label: label.into() }, r(X0 + PAD, y, button_width(label), 32), Bg::Surface, "Open Windows microphone privacy settings");
+        b.last_ctrl().tip = Some("Turn on \u{201C}Let desktop apps access your microphone\u{201D} in Windows Settings.".into());
+    };
     if let Some(e) = &t.error {
-        b.items.push(Item::Banner {
-            r: r(X0 + PAD, y + 104, CW - 2 * PAD, 52),
-            tone: Tone::Err,
-            title: "Couldn't open the microphone".into(),
-            body: friendly_error(e).message.into(),
-        });
-        h = 168;
+        let fe = friendly_error(e);
+        let body = if fe.fix == ErrorFix::Microphone { "Check it's connected, and turn on \u{201C}Let desktop apps access your microphone\u{201D}." } else { fe.message };
+        b.items.push(Item::Banner { r: r(X0 + PAD, y + 104, CW - 2 * PAD, 52), tone: Tone::Err, title: "Couldn't open the microphone".into(), body: body.into() });
+        privacy_button(b, y + 164);
+        h = 208;
     } else if let Some(v) = t.verdict {
         let tone = match v {
             MicVerdict::Good => Tone::Ok,
@@ -1038,9 +1242,19 @@ fn mic_test_block(b: &mut Builder, m: &SharedUiModel, test_id: i32) {
         );
         b.text(r(X0 + PAD, y + 162, CW - 2 * PAD, 16), detail, F::Caption, C::Text3, DT_SINGLELINE | DT_END_ELLIPSIS);
         h = 188;
+        if v == MicVerdict::Silent {
+            privacy_button(b, y + 186);
+            h = 230;
+        }
     }
     b.y = y + h;
     b.end_group();
+}
+
+/// The quiet line at the foot of the setup steps that handle the microphone and the model.
+fn privacy_line(b: &mut Builder) {
+    b.items.push(Item::Glyph { r: r(X0, WIN_H - 49, 16, 18), ch: '\u{E72E}', font: F::IconSmall, color: C::Text3 });
+    b.text(r(X0 + 22, WIN_H - 49, CW - 282, 18), "Speech is processed on this PC.", F::Caption, C::Text3, DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
@@ -1048,9 +1262,12 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
     b.text(r(X0, b.y, CW, 18), format!("Setup · step {} of 4", step + 1), F::CaptionSemi, C::Text2, DT_SINGLELINE);
     b.items.push(Item::Steps { r: r(X0, b.y + 24, CW, 4), current: step, total: 4 });
     b.y += 44;
+    let downloading = m.download.as_ref().is_some_and(|d| d.is_active());
+    let toggle = m.config.activation_mode == ActivationMode::ToggleToTalk;
     match step {
         0 => {
-            b.title("Welcome to KeyReed", "Talk instead of type, in any app. Speech is turned into text on this PC.");
+            let how = if toggle { format!("Press {hk}, speak, press again.") } else { format!("Hold {hk}, speak, let go.") };
+            b.title("Welcome to KeyReed", &format!("{how} KeyReed types it wherever your cursor is."));
             let w = (CW - 24) / 3;
             let y = b.y;
             let cards: [(&str, &str); 3] = [
@@ -1071,27 +1288,47 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
                 b.text(r(x + 14, y + 104, w - 28, 18), *d, F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
             }
             b.y = y + 144;
+            // Plan F3: one sentence saying exactly what learning reads, and the switch, on by default.
+            b.group();
+            b.toggle_row(
+                Y_LEARN,
+                "Learn my words from my corrections",
+                "KeyReed learns your words from the corrections you make to its text. It checks only the text box it just typed into, on this PC, and keeps only the corrected words.",
+                m.config.learn_from_edits,
+                true,
+            );
+            b.end_group();
             b.section("Your shortcut");
             b.group();
             let (items, sel, note, nc) = hotkey_items(m);
             b.combo_row(S_HOTKEY, "Push-to-talk shortcut", &note, nc, items, sel, 220);
             b.end_group();
             activation_choices(b, m, S_HOLD, S_TOGGLE);
+            // Next starts the one-time download, so say so (and how big it is) before the user presses it.
+            if !m.active_model_ready() && !downloading {
+                let mb = ASR_UI_CATALOG[0].download_mb;
+                b.text(r(X0, b.y, CW, 18), format!("Next downloads the speech engine to this PC, once ({mb} MB)."), F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
             b.ctrl(S_SKIP, Kind::Button { style: BtnStyle::Subtle, label: "Skip setup".into() }, r(X0, WIN_H - 56, 110, 32), Bg::Content, "Skip setup");
             b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: "Next".into() }, r(X0 + CW - 120, WIN_H - 56, 120, 32), Bg::Content, "Next");
         }
         1 => {
-            b.title("Check your microphone", "Pick the microphone you'll speak into, then run a quick test.");
+            let lead = if toggle { format!("KeyReed listens only between your two presses of {hk}.") } else { format!("KeyReed listens only while you hold {hk}.") };
+            b.title("Let KeyReed hear you", &lead);
             b.group();
             let (items, sel) = mic_items(m);
-            b.combo_row(S_MIC, "Microphone", "If it's unplugged, KeyReed uses the Windows default.", C::Text2, items, sel, 300);
+            b.combo_row(S_MIC, "Microphone", "If it's unplugged, KeyReed uses the Windows default", C::Text2, items, sel, 300);
             b.end_group();
             mic_test_block(b, m, S_TEST);
+            privacy_line(b);
             nav_buttons(b, "Next");
         }
         2 => {
-            b.title("Get the speech engine", "KeyReed turns speech into text on your PC. It's a one-time download.");
-            let id = if m.active_model_ready() { m.config.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
+            let ready = m.active_model_ready();
+            let id = if ready { m.config.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
+            let mb = asr_ui_info(&id).map_or(ASR_UI_CATALOG[0].download_mb, |i| i.download_mb);
+            let lead = if ready { "The speech engine is ready.".to_string() } else { format!("Downloading the speech engine, {mb} MB, once.") };
+            b.title("Setting up KeyReed", &lead);
             b.group();
             model_row(b, m, &id, S_DL, false);
             b.end_group();
@@ -1104,10 +1341,17 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
                 body: "Speech stays on this PC. Cloud processing is off unless you add your own key under Processing.".into(),
             });
             b.y += 68;
+            privacy_line(b);
             nav_buttons(b, "Next");
         }
         _ => {
-            b.title("Try it", &format!("Click in the box, hold {hk}, say a sentence, then let go."));
+            let heard = PRACTICE_HEARD.with(|c| c.get());
+            if heard {
+                b.title("That's KeyReed", "It types wherever your cursor is, in any app.");
+            } else {
+                let lead = if toggle { format!("Press {hk}, say anything, then press it again.") } else { format!("Hold {hk} and say anything, then let go.") };
+                b.title("Your turn", &lead);
+            }
             if !m.active_model_ready() {
                 b.items.push(Item::Banner {
                     r: r(X0, b.y, CW, 56),
@@ -1120,32 +1364,49 @@ fn page_start(b: &mut Builder, step: usize, m: &SharedUiModel) {
             b.text(r(X0, b.y, CW, 18), "Practice area · text appears here, nothing is sent anywhere", F::CaptionSemi, C::Text2, DT_SINGLELINE);
             b.y += 22;
             b.ctrl(S_PRACTICE, Kind::Edit { text: String::new(), password: false, multiline: true, cue: String::new() }, r(X0, b.y, CW, 104), Bg::Content, "Practice area");
-            b.y += 120;
+            // One quiet line under the box says what is happening or what to try next.
+            let (hint, color) = match (&m.state, PRACTICE_NOTE.with(|c| c.get())) {
+                _ if heard => (format!("It typed what you said. Use {hk} again to try another."), C::Ok),
+                (EngineState::Listening, _) => ("Listening…".to_string(), C::Text2),
+                (EngineState::Processing | EngineState::Correcting, _) => ("Typing what you said…".to_string(), C::Working),
+                (_, 1) => ("KeyReed didn't hear any words. Speak while it's listening, then try again.".to_string(), C::Warn),
+                (_, 3) => ("That didn't work. Try again.".to_string(), C::Warn),
+                _ => (String::new(), C::Text2),
+            };
+            if !hint.is_empty() {
+                b.text(r(X0, b.y + 108, CW, 18), hint, F::Caption, color, DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            b.y += 138;
             b.group();
             let mode = m.config.default_writing_mode;
             b.row(&format!("Writing mode: {}", mode.label()), mode.description(), C::Text2, 0);
             let om = m.config.output_mode;
             let short = match om {
-                OutputMode::DirectTyping => "Types straight into the app you're using.",
-                OutputMode::Clipboard => "Copies the text; you paste it with Ctrl+V.",
-                OutputMode::AskBeforeInserting => "Shows the text first and asks before inserting.",
+                OutputMode::DirectTyping => "Types straight into the app you're using",
+                OutputMode::Clipboard => "Copies the text; you paste it with Ctrl+V",
+                OutputMode::AskBeforeInserting => "Shows the text first and asks before inserting",
             };
             b.row(&format!("Output: {}", om.title()), short, C::Text2, 0);
             b.end_group();
             b.text(r(X0, b.y, CW, 18), "You can change these any time under Writing and Output.", F::Caption, C::Text3, DT_SINGLELINE);
-            nav_buttons(b, "Finish");
+            nav_buttons(b, "Start using KeyReed");
         }
     }
 }
 
 fn nav_buttons(b: &mut Builder, next: &str) {
-    b.ctrl(S_BACK, Kind::Button { style: BtnStyle::Secondary, label: "Back".into() }, r(X0 + CW - 248, WIN_H - 56, 120, 32), Bg::Content, "Back");
-    b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: next.into() }, r(X0 + CW - 120, WIN_H - 56, 120, 32), Bg::Content, next);
+    let nw = button_width(next).max(120);
+    b.ctrl(S_BACK, Kind::Button { style: BtnStyle::Secondary, label: "Back".into() }, r(X0 + CW - nw - 128, WIN_H - 56, 120, 32), Bg::Content, "Back");
+    b.ctrl(S_NEXT, Kind::Button { style: BtnStyle::Primary, label: next.into() }, r(X0 + CW - nw, WIN_H - 56, nw, 32), Bg::Content, next);
 }
 
 fn page_general(b: &mut Builder, m: &SharedUiModel) {
     let c = &m.config;
     b.title("General", "How KeyReed starts and stays out of your way.");
+    b.section("Appearance");
+    b.group();
+    b.toggle_row(G_DARK, "Dark mode", "Settings, Quick Fix and the Composer in dark colours. The listener is always dark", DARK.load(std::sync::atomic::Ordering::Relaxed), !high_contrast_on());
+    b.end_group();
     b.section("Startup");
     b.group();
     b.toggle_row(G_ENABLED, "KeyReed is on", "When off, the shortcut is ignored and the microphone stays closed.", c.app_enabled, true);
@@ -1183,8 +1444,25 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
         .unwrap_or_else(|| "Your own shortcut. Click the field and press new keys to change it.".into());
     b.shortcut_row(D_HOTKEY, "Push-to-talk shortcut", &note, c, ShortcutRole::Dictation);
     b.shortcut_row(D_QF_KEY, "Quick Fix shortcut", "Fixes the text you have selected, in any app.", c, ShortcutRole::QuickFix);
-    b.toggle_row(D_QF_REVIEW, "Review Quick Fix changes first", "Shows every change before anything is replaced. Turning this off lets KeyReed replace spelling fixes it is sure about, with Undo.", c.quick_fix_always_review, true);
+    b.shortcut_row(D_VOICE_KEY, "Voice command shortcut", "Tap it for the Composer on the text you have selected, or hold it and say what to do with it.", c, ShortcutRole::VoiceCommand);
+    b.shortcut_row(D_COMPOSER_KEY, "Composer shortcut", "Opens the bar to write, or to rewrite the text you have selected.", c, ShortcutRole::Composer);
+    b.toggle_row(D_QF_REVIEW, "Review every Quick Fix change", "Off by default: a fix KeyReed is sure about replaces the text straight away, with Undo on the listener. Turn it on to see every change first; formatting and writing-model fixes are always shown.", c.quick_fix_always_review, true);
     b.toggle_row(D_PTT, "Listen for the shortcuts", "When off, start dictation from the floating listener instead (its right-click menu, or a click if you set that in General).", c.ptt_enabled, true);
+    b.end_group();
+    b.section("Mouse");
+    b.group();
+    for (i, (label, desc, action)) in [
+        ("Middle button", "Pressing the scroll wheel. Left and right clicks are never used.", c.mouse_middle_action),
+        ("Back button", "The rear side button on most mice.", c.mouse_back_action),
+        ("Forward button", "The front side button on most mice.", c.mouse_forward_action),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let items: Vec<String> = MouseAction::ALL.iter().map(|a| a.label().to_string()).collect();
+        let sel = MouseAction::ALL.iter().position(|a| *a == action).unwrap_or(0);
+        b.combo_row(D_MOUSE + i as i32, label, desc, C::Text2, items, sel, 220);
+    }
     b.end_group();
     b.section("How the shortcut works");
     activation_choices(b, m, D_HOLD, D_TOGGLE);
@@ -1208,6 +1486,9 @@ fn page_dictation(b: &mut Builder, m: &SharedUiModel) {
 }
 
 fn page_writing(b: &mut Builder, m: &SharedUiModel) {
+    if let Some(page) = VOCAB_VIEW.with(|v| v.get()) {
+        return page_vocab(b, m, page);
+    }
     let c = &m.config;
     b.title("Writing", &format!("Pick how KeyReed turns speech into text. {} switches modes any time.", c.mode_cycle_hotkey.display_name));
     let w = (CW - 10) / 2;
@@ -1232,14 +1513,271 @@ fn page_writing(b: &mut Builder, m: &SharedUiModel) {
     b.group();
     b.toggle_row(W_AUTOCTX, "Adapt to the app I'm using", "Professional in email, Casual in chat, Code in terminals.", c.auto_context_mode, true);
     b.ctrls.last_mut().unwrap().tip = Some("Email → Professional, chat → Casual, code editors → Technical, terminals → Terminal / Code. Other apps use your default mode.".into());
-    let (y0, h) = b.row("Personal dictionary", "Names and terms to spell your way, separated by commas.", C::Text2, 250);
-    b.ctrl(
-        W_VOCAB,
-        Kind::Edit { text: c.dictionary.vocabulary.join(", "), password: false, multiline: false, cue: "e.g. KeyReed, Kubernetes".into() },
-        r(X0 + CW - PAD - 250, y0 + (h - 30) / 2, 250, 30),
-        Bg::Surface,
-        "Personal dictionary",
+    let terms = dict_entries(&c.dictionary).len();
+    let desc = match terms {
+        0 => "Names and terms to spell your way".to_string(),
+        1 => "1 term".to_string(),
+        n => format!("{n} terms"),
+    };
+    b.button_row(W_VOCAB, "Personal dictionary", &desc, "Edit", BtnStyle::Secondary);
+    b.last_ctrl().name = "Edit personal dictionary".into();
+    b.end_group();
+}
+
+/// One row of the personal dictionary editor: a term and the spoken forms that should become it.
+#[derive(Clone, Debug, PartialEq)]
+struct DictEntry {
+    term: String,
+    sounds: Vec<String>,
+}
+
+fn spoken_for(d: &vi_core::PersonalDictionary, term: &str) -> Vec<String> {
+    d.replacements.iter().filter(|r| r.written.eq_ignore_ascii_case(term)).map(|r| r.spoken.clone()).collect()
+}
+
+/// Vocabulary terms in order, each with the replacement rules that write it. A rule whose written form is not a
+/// vocabulary term still gets its own row, so nothing stored by another route is hidden or lost.
+fn dict_entries(d: &vi_core::PersonalDictionary) -> Vec<DictEntry> {
+    let mut v: Vec<DictEntry> = d.vocabulary.iter().map(|t| DictEntry { term: t.clone(), sounds: spoken_for(d, t) }).collect();
+    for r in &d.replacements {
+        if !v.iter().any(|e| e.term.eq_ignore_ascii_case(&r.written)) {
+            v.push(DictEntry { term: r.written.clone(), sounds: spoken_for(d, &r.written) });
+        }
+    }
+    v
+}
+
+fn same_spellings(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+/// The dictionary is on whenever it has something to apply (it shipped disabled, so entries used to be ignored).
+fn dict_sync_enabled(d: &mut vi_core::PersonalDictionary) {
+    d.enabled = !(d.vocabulary.is_empty() && d.replacements.is_empty());
+}
+
+/// Applies the edited texts of one row. `index` is the row's place in `dict_entries`, `None` for the blank row that
+/// adds a term. An empty term never deletes anything (use Remove), a duplicate term is refused, nothing is truncated.
+/// Returns true when the dictionary changed.
+fn apply_dict_row(d: &mut vi_core::PersonalDictionary, index: Option<usize>, term: &str, sounds: &str) -> bool {
+    let (before_v, before_r, before_e) = (d.vocabulary.clone(), d.replacements.clone(), d.enabled);
+    let term = term.trim();
+    let spoken = parse_vocab(sounds);
+    let entries = dict_entries(d);
+    match index.and_then(|i| entries.get(i)).cloned() {
+        Some(old) => {
+            let taken = entries.iter().enumerate().any(|(j, e)| Some(j) != index && e.term.eq_ignore_ascii_case(term));
+            let new_term = if term.is_empty() || taken { old.term.clone() } else { term.to_string() };
+            if new_term != old.term {
+                for v in d.vocabulary.iter_mut().filter(|v| v.eq_ignore_ascii_case(&old.term)) {
+                    *v = new_term.clone();
+                }
+                for r in d.replacements.iter_mut().filter(|r| r.written.eq_ignore_ascii_case(&old.term)) {
+                    r.written = new_term.clone();
+                }
+            }
+            if !same_spellings(&spoken, &old.sounds) {
+                let kept: Vec<_> = d.replacements.iter().filter(|r| r.written.eq_ignore_ascii_case(&new_term)).cloned().collect();
+                d.replacements.retain(|r| !r.written.eq_ignore_ascii_case(&new_term));
+                for sp in spoken {
+                    match kept.iter().find(|r| r.spoken.eq_ignore_ascii_case(&sp)) {
+                        Some(rule) => d.replacements.push(rule.clone()),
+                        None => d.upsert_replacement(sp, new_term.clone(), false),
+                    }
+                }
+            }
+        }
+        None => {
+            if term.is_empty() || d.vocabulary.len() >= DICT_MAX_TERMS {
+                return false;
+            }
+            d.add_term(term);
+            for sp in spoken {
+                d.upsert_replacement(sp, term.to_string(), false);
+            }
+        }
+    }
+    dict_sync_enabled(d);
+    d.vocabulary != before_v || d.replacements != before_r || d.enabled != before_e
+}
+
+fn remove_dict_entry(d: &mut vi_core::PersonalDictionary, index: usize) {
+    if let Some(e) = dict_entries(d).get(index) {
+        d.vocabulary.retain(|v| !v.eq_ignore_ascii_case(&e.term));
+        d.replacements.retain(|r| !r.written.eq_ignore_ascii_case(&e.term));
+        dict_sync_enabled(d);
+    }
+}
+
+fn is_dict_edit(id: i32) -> bool {
+    (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) || (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id)
+}
+
+/// The dictionary editor: `DICT_ROWS` rows per page, a blank row for the next term, Remove per row.
+fn page_vocab(b: &mut Builder, m: &SharedUiModel, page_idx: usize) {
+    let entries = dict_entries(&m.config.dictionary);
+    let n = entries.len();
+    let at_cap = n >= DICT_MAX_TERMS;
+    let draft = !at_cap && (VOCAB_DRAFT.with(|c| c.get()) || n == 0);
+    let total = n + draft as usize;
+    let pages = total.div_ceil(DICT_ROWS).max(1);
+    let page = page_idx.min(pages - 1);
+    VOCAB_VIEW.with(|v| v.set(Some(page)));
+    let first = page * DICT_ROWS;
+    let rows = (total - first).min(DICT_ROWS);
+
+    b.title("Personal dictionary", "Spell names and terms your way. Add how they sound if they get misheard.");
+    b.text(r(X0 + PAD + 12, b.y, 180, 18), "Term", F::CaptionSemi, C::Text2, DT_SINGLELINE);
+    b.text(r(X0 + 230, b.y, 240, 18), "Sounds like (separate with commas)", F::CaptionSemi, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    b.y += 22;
+    b.group();
+    b.y += 4;
+    for i in 0..rows {
+        let abs = first + i;
+        if i > 0 {
+            b.items.push(Item::Divider { x: X0 + PAD, y: b.y, w: CW - 2 * PAD });
+        }
+        let (term, sounds) = entries.get(abs).map(|e| (e.term.clone(), e.sounds.join(", "))).unwrap_or_default();
+        let ry = b.y;
+        let (tname, sname) = if term.is_empty() { ("New term".to_string(), "Sounds like for the new term".to_string()) } else { (format!("Term {term}"), format!("Sounds like for {term}")) };
+        b.ctrl(V_TERM + i as i32, Kind::Edit { text: term.clone(), password: false, multiline: false, cue: "Name or term".into() }, r(X0 + PAD, ry + 7, 190, 30), Bg::Surface, &tname);
+        b.ctrl(V_SOUND + i as i32, Kind::Edit { text: sounds, password: false, multiline: false, cue: "How it sounds".into() }, r(X0 + 218, ry + 7, 250, 30), Bg::Surface, &sname);
+        if abs < n {
+            b.ctrl(V_DEL + i as i32, Kind::Button { style: BtnStyle::Subtle, label: "Remove".into() }, r(X0 + 480, ry + 6, 84, 32), Bg::Surface, &format!("Remove {term}"));
+        }
+        b.y += 44;
+    }
+    b.y += 4;
+    let group_end = b.y;
+    b.end_group();
+    b.text(r(X0, group_end + 8, CW, 18), "A spelling that is also a common word is replaced whenever KeyReed hears it.", F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    if at_cap {
+        b.text(r(X0, group_end + 28, CW, 18), format!("That is the limit of {DICT_MAX_TERMS} terms. Remove one to add another."), F::Caption, C::Warn, DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    // Actions sit above the "Saved" line at the foot of the window.
+    let y = WIN_H - 80;
+    b.ctrl(V_ADD, Kind::Button { style: BtnStyle::Secondary, label: "Add term".into() }, r(X0, y, button_width("Add term"), 32), Bg::Content, "Add term");
+    b.last_ctrl().enabled = !at_cap;
+    b.ctrl(V_DONE, Kind::Button { style: BtnStyle::Primary, label: "Done".into() }, r(X0 + CW - 120, y, 120, 32), Bg::Content, "Done");
+    if pages > 1 {
+        b.ctrl(V_NEXT, Kind::Button { style: BtnStyle::Secondary, label: "Next".into() }, r(X0 + CW - 212, y, 84, 32), Bg::Content, "Next page of terms");
+        b.last_ctrl().enabled = page + 1 < pages;
+        b.ctrl(V_PREV, Kind::Button { style: BtnStyle::Secondary, label: "Previous".into() }, r(X0 + CW - 304, y, 84, 32), Bg::Content, "Previous page of terms");
+        b.last_ctrl().enabled = page > 0;
+        b.text(r(X0 + 112, y + 7, CW - 304 - 112 - 8, 18), format!("Page {} of {pages} · {n} terms", page + 1), F::Caption, C::Text3, DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS);
+    }
+}
+
+/// One learned habit in plain language, with its evidence: "Agreed 41 of 44 times", or "You set this".
+fn style_item_lines(item: &vi_core::style::StyleItem) -> (String, String) {
+    let label = vi_core::habits::habit_sentence(&item.key, &item.value)
+        .unwrap_or_else(|| format!("{}: {}", item.key.replace('_', " "), item.value));
+    let evidence = if item.locked {
+        "You set this".to_string()
+    } else {
+        format!("Agreed {} of {} times", item.agree, item.seen)
+    };
+    (label, evidence)
+}
+
+/// "My style" (plan F3, P4.5): what is read and kept, the learning switch, the spelling choice, what has been
+/// learned, the single-sighting suggestions, the excluded apps, and export / reset / delete.
+fn page_mystyle(b: &mut Builder, m: &SharedUiModel) {
+    let c = &m.config;
+    let s = &m.style;
+    b.title("My style", "What KeyReed has learned from your own corrections, and what it may change.");
+    b.text(
+        r(X0, b.y, CW, 34),
+        "It reads only the text box it just typed into, on this PC, and keeps only the corrected words and habits \u{2014} never the text around them.",
+        F::Body,
+        C::Text2,
+        DT_WORDBREAK,
     );
+    b.y += 44;
+    b.group();
+    b.toggle_row(Y_LEARN, "Learn from my corrections", "Off means nothing is read and nothing is kept.", c.learn_from_edits, true);
+    b.combo_row(
+        Y_DIALECT,
+        "Spelling",
+        "What KeyReed writes, and never changes away from.",
+        C::Text2,
+        vec!["Auto (follow what I write)".to_string(), "British".to_string(), "American".to_string()],
+        match c.dialect {
+            Dialect::Auto => 0,
+            Dialect::British => 1,
+            Dialect::American => 2,
+        },
+        220,
+    );
+    b.end_group();
+
+    b.section("Learned");
+    b.group();
+    if s.items.is_empty() {
+        b.row("Nothing yet", "A word or habit you correct twice appears here, with its evidence.", C::Text2, 0);
+    } else {
+        let pages = s.items.len().div_ceil(STYLE_ITEMS_PER_PAGE);
+        let page = STYLE_PAGE.with(|p| p.get()).min(pages - 1);
+        // Keep the state on a page that exists: the Remove buttons address rows by it.
+        STYLE_PAGE.with(|p| p.set(page));
+        for (i, item) in s.items[page * STYLE_ITEMS_PER_PAGE..].iter().take(STYLE_ITEMS_PER_PAGE).enumerate() {
+            let (label, evidence) = style_item_lines(item);
+            b.button_row(Y_ITEM + i as i32, &label, &evidence, "Remove", BtnStyle::Subtle);
+        }
+        if pages > 1 {
+            let y = b.y;
+            b.ctrl(Y_PREV, Kind::Button { style: BtnStyle::Secondary, label: "Previous".into() }, r(X0 + PAD, y + 6, 84, 32), Bg::Surface, "Previous learned items");
+            b.last_ctrl().enabled = page > 0;
+            b.ctrl(Y_NEXT, Kind::Button { style: BtnStyle::Secondary, label: "Next".into() }, r(X0 + PAD + 92, y + 6, 84, 32), Bg::Surface, "More learned items");
+            b.last_ctrl().enabled = page + 1 < pages;
+            b.text(r(X0 + PAD + 188, y + 13, CW - 2 * PAD - 188, 18), format!("Page {} of {pages}", page + 1), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 44;
+        }
+    }
+    b.end_group();
+
+    b.section("Suggestions");
+    b.group();
+    if s.vocabulary_candidates.is_empty() {
+        b.row("Nothing waiting", "A word you fix once waits here until you add it or dismiss it.", C::Text2, 0);
+    } else {
+        for (i, cand) in s.vocabulary_candidates.iter().take(STYLE_CANDIDATES_SHOWN).enumerate() {
+            let evidence = format!("Corrected {} time{} in {}", cand.count, if cand.count == 1 { "" } else { "s" }, cand.context);
+            let (y0, h) = b.row(&format!("{} \u{2192} {}", cand.from, cand.to), &evidence, C::Text2, 176);
+            b.ctrl(Y_CAND + i as i32, Kind::Button { style: BtnStyle::Secondary, label: "Add".into() }, r(X0 + CW - PAD - 176, y0 + (h - 32) / 2, 80, 32), Bg::Surface, &format!("Add {} to my dictionary", cand.to));
+            b.ctrl(Y_CAND_DISMISS + i as i32, Kind::Button { style: BtnStyle::Subtle, label: "Dismiss".into() }, r(X0 + CW - PAD - 88, y0 + (h - 32) / 2, 88, 32), Bg::Surface, &format!("Dismiss the suggestion {}", cand.to));
+        }
+        let more = s.vocabulary_candidates.len().saturating_sub(STYLE_CANDIDATES_SHOWN);
+        if more > 0 {
+            b.text(r(X0 + PAD, b.y + 8, CW - 2 * PAD, 18), format!("{more} more wait behind these."), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 30;
+        }
+    }
+    b.end_group();
+
+    b.section("Apps KeyReed never reads");
+    b.group();
+    if s.excluded_apps.is_empty() {
+        b.row("None excluded", "Password managers and private windows are skipped anyway.", C::Text2, 0);
+    } else {
+        for (i, app) in s.excluded_apps.iter().take(STYLE_APPS_SHOWN).enumerate() {
+            b.button_row(Y_APP + i as i32, app, "Nothing is read in this app.", "Remove", BtnStyle::Subtle);
+        }
+        let more = s.excluded_apps.len().saturating_sub(STYLE_APPS_SHOWN);
+        if more > 0 {
+            b.text(r(X0 + PAD, b.y + 8, CW - 2 * PAD, 18), format!("{more} more are excluded."), F::Caption, C::Text3, DT_SINGLELINE);
+            b.y += 30;
+        }
+    }
+    b.end_group();
+
+    b.group();
+    let y = b.y + 4;
+    b.ctrl(Y_EXPORT, Kind::Button { style: BtnStyle::Secondary, label: "Export".into() }, r(X0 + PAD, y, 84, 32), Bg::Surface, "Export my style as a file");
+    b.ctrl(Y_RESET, Kind::Button { style: BtnStyle::Secondary, label: "Reset learned".into() }, r(X0 + PAD + 92, y, 136, 32), Bg::Surface, "Reset everything learned");
+    b.ctrl(Y_DELETE, Kind::Button { style: BtnStyle::Danger, label: "Delete all".into() }, r(X0 + PAD + 236, y, 112, 32), Bg::Surface, "Delete everything learned and the excluded apps");
+    b.y = y + 44;
     b.end_group();
 }
 
@@ -1263,10 +1801,37 @@ fn page_output(b: &mut Builder, m: &SharedUiModel) {
 
 fn page_audio(b: &mut Builder, m: &SharedUiModel) {
     b.title("Microphone", "Choose a microphone and check that KeyReed hears you clearly.");
+    let c = &m.config;
     b.section("Input device");
     b.group();
     let (items, sel) = mic_items(m);
     b.combo_row(A_MIC, "Microphone", "If it's unplugged, KeyReed switches to the Windows default.", C::Text2, items, sel, 300);
+    b.end_group();
+    b.section("Sounds");
+    b.group();
+    let styles: Vec<String> = AudioCueStyle::ALL.iter().map(|s| s.label().to_string()).collect();
+    let sel = AudioCueStyle::ALL.iter().position(|s| *s == c.audio_cue_style).unwrap_or(0);
+    b.combo_row(
+        A_CUE,
+        "Cue",
+        "A short tone when listening starts, a different one when the text is ready.",
+        C::Text2,
+        styles,
+        sel,
+        220,
+    );
+    // Steps of 5 %: fine enough to place the cue, and no slider control exists in this window.
+    let levels: Vec<String> = (0..=20).map(|i| format!("{} %", i * 5)).collect();
+    b.combo_row(
+        A_VOL,
+        "Cue volume",
+        "Moves only the cue. Your microphone and playback volume stay as they are.",
+        C::Text2,
+        levels,
+        (c.audio_cue_volume.min(100) / 5) as usize,
+        220,
+    );
+    b.button_row(A_PLAY, "Hear it", "Plays the cue now, at this volume.", "Play", BtnStyle::Secondary);
     b.end_group();
     b.section("Test");
     mic_test_block(b, m, A_TEST);
@@ -1307,7 +1872,7 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
     let (label, style, enabled) = match dl.map(|d| &d.stage) {
         Some(DownloadStage::Starting) | Some(DownloadStage::Downloading) => ("Cancel", BtnStyle::Secondary, true),
         Some(DownloadStage::Verifying) => ("Verifying…", BtnStyle::Secondary, false),
-        Some(DownloadStage::Failed(_)) if !installed => ("Retry", BtnStyle::Primary, !other_active),
+        Some(DownloadStage::Failed(_)) if !installed => ("Try again", BtnStyle::Primary, !other_active),
         _ if active && installed => ("In use", BtnStyle::Status, false),
         _ if installed => ("Use", BtnStyle::Secondary, true),
         _ => ("Download", if info.recommended { BtnStyle::Primary } else { BtnStyle::Secondary }, !other_active),
@@ -1334,6 +1899,46 @@ fn model_row(b: &mut Builder, m: &SharedUiModel, id: &str, action_id: i32, footn
     b.y += 72;
 }
 
+/// The Quick Fix grammar model: the same row anatomy as a speech model, but it powers Quick Fix, so its
+/// action column installs only (Quick Fix finds it by folder name; there is nothing to switch).
+fn grammar_row(b: &mut Builder, m: &SharedUiModel, action_id: i32) {
+    let y = b.y;
+    let installed = m.is_installed(GRAMMAR_MODEL_ID);
+    let dl = m.download.as_ref().filter(|d| d.model_id.eq_ignore_ascii_case(GRAMMAR_MODEL_ID));
+    b.text(r(X0 + PAD, y + 10, 260, 20), "Grammar tagger", F::BodySemi, C::Text, DT_SINGLELINE);
+    if installed {
+        b.items.push(Item::Badge { x: X0 + PAD, y: y + 10, s: "In use by Quick Fix".into(), tone: Tone::Info, after: Some("Grammar tagger".into()) });
+    }
+    b.text(r(X0 + PAD, y + 32, CW - 200, 18), "Checks grammar when you run Quick Fix.", F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+    let (label, style, enabled) = match dl.map(|d| &d.stage) {
+        Some(DownloadStage::Starting) | Some(DownloadStage::Downloading) => ("Cancel", BtnStyle::Secondary, true),
+        Some(DownloadStage::Verifying) => ("Verifying…", BtnStyle::Secondary, false),
+        Some(DownloadStage::Failed(_)) if !installed => ("Try again", BtnStyle::Primary, true),
+        _ if installed => ("Installed", BtnStyle::Status, false),
+        _ => ("Download", BtnStyle::Primary, true),
+    };
+    match dl {
+        Some(d) if d.is_active() => {
+            b.items.push(Item::Progress { r: r(X0 + PAD, y + 55, 220, 6), frac: d.fraction() });
+            b.text(r(X0 + PAD + 232, y + 49, CW - 400, 18), d.detail_text(), F::Caption, C::Text2, DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        Some(d) if matches!(d.stage, DownloadStage::Failed(_)) && !installed => {
+            b.text(r(X0 + PAD, y + 49, CW - 200, 18), d.detail_text(), F::Caption, C::Err, DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        _ => b.text(
+            r(X0 + PAD, y + 49, CW - 200, 18),
+            "English · about 70 MB · runs on this PC",
+            F::Caption,
+            C::Text3,
+            DT_SINGLELINE | DT_END_ELLIPSIS,
+        ),
+    }
+    let bw = 120;
+    b.ctrl(action_id, Kind::Button { style, label: label.into() }, r(X0 + CW - PAD - bw, y + 18, bw, 32), Bg::Surface, &format!("{label} Grammar tagger"));
+    b.last_ctrl().enabled = enabled;
+    b.y += 72;
+}
+
 fn page_models(b: &mut Builder, m: &SharedUiModel) {
     b.title("Speech models", "Models run on this PC. Download the ones you want and choose which to use.");
     if !m.active_model_ready() && m.download.as_ref().map(|d| !d.is_active()).unwrap_or(true) {
@@ -1356,6 +1961,12 @@ fn page_models(b: &mut Builder, m: &SharedUiModel) {
         "Every model is verified with SHA-256 before use."
     };
     b.text(r(X0, b.y, CW, 34), note, F::Caption, C::Text3, DT_WORDBREAK);
+    // Two wrapped lines of caption, then room to separate the next section's heading.
+    b.y += 42;
+    b.section("Quick Fix grammar");
+    b.group();
+    grammar_row(b, m, M_GRAMMAR);
+    b.end_group();
 }
 
 fn page_processing(b: &mut Builder, m: &SharedUiModel) {
@@ -1408,6 +2019,7 @@ fn page_privacy(b: &mut Builder, m: &SharedUiModel) {
     b.toggle_row(V_PWD, "Never type into password fields", "Password boxes get the clipboard, never keystrokes.", c.privacy.block_password_fields, true);
     b.toggle_row(V_REDACT, "Hide private window titles", "Don't read titles of private browser windows and password managers.", c.privacy.redact_sensitive_window_titles, true);
     b.toggle_row(V_CLIPHIST, "Keep dictation out of clipboard history", "Excludes KeyReed text from Win+V history and cloud clipboard.", c.privacy.exclude_from_clipboard_history, true);
+    b.toggle_row(V_CLOUD_JOBS, "Let text jobs use the cloud", "Composer, Quick Fix and voice commands may send text to your cloud key. This never applies under Maximum Privacy.", c.text_jobs_allow_cloud, true);
     b.end_group();
     b.section("Your data");
     b.group();
@@ -1504,10 +2116,12 @@ fn child_rect(c: &Ctrl) -> R {
 unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     let hinst = GetModuleHandleW(std::ptr::null());
     let d = cx.dpi;
-    let dy = if matches!(c.kind, Kind::Nav { .. }) { 0 } else { cx.scroll };
+    let dy = if fixed_in_place(&c.kind) { 0 } else { cx.scroll };
     let cr = child_rect(c);
     let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - dy, d), sc(cr.w, d), sc(cr.h, d));
     let (cls, style, ex, text): (&str, u32, u32, String) = match &c.kind {
+        // Window buttons are not in the tab order: Tab belongs to the page.
+        Kind::WinBtn { .. } => ("BUTTON", 0x0B /* BS_OWNERDRAW */, 0, c.name.clone()),
         Kind::Nav { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Button { .. } | Kind::Combo { .. } | Kind::Shortcut { .. } => {
             ("BUTTON", 0x0B /* BS_OWNERDRAW */ | WS_TABSTOP, 0, c.name.clone())
         }
@@ -1533,19 +2147,25 @@ unsafe fn create_ctrl(cx: &Ctx, c: &Ctrl) -> HWND {
     SendMessageW(hwnd, WM_SETFONT, cx.body as WPARAM, 0);
     if matches!(c.kind, Kind::Edit { .. }) {
         theme_native_control(hwnd, "Edit");
+        if is_dict_edit(c.id) {
+            let max = if c.id < V_SOUND { DICT_MAX_TERM_CHARS } else { DICT_MAX_SOUNDS_CHARS };
+            SendMessageW(hwnd, 0x00C5 /* EM_LIMITTEXT */, max, 0);
+        }
     }
     match &c.kind {
         Kind::Edit { cue, .. } => {
+            SetWindowSubclass(hwnd, Some(edit_wheel_subclass), 1, 0);
             if !cue.is_empty() {
                 let w = to_wide(cue);
                 SendMessageW(hwnd, EM_SETCUEBANNER, 1, w.as_ptr() as LPARAM);
             }
         }
         _ => {
-            // Reference data: 1 = drop-down field, 2 = shortcut capture field.
+            // Reference data: 1 = drop-down field, 2 = shortcut capture field, 3 = navigation item.
             let kind = match c.kind {
                 Kind::Combo { .. } => 1,
                 Kind::Shortcut { .. } => 2,
+                Kind::Nav { .. } => 3,
                 _ => 0,
             };
             SetWindowSubclass(hwnd, Some(btn_subclass), 1, kind);
@@ -1610,50 +2230,199 @@ fn read_text(h: HWND) -> String {
     }
 }
 
-/// Copies edit contents into `St` (practice text, unsaved key) and returns the dictionary text,
-/// which the caller commits *after* releasing the borrow. Reading child text only messages the
+/// Copies edit contents into `St` (practice text, unsaved key) and returns the texts of the dictionary fields
+/// (control id, text), which the caller applies *after* releasing the borrow. Reading child text only messages the
 /// child controls, never `wnd_proc`.
-fn harvest_edits(st: &mut St) -> Option<String> {
-    let mut vocab = None;
+fn harvest_edits(st: &mut St) -> Vec<(i32, String)> {
+    let mut dict = Vec::new();
     for (c, h) in &st.ctrls {
         match c.id {
             S_PRACTICE => st.practice_text = read_text(*h),
             P_KEY => st.key_draft = read_text(*h),
-            W_VOCAB => vocab = Some(read_text(*h)),
+            id if is_dict_edit(id) => dict.push((id, read_text(*h))),
             _ => {}
         }
     }
-    vocab
+    dict
 }
 
 fn harvest_and_commit() {
-    let vocab = ST.with(|s| s.borrow_mut().as_mut().and_then(harvest_edits));
-    if let Some(v) = vocab {
-        save_vocab(&v);
-    }
+    let edits = ST.with(|s| s.borrow_mut().as_mut().map(harvest_edits)).unwrap_or_default();
+    apply_dict_edits(&edits, false);
 }
 
 fn parse_vocab(v: &str) -> Vec<String> {
     v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-fn save_vocab(v: &str) {
-    let list = parse_vocab(v);
-    let (current, enabled) = snapshot()
-        .map(|m| (m.config.dictionary.vocabulary, m.config.dictionary.enabled))
-        .unwrap_or_default();
-    // Words typed here must actually be used: the dictionary is on whenever it has entries
-    // (it shipped disabled by default, so entries were silently ignored before v0.4.0).
-    let want_enabled = !list.is_empty();
-    if list != current || enabled != want_enabled {
-        commit(|c| {
-            c.dictionary.vocabulary = list;
-            c.dictionary.enabled = want_enabled;
-        });
+/// Saves the edited dictionary rows in one change. With `skip_draft`, the blank row for a new term is left alone
+/// (it is saved when focus leaves the row or on Enter), so adding a row never rebuilds the page under the caret.
+fn apply_dict_edits(edits: &[(i32, String)], skip_draft: bool) {
+    if edits.is_empty() {
+        return;
+    }
+    let Some(m) = snapshot() else { return };
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    let mut d = m.config.dictionary.clone();
+    let n = dict_entries(&d).len();
+    let text = |base: i32, i: usize| edits.iter().find(|(id, _)| *id == base + i as i32).map(|(_, t)| t.as_str());
+    let mut changed = false;
+    for i in 0..DICT_ROWS {
+        let (Some(term), Some(sounds)) = (text(V_TERM, i), text(V_SOUND, i)) else { continue };
+        let abs = page * DICT_ROWS + i;
+        let index = (abs < n).then_some(abs);
+        if index.is_none() && skip_draft {
+            continue;
+        }
+        changed |= apply_dict_row(&mut d, index, term, sounds);
+    }
+    if changed {
+        commit(|c| c.dictionary = d);
+    }
+}
+
+fn focused_id() -> i32 {
+    unsafe {
+        let f = GetFocus();
+        if f.is_null() {
+            0
+        } else {
+            GetDlgCtrlID(f)
+        }
+    }
+}
+
+/// Runs after a dictionary field lost focus, once focus has settled on its new owner.
+fn dict_commit_deferred() {
+    let id = focused_id();
+    let row = if (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) {
+        Some((id - V_TERM) as usize)
+    } else if (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id) {
+        Some((id - V_SOUND) as usize)
+    } else {
+        None
+    };
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    let n = snapshot().map(|m| dict_entries(&m.config.dictionary).len()).unwrap_or(0);
+    let in_draft = row.is_some_and(|r| page * DICT_ROWS + r >= n);
+    let edits = ST.with(|s| s.try_borrow_mut().ok().and_then(|mut b| b.as_mut().map(harvest_edits))).unwrap_or_default();
+    apply_dict_edits(&edits, in_draft);
+}
+
+fn focus_ctrl(id: i32) {
+    unsafe {
+        let h = GetDlgItem(hwnd(), id);
+        if !h.is_null() {
+            SetFocus(h);
+        }
+    }
+}
+
+/// Leaves the dictionary editor for the Writing page.
+fn close_vocab() {
+    harvest_and_commit();
+    VOCAB_VIEW.with(|v| v.set(None));
+    VOCAB_DRAFT.with(|v| v.set(false));
+    rebuild(false);
+    focus_ctrl(W_VOCAB);
+}
+
+/// Moves the editor to `page` (rows per page: `DICT_ROWS`) and focuses its first field.
+fn vocab_goto(page: usize, draft: bool) {
+    VOCAB_VIEW.with(|v| v.set(Some(page)));
+    VOCAB_DRAFT.with(|v| v.set(draft));
+    rebuild(false);
+}
+
+fn dict_len() -> usize {
+    snapshot().map(|m| dict_entries(&m.config.dictionary).len()).unwrap_or(0)
+}
+
+/// Enter in a "Sounds like" field: save the row; a newly added term is followed by a fresh blank row.
+fn dict_enter(row: usize) {
+    let before = dict_len();
+    harvest_and_commit();
+    let after = dict_len();
+    let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+    if page * DICT_ROWS + row >= before && after > before {
+        vocab_goto(after / DICT_ROWS, true);
+        focus_ctrl(V_TERM + (after % DICT_ROWS) as i32);
+    } else {
+        unsafe { SendMessageW(hwnd(), WM_NEXTDLGCTL, 0, 0) };
+    }
+}
+
+/// Return: presses the focused push button, moves Term to Sounds like, saves a Sounds like row, and otherwise
+/// presses the setup step's primary button (never a destructive one).
+fn on_enter() {
+    let id = focused_id();
+    if (V_SOUND..V_SOUND + DICT_ROWS as i32).contains(&id) {
+        return dict_enter((id - V_SOUND) as usize);
+    }
+    if (V_TERM..V_TERM + DICT_ROWS as i32).contains(&id) {
+        unsafe { SendMessageW(hwnd(), WM_NEXTDLGCTL, 0, 0) };
+        return;
+    }
+    let (is_button, in_setup) = ST
+        .with(|s| {
+            let b = s.try_borrow().ok()?;
+            let st = b.as_ref()?;
+            let pressable = st.ctrls.iter().any(|(c, _)| c.id == id && c.enabled && matches!(c.kind, Kind::Button { .. }));
+            Some((pressable, st.page == PAGE_START))
+        })
+        .unwrap_or((false, false));
+    if is_button {
+        on_command(id, 0);
+    } else if in_setup {
+        on_command(S_NEXT, 0);
     }
 }
 
 /// Full rebuild of page controls (page switch / DPI change / structure change).
+/// The logical bottom of a page: the lowest control or item, never less than the window.
+fn content_height(items: &[Item], ctrls: &[Ctrl]) -> i32 {
+    let items_bottom = items.iter().map(|it| match it {
+        Item::Text { r, .. }
+        | Item::Meter { r, .. }
+        | Item::Progress { r, .. }
+        | Item::Glyph { r, .. }
+        | Item::Steps { r, .. }
+        | Item::Banner { r, .. }
+        | Item::Group { r }
+        | Item::Card { r } => r.y + r.h,
+        Item::Badge { y, .. } | Item::Keycap { y, .. } => y + 22,
+        Item::Divider { y, .. } => *y,
+    });
+    let ctrls_bottom = ctrls.iter().map(|c| c.r.y + c.r.h);
+    let bottom = items_bottom.chain(ctrls_bottom).max().unwrap_or(WIN_H);
+    // 24 px of breathing room under the last row, but a page that fits the window never scrolls and
+    // never shows a scrollbar.
+    (bottom + 24).max(WIN_H)
+}
+
+/// The largest offset a page can scroll to: the part of its content that hangs below the window.
+fn max_scroll(content_h: i32, view_h: i32) -> i32 {
+    (content_h - view_h).max(0)
+}
+
+/// The offset after one step: never negative, never past the end of the page.
+fn next_scroll(cur: i32, delta: i32, content_h: i32, view_h: i32) -> i32 {
+    (cur + delta).clamp(0, max_scroll(content_h, view_h))
+}
+
+/// How far to scroll so the control at `y` (design units) is fully in the view again, 8 px clear of the
+/// edge. `None` when it is already there.
+fn reveal_delta(y: i32, h: i32, scroll: i32, view_h: i32) -> Option<i32> {
+    let (top, bottom) = (y - scroll, y - scroll + h);
+    if bottom > view_h {
+        Some(bottom - view_h + 8)
+    } else if top < 0 {
+        Some(top - 8)
+    } else {
+        None
+    }
+}
+
 fn rebuild(focus_first: bool) {
     let Some(m) = snapshot() else { return };
     // Phase 1: compute under the borrow and take ownership of the old controls.
@@ -1663,6 +2432,10 @@ fn rebuild(focus_first: bool) {
         let saved = st.saved_at.map(|t| t.elapsed().as_millis() < 1800).unwrap_or(false);
         let (items, ctrls) = build(st.page, st.step, &m, saved);
         let old: Vec<(Ctrl, HWND)> = st.ctrls.drain(..).collect();
+        // New controls start at rest; the selection slides from wherever it is to the page's item.
+        st.springs.clear();
+        st.nav_y.retarget(nav_top(st.page), crate::motion::now());
+        st.content_h = content_height(&items, &ctrls);
         st.items = items;
         Some((ctrls, old, ctx_of(st), st.page))
     });
@@ -1679,23 +2452,147 @@ fn rebuild(focus_first: bool) {
             let h = create_ctrl(&cx, &c);
             (c, h)
         }).collect();
-        let target = if focus_first {
+        let entering = ST.with(|s| s.borrow().as_ref().is_some_and(|st| st.enter.is_some()));
+        let target = if MODAL.with(|m| m.borrow().is_some()) {
+            created.iter().find(|(c, _)| matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM)).map(|(_, h)| *h)
+        } else if focus_first {
             created.iter().find(|(c, _)| c.id == ID_NAV + page as i32).map(|(_, h)| *h)
         } else {
-            focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h))
+            // A page control is hidden while the page enters: it gets the focus when the entrance ends.
+            match focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id)) {
+                Some((c, _)) if entering && !fixed_in_place(&c.kind) => {
+                    let id = c.id;
+                    ST.with(|s| s.borrow_mut().as_mut().map(|st| st.pending_focus = Some(id)));
+                    None
+                }
+                Some((_, h)) => Some(*h),
+                None => None,
+            }
         };
         // Phase 3: store.
-        ST.with(|s| {
-            if let Some(st) = s.borrow_mut().as_mut() {
-                st.ctrls = created;
-            }
+        let regions = ST.with(|s| {
+            let mut sb = s.borrow_mut();
+            let st = sb.as_mut()?;
+            st.ctrls = created;
+            // A card in front owns the screen: only its buttons show.
+            show_children(st);
+            Some(child_regions(st))
         });
+        if let Some(regions) = regions {
+            apply_regions(&regions);
+        }
         if let Some(h) = target {
             if GetForegroundWindow() == cx.hwnd {
                 SetFocus(h);
             }
         }
         InvalidateRect(cx.hwnd, std::ptr::null(), 0);
+        start_ticking(cx.hwnd);
+    }
+}
+
+/// Begins a page entrance (rise, or a slide for setup steps) unless Reduce Motion is on.
+fn begin_enter(dir: i32) {
+    if crate::ui::win_gui::reduced_motion() {
+        return;
+    }
+    ST.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.enter = Some((crate::motion::now(), dir));
+        }
+    });
+}
+
+/// Ends a page entrance now: the page's controls appear and the waiting control gets the focus. Any key or click
+/// during an entrance calls this first, so motion never stands between the user and the page.
+fn finish_enter() {
+    let done = ST.with(|s| {
+        let mut b = s.try_borrow_mut().ok()?;
+        let st = b.as_mut()?;
+        st.enter.take()?;
+        unsafe { show_children(st) };
+        let focus = st.pending_focus.take().and_then(|id| st.ctrls.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h));
+        Some((st.hwnd, child_regions(st), focus))
+    });
+    if let Some((hwnd, regions, focus)) = done {
+        unsafe {
+            apply_regions(&regions);
+            if let Some(h) = focus {
+                if GetForegroundWindow() == hwnd {
+                    SetFocus(h);
+                }
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+    }
+}
+
+/// Asks the frame clock for frames while anything on the page moves (see `on_frame`).
+fn start_ticking(hwnd: HWND) {
+    crate::frameclock::subscribe(hwnd);
+}
+
+/// One frame: repaint exactly what moves (the sliding selection, the springing controls, the entering page), end
+/// the entrance when its time is up, and let the clock go once everything drawn is at rest.
+fn on_frame(hwnd: HWND) {
+    crate::frameclock::frame_taken(hwnd);
+    let now = crate::motion::now();
+    let Some((dirty, sidebar, panel, ended, moving)) = ST.with(|s| {
+        let mut b = s.try_borrow_mut().ok()?;
+        let st = b.as_mut()?;
+        let find = |id: i32| st.ctrls.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h);
+        let mut dirty: Vec<HWND> = Vec::new();
+        let mut moving = false;
+        for (id, a) in &st.springs {
+            if !a.at_rest(now) {
+                moving = true;
+            }
+            // One more frame after rest, so the final position is what stays on screen.
+            if !a.at_rest(now - 0.034) {
+                dirty.extend(find(*id));
+            }
+        }
+        let nav_moving = !st.nav_y.at_rest(now - 0.034);
+        moving |= !st.nav_y.at_rest(now);
+        if nav_moving {
+            dirty.extend(st.ctrls.iter().filter(|(c, _)| matches!(c.kind, Kind::Nav { .. })).map(|(_, h)| *h));
+        }
+        let mut ended = false;
+        let entering = st.enter.is_some();
+        if let Some((t0, _)) = st.enter {
+            if (now - t0) * 1000.0 >= crate::motion::PAGE_MS as f64 {
+                ended = true;
+            } else {
+                moving = true;
+            }
+        }
+        Some((dirty, nav_moving, entering, ended, crate::frameclock::stay_subscribed(moving)))
+    }) else {
+        crate::frameclock::unsubscribe(hwnd);
+        return;
+    };
+    unsafe {
+        for h in dirty {
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        let dpi = window_dpi(hwnd);
+        let mut rc: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rc);
+        if sidebar {
+            let side = RECT { left: 0, top: sc(NAV_Y - 8, dpi), right: sc(SIDEBAR_W, dpi), bottom: sc(NAV_Y + NAV.len() as i32 * NAV_PITCH + 8, dpi) };
+            InvalidateRect(hwnd, &side, 0);
+        }
+        if panel {
+            let p = panel_rect(rc, dpi);
+            let pr = RECT { left: p.0, top: p.1, right: p.0 + p.2, bottom: p.1 + p.3 };
+            InvalidateRect(hwnd, &pr, 0);
+        }
+    }
+    if ended {
+        finish_enter();
+    }
+    if !moving {
+        crate::frameclock::unsubscribe(hwnd);
     }
 }
 
@@ -1709,6 +2606,7 @@ enum Op {
 /// Incremental update: same structure → update in place; different structure → rebuild.
 fn refresh() {
     let Some(m) = snapshot() else { return };
+    track_practice(&m);
     let mut ops: Vec<Op> = Vec::new();
     let mut need_rebuild = false;
     let mut parent: HWND = std::ptr::null_mut();
@@ -1739,12 +2637,25 @@ fn refresh() {
             if new.enabled != old.enabled {
                 ops.push(Op::Enable(*h, new.enabled));
             }
-            if let (Kind::Toggle { on: a }, Kind::Toggle { on: b }) = (&new.kind, &old.kind) {
-                if a != b && !crate::ui::win_gui::reduced_motion() {
-                    st.anims.retain(|(i, _)| *i != new.id);
-                    st.anims.push((new.id, Instant::now()));
-                    ops.push(Op::Animate);
+            // A flipped switch slides its thumb and a newly chosen card grows its dot, both on the accent spring; the
+            // card losing the choice lets go at the same time. Reduce Motion lands them at once (motion::Animated).
+            let flip = match (&new.kind, &old.kind) {
+                (Kind::Toggle { on: a }, Kind::Toggle { on: b }) if a != b => Some(*a),
+                (Kind::Choice { selected: a, .. }, Kind::Choice { selected: b, .. }) if a != b => Some(*a),
+                _ => None,
+            };
+            if let Some(on) = flip {
+                let now = crate::motion::now();
+                let target = if on { 1.0 } else { 0.0 };
+                match st.springs.iter_mut().find(|(i, _)| *i == new.id) {
+                    Some((_, a)) => a.retarget_with(target, crate::motion::ACCENT, now),
+                    None => {
+                        let mut a = Animated::new(1.0 - target, crate::motion::ACCENT, 0.002);
+                        a.retarget(target, now);
+                        st.springs.push((new.id, a));
+                    }
                 }
+                ops.push(Op::Animate);
             }
             if new.name != old.name && !matches!(new.kind, Kind::Edit { .. }) {
                 ops.push(Op::Title(*h, new.name.clone()));
@@ -1759,8 +2670,10 @@ fn refresh() {
     });
     if need_rebuild {
         rebuild(false);
+        maybe_arm_advance();
         return;
     }
+    maybe_arm_advance();
     unsafe {
         for op in ops {
             match op {
@@ -1775,7 +2688,7 @@ fn refresh() {
                     InvalidateRect(h, std::ptr::null(), 0);
                 }
                 Op::Animate => {
-                    SetTimer(parent, IDT_ANIM, 16, None);
+                    start_ticking(parent);
                 }
             }
         }
@@ -1795,6 +2708,7 @@ fn color(t: &Theme, c: C) -> u32 {
         C::Warn => t.warn_fg,
         C::Err => t.err_fg,
         C::Ok => t.ok_fg,
+        C::Working => t.working,
     }
 }
 
@@ -1807,60 +2721,207 @@ fn tone_colors(t: &Theme, tone: Tone) -> (u32, u32, char) {
     }
 }
 
-fn status_chip(m: &SharedUiModel) -> (String, u32) {
+fn status_chip(m: &SharedUiModel, t: &Theme) -> (String, u32) {
+    let rose = rgb(0xE1, 0x1D, 0x48);
     match &m.state {
-        EngineState::Error(e) => (friendly_error(e).short.to_string(), rgb(0xE1, 0x1D, 0x48)),
+        EngineState::Error(e) => (friendly_error(e).short.to_string(), rose),
         EngineState::Disabled => ("Paused".into(), rgb(0x8A, 0x94, 0x90)),
         EngineState::Listening => ("Listening…".into(), rgb(0x10, 0xB9, 0x81)),
-        EngineState::Processing | EngineState::Correcting => ("Transcribing…".into(), rgb(0xF5, 0x9E, 0x0B)),
+        EngineState::Processing | EngineState::Correcting => ("Transcribing…".into(), t.working),
+        // The model download is shown here so it stays visible on every page, not only on the models page.
+        _ if m.download.as_ref().is_some_and(|d| d.is_active()) => {
+            let d = m.download.as_ref().expect("checked above");
+            let label = match (&d.stage, d.fraction()) {
+                (DownloadStage::Verifying, _) => "Verifying model…".to_string(),
+                (_, Some(f)) => format!("Downloading model {}%", (f * 100.0).floor() as u32),
+                _ => "Downloading model…".to_string(),
+            };
+            (label, t.working)
+        }
+        _ if !m.active_model_ready() && m.download.as_ref().is_some_and(|d| matches!(d.stage, DownloadStage::Failed(_))) => {
+            ("Model download failed".into(), rose)
+        }
         _ if !m.active_model_ready() => ("Speech model needed".into(), rgb(0xF5, 0x9E, 0x0B)),
         _ => (format!("Ready · hold {}", m.config.ptt_hotkey.display_name), rgb(0x10, 0xB9, 0x81)),
     }
 }
 
-unsafe fn paint(st: &St, hdc: HDC) {
-    let t = theme();
-    let d = st.dpi;
-    let s = |v: i32| sc(v, d);
+unsafe fn paint(st: &St, hdc: HDC, dirty: RECT) {
+    let _pf = crate::perf::frame("settings");
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(st.hwnd, &mut rc);
-    let Some(mut cv) = Canvas::new(rc.right, rc.bottom) else { return };
-    cv.fill(t.bg);
-    cv.rect(0, 0, s(SIDEBAR_W), rc.bottom, t.sidebar);
-    cv.rect(s(SIDEBAR_W), 0, 1.max(s(1)), rc.bottom, t.border);
+    // One back buffer for the window's life (remade only when the size changes); only the dirty part is drawn and
+    // copied, so a frame that moves the selection does not repaint the whole window.
+    BACK.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.as_ref().is_none_or(|cv| cv.size() != (rc.right, rc.bottom)) {
+            *b = Canvas::new(rc.right, rc.bottom);
+        }
+        if let Some(cv) = b.as_mut() {
+            cv.clear_clip();
+            cv.narrow_clip(dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top);
+            paint_into(st, cv, rc);
+            cv.blit_clip_to(hdc);
+        }
+    });
+}
 
-    // Brand block
-    let icon_n = s(30) as usize;
-    blit_icon(&mut cv, s(22), s(26), icon_n);
-    cv.text(PRODUCT_NAME, s(62), s(24), s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE);
-    cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
-
-    // Status chip at the bottom of the sidebar
-    // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
-    let nav_bottom = s(92 + NAV.len() as i32 * 38);
-    if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
-        let (label, dot) = status_chip(&m);
-        let y = rc.bottom - s(52);
-        cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, t.surface, 1.0);
-        cv.round_rect_stroke(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, 1.0, t.border, 1.0);
-        cv.circle(s(28) as f32, (y + s(18)) as f32, s(4) as f32, dot, 1.0);
-        cv.text(&label, s(40), y, s(SIDEBAR_W - 64), s(36), st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+unsafe fn paint_into(st: &St, cv: &mut Canvas, rc: RECT) {
+    let t = theme();
+    let d = st.dpi;
+    paint_frame(st, cv, &t, rc);
+    let panel = panel_rect(rc, d);
+    // The page scrolls inside the panel, under the header band that holds the window buttons.
+    let view = (panel.0, sc(HEADER_H, d), panel.0 + panel.2, panel.1 + panel.3);
+    match st.enter {
+        Some((t0, _)) => {
+            // An entering page is drawn once (controls included), then each frame blends it in row by row: rising (or
+            // sliding) and fading, lower groups a beat later.
+            let key = (t0.to_bits(), rc.right, rc.bottom, st.scroll, st.page, st.step);
+            LAYER.with(|l| {
+                let mut l = l.borrow_mut();
+                if l.as_ref().is_none_or(|(k, _)| *k != key) {
+                    // Drawn whole (not just the dirty part): every later frame of the entrance blends from it.
+                    *l = Canvas::new(rc.right, rc.bottom).map(|mut layer| {
+                        paint_frame(st, &mut layer, &t, rc);
+                        paint_page(st, &mut layer, &t, rc, true);
+                        (key, layer)
+                    });
+                }
+                if let Some((_, layer)) = l.as_ref() {
+                    let now = crate::motion::now();
+                    cv.blend_rows_from(layer, view, |y| {
+                        let ly = (y as f32 * 96.0 / d as f32).round() as i32 + st.scroll;
+                        let (op, dx, dy) = enter_state(st, ly, now);
+                        (op, (dx * d as f32 / 96.0).round() as i32, (dy * d as f32 / 96.0).round() as i32)
+                    });
+                }
+            });
+        }
+        None => {
+            LAYER.with(|l| l.borrow_mut().take());
+            paint_page(st, cv, &t, rc, false);
+        }
     }
+    paint_modal(st, cv, &t, rc);
+}
 
+thread_local! {
+    /// The window's back buffer.
+    static BACK: RefCell<Option<Canvas>> = const { RefCell::new(None) };
+    /// The entering page, drawn once per entrance and blended in by every frame of it.
+    static LAYER: RefCell<Option<((u64, i32, i32, i32, usize, usize), Canvas)>> = const { RefCell::new(None) };
+}
+
+/// Everything around the page: the deep sidebar with the brand and the sliding selection, the raised panel, and the
+/// live status at the foot of the sidebar.
+unsafe fn paint_frame(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT) {
+    let d = st.dpi;
+    let s = |v: i32| sc(v, d);
+    cv.fill(t.sidebar);
+    let panel = panel_rect(rc, d);
+    {
+        let (x, y, w, h) = (panel.0 as f32, panel.1 as f32, panel.2 as f32, panel.3 as f32);
+        let rad = s(radius::PANEL) as f32;
+        if t.shadows {
+            cv.shadow(x, y, w, h, rad, &elevation::PANEL, d as f32 / 96.0, elevation::TINT);
+        }
+        cv.round_rect(x, y, w, h, rad, t.bg, 1.0);
+        if !t.shadows {
+            cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
+        }
+    }
+    // The brand sits at the top of the sidebar: the mark, the name, and what this window is.
+    let head = s(HEADER_H);
+    let mark = s(26);
+    blit_icon(cv, s(20), (head - mark) / 2 + s(2), mark as usize);
+    let ty = (head - s(22)) / 2 + s(2);
+    cv.text(PRODUCT_NAME, s(54), ty, s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_VCENTER);
+    // The selection chip, where it is right now (the items paint over it; this fills the gaps between them).
+    let now = crate::motion::now();
+    let rad = s(radius::CONTROL) as f32;
+    nav_chip(cv, t, s(12) as f32, st.nav_y.value(now) * d as f32 / 96.0, s(SIDEBAR_W - 24) as f32, s(36) as f32, rad);
+
+    // Status at the foot of the sidebar: the listener's own idle mark (drawn by its renderer) and what KeyReed is
+    // doing. Skipped when the window is so short that it would overlap the last navigation item.
+    let nav_bottom = s(NAV_Y + NAV.len() as i32 * NAV_PITCH);
+    if let Some(m) = snapshot().filter(|_| rc.bottom - s(60) >= nav_bottom) {
+        let (label, dot) = status_chip(&m, t);
+        let scale = d as f32 / 96.0;
+        let pw = crate::overlay::pill_window_width(scale, crate::overlay::PillKind::Idle, 0, 0, 0);
+        let ph = crate::overlay::PillMetrics::for_scale(scale).window_height();
+        let frame = crate::overlay::PillFrame {
+            scale,
+            kind: if matches!(m.state, EngineState::Disabled) { crate::overlay::PillKind::Disabled } else { crate::overlay::PillKind::Idle },
+            levels: &[],
+            phase: 0.0,
+            label: None,
+            secondary: None,
+            tertiary: None,
+            pop: 0.0,
+            tick: 1.0,
+            opacity: 1.0,
+            content_opacity: 1.0,
+            press: 0.0,
+            ring: 0.0,
+            polishing: false,
+            age_ms: f32::INFINITY,
+            from: crate::overlay::PillKind::Idle,
+            rise: 0.0,
+            lift: 0.0,
+            chip_hover: None,
+            rect: None,
+        };
+        let px = crate::overlay::render_pill(pw, ph, &frame);
+        let (x, y) = (s(14), rc.bottom - s(14) - ph as i32);
+        cv.blend_premul(&px, pw as i32, ph as i32, x, y);
+        // The state dot rides on the pill's edge, the way a status light sits on a device.
+        let (dx, dy) = (x + pw as i32 - s(8), y + s(9));
+        cv.circle(dx as f32, dy as f32, s(5) as f32, t.sidebar, 1.0);
+        cv.circle(dx as f32, dy as f32, s(3) as f32 + 0.5, dot, 1.0);
+        let tx = x + pw as i32 + s(6);
+        cv.text(&label, tx, y, s(SIDEBAR_W) - tx - s(12), ph as i32, st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+}
+
+/// The page itself: cards, rows, text and field frames, clipped to the scrolling view. With `ctrls`, the page's own
+/// controls are drawn in too (their windows are hidden while the page enters).
+unsafe fn paint_page(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT, ctrls: bool) {
+    let t = *t;
+    let d = st.dpi;
+    let panel = panel_rect(rc, d);
+    let head = sc(HEADER_H, d);
     let off = st.scroll;
     let s = |v: i32| sc(v, d);
     let sy = |v: i32| sc(v - off, d);
+    // Only the panel scrolls: clip the canvas to it so no scrolled row can paint over the sidebar, the header or the
+    // deep margin around the panel.
+    let outer = cv.clip();
+    cv.narrow_clip(panel.0, head, panel.2, panel.1 + panel.3 - head);
     // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
     let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
         match it {
+            Item::Text { r: rr, s: txt, font, color: c, flags } if *font == F::Eyebrow => {
+                // Uppercase and tracked at paint time only: the words (and what a screen reader gets) stay as written.
+                SetTextCharacterExtra(cv.dc(), sc(1, d).max(1));
+                cv.text(&txt.to_uppercase(), s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), *flags);
+                SetTextCharacterExtra(cv.dc(), 0);
+            }
             Item::Text { r: rr, s: txt, font, color: c, flags } => {
                 cv.text(txt, s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), *flags);
             }
             Item::Group { r: rr } | Item::Card { r: rr } => {
+                // Cards separate by tone: a whisper of lift in light, a hairline in dark.
                 let (x, y, w, h) = (s(rr.x) as f32, sy(rr.y) as f32, s(rr.w) as f32, s(rr.h) as f32);
-                cv.round_rect(x, y, w, h, s(8) as f32, t.surface, 1.0);
-                cv.round_rect_stroke(x, y, w, h, s(8) as f32, 1.0, t.border, 1.0);
+                let rad = s(radius::CARD) as f32;
+                if t.shadows {
+                    cv.shadow(x, y, w, h, rad, &elevation::CARD, d as f32 / 96.0, elevation::TINT);
+                }
+                cv.round_rect(x, y, w, h, rad, t.surface, 1.0);
+                if !t.shadows {
+                    cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
+                }
             }
             Item::Divider { x, y, w } => cv.rect(s(*x), sy(*y), s(*w), 1, t.divider),
             Item::Badge { x, y, s: txt, tone, after } => {
@@ -1910,7 +2971,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
             }
             Item::Glyph { r: rr, ch, font, color: c } => {
                 if *ch == '\u{0}' {
-                    blit_icon(&mut cv, s(rr.x), sy(rr.y), s(rr.w) as usize);
+                    blit_icon(cv, s(rr.x), sy(rr.y), s(rr.w) as usize);
                 } else {
                     let g: String = ch.to_string();
                     cv.text(&g, s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), DT_SINGLELINE | DT_LEFT | DT_VCENTER);
@@ -1937,7 +2998,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
             Item::Banner { r: rr, tone, title, body } => {
                 let (fg, bg, glyph) = tone_colors(&t, *tone);
                 let (x, y, w, h) = (s(rr.x), sy(rr.y), s(rr.w), s(rr.h));
-                cv.round_rect(x as f32, y as f32, w as f32, h as f32, s(8) as f32, if *tone == Tone::Info { t.accent_soft } else { bg }, 1.0);
+                cv.round_rect(x as f32, y as f32, w as f32, h as f32, s(radius::CARD) as f32, if *tone == Tone::Info { t.accent_soft } else { bg }, 1.0);
                 let gc = if *tone == Tone::Info { t.accent } else { fg };
                 cv.text(&glyph.to_string(), x + s(14), y + s(10), s(20), s(20), st.fonts.get(F::Icon), gc, DT_SINGLELINE);
                 cv.text(title, x + s(44), y + s(8), w - s(56), s(20), st.fonts.get(F::BodySemi), if *tone == Tone::Info { t.text } else { fg }, DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1950,7 +3011,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
     for (c, h) in &st.ctrls {
         if let Kind::Edit { .. } = c.kind {
             let (x, y, w, hh) = (s(c.r.x) as f32, sy(c.r.y) as f32, s(c.r.w) as f32, s(c.r.h) as f32);
-            let rad = s(6) as f32;
+            let rad = s(radius::CONTROL) as f32;
             cv.round_rect(x, y, w, hh, rad, t.bg, 1.0);
             if *h == focus {
                 cv.round_rect_stroke(x, y, w, hh, rad, 2.0_f32.max(s(2) as f32), t.accent_fill, 1.0);
@@ -1959,15 +3020,54 @@ unsafe fn paint(st: &St, hdc: HDC) {
             }
         }
     }
-    if off > 0 {
-        // Content scrolled under the top edge: keep the sidebar crisp and on top.
-        cv.rect(0, 0, s(SIDEBAR_W), rc.bottom, t.sidebar);
-        cv.rect(s(SIDEBAR_W), 0, 1.max(s(1)), rc.bottom, t.border);
-        blit_icon(&mut cv, s(22), s(26), icon_n);
-        cv.text(PRODUCT_NAME, s(62), s(24), s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE);
-        cv.text(PRODUCT_TAGLINE, s(62), s(46), s(170), s(18), st.fonts.get(F::Caption), t.text3, DT_SINGLELINE);
+    // Slim scrollbar on the right edge of the content column: shows the page continues, and how far down.
+    let view_h = (rc.bottom as f32 * 96.0 / d as f32).round() as i32;
+    let max = max_scroll(st.content_h, view_h);
+    if max > 0 {
+        let (bar_w, inset) = (s(4), s(6));
+        let (bar_x, top) = (panel.0 + panel.2 - inset - bar_w, head + inset);
+        let track_h = (panel.1 + panel.3 - head - 2 * inset).max(1);
+        let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24), track_h);
+        let thumb_y = top + (track_h - thumb_h) * st.scroll / max;
+        let rad = (bar_w / 2) as f32;
+        cv.round_rect(bar_x as f32, top as f32, bar_w as f32, track_h as f32, rad, t.track, 1.0);
+        cv.round_rect(bar_x as f32, thumb_y as f32, bar_w as f32, thumb_h as f32, rad, t.text3, 1.0);
     }
-    cv.blit_to(hdc, 0, 0);
+    if ctrls {
+        for (c, _) in st.ctrls.iter().filter(|(c, _)| !fixed_in_place(&c.kind) && !matches!(c.kind, Kind::Edit { .. })) {
+            let cr = child_rect(c);
+            let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - st.scroll, d), sc(cr.w, d), sc(cr.h, d));
+            if let Some(img) = render_ctrl(st, c, if c.enabled { 0 } else { ODS_DISABLED }, w, h) {
+                cv.draw_canvas(&img, x, y);
+            }
+        }
+    }
+    cv.restore_clip(outer);
+}
+
+/// The confirmation card: the page dims behind it, and only the card's own buttons (child windows) stay live.
+unsafe fn paint_modal(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT) {
+    let s = |v: i32| sc(v, st.dpi);
+    if let Some(md) = MODAL.with(|m| m.borrow().clone()) {
+        cv.round_rect(0.0, 0.0, rc.right as f32, rc.bottom as f32, 0.0, rgb(0, 0, 0), 0.55);
+        let card = modal_card();
+        let (x, y, w, h) = (s(card.x) as f32, s(card.y) as f32, s(card.w) as f32, s(card.h) as f32);
+        cv.round_rect(x - s(6) as f32, y + s(4) as f32, w + s(12) as f32, h + s(14) as f32, s(16) as f32, rgb(0, 0, 0), 0.12);
+        cv.round_rect(x, y, w, h, s(radius::PANEL) as f32, t.surface, 1.0);
+        cv.round_rect_stroke(x, y, w, h, s(radius::PANEL) as f32, 1.0, t.border, 1.0);
+        cv.text(&md.title, s(card.x + 24), s(card.y + 22), s(card.w - 48), s(24), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_END_ELLIPSIS);
+        cv.text(&md.body, s(card.x + 24), s(card.y + 54), s(card.w - 48), s(62), st.fonts.get(F::Body), t.text2, DT_WORDBREAK);
+    }
+}
+
+/// Space between the raised content panel and the window's right and bottom edges.
+const PANEL_INSET: i32 = 8;
+
+/// The raised content panel in client pixels `(x, y, w, h)`: right of the sidebar, inset from the other three edges.
+/// Its top band (under `HEADER_H`) holds the window buttons and drags the window; the page scrolls below it.
+fn panel_rect(rc: RECT, dpi: u32) -> (i32, i32, i32, i32) {
+    let (x, y) = (sc(SIDEBAR_W, dpi), sc(PANEL_INSET, dpi));
+    (x, y, (rc.right - x - sc(PANEL_INSET, dpi)).max(0), (rc.bottom - y - sc(PANEL_INSET, dpi)).max(0))
 }
 
 fn blit_icon(cv: &mut Canvas, x: i32, y: i32, n: usize) {
@@ -2006,34 +3106,55 @@ const ODS_FOCUS: u32 = 0x0010;
 const ODS_NOFOCUSRECT: u32 = 0x0200;
 
 unsafe fn draw_item(st: &St, di: &DrawItem) {
+    let _pf = crate::perf::frame("settings_ctrl");
     let Some((c, _)) = st.ctrls.iter().find(|(c, _)| c.id == di.ctl_id as i32) else { return };
+    let Some(cv) = render_ctrl(st, c, di.item_state, di.rc.right - di.rc.left, di.rc.bottom - di.rc.top) else { return };
+    let d = st.dpi;
+    // An owner-drawn control paints into its own window, whose coordinates start at its own top edge, so a
+    // control scrolled under the header is cut off here instead of hanging over it.
+    let cut = if fixed_in_place(&c.kind) { 0 } else { sc(HEADER_H + 1, d) - sc(child_rect(c).y - st.scroll, d) };
+    let saved = if cut > 0 { SaveDC(di.hdc) } else { 0 };
+    if cut > 0 {
+        IntersectClipRect(di.hdc, 0, cut, 1 << 20, 1 << 20);
+    }
+    cv.blit_to(di.hdc, di.rc.left, di.rc.top);
+    if cut > 0 {
+        RestoreDC(di.hdc, saved);
+    }
+}
+
+/// Draws control `c` (`item_state` = the ODS_* flags) into a canvas of its window's size. The page entrance uses it
+/// too, to draw controls into the page while their windows wait hidden.
+unsafe fn render_ctrl(st: &St, c: &Ctrl, item_state: u32, w: i32, h: i32) -> Option<Canvas> {
     let t = theme();
     let d = st.dpi;
     let s = |v: i32| sc(v, d);
-    let w = di.rc.right - di.rc.left;
-    let h = di.rc.bottom - di.rc.top;
-    let Some(mut cv) = Canvas::new(w, h) else { return };
+    let now = crate::motion::now();
+    let mut cv = Canvas::new(w, h)?;
     let bg = match c.bg {
         Bg::Sidebar => t.sidebar,
         Bg::Content => t.bg,
         Bg::Surface => t.surface,
     };
     cv.fill(bg);
-    let pressed = di.item_state & ODS_SELECTED != 0;
-    let disabled = di.item_state & ODS_DISABLED != 0;
-    let focus = di.item_state & ODS_FOCUS != 0 && di.item_state & ODS_NOFOCUSRECT == 0;
+    let pressed = item_state & ODS_SELECTED != 0;
+    let disabled = item_state & ODS_DISABLED != 0;
+    let focus = item_state & ODS_FOCUS != 0 && item_state & ODS_NOFOCUSRECT == 0;
     let hot = st.hot == c.id && !disabled;
     let (wf, hf) = (w as f32, h as f32);
-    let rad = s(6) as f32;
+    let rad = s(radius::CONTROL) as f32;
     let mut focus_rect = (1.0, 1.0, wf - 2.0, hf - 2.0, rad);
 
     match &c.kind {
         Kind::Nav { page, selected } => {
-            if *selected {
-                cv.round_rect(0.0, 0.0, wf, hf, rad, t.accent_soft, 1.0);
-                cv.round_rect(0.0, (hf - s(16) as f32) / 2.0, s(3) as f32, s(16) as f32, s(2) as f32, t.accent_fill, 1.0);
-            } else if hot || pressed {
+            // Hover is instant and only on the item itself; the selection is one raised chip that slides between
+            // items (each item paints its own slice of it, the sidebar paints the gaps).
+            if !*selected && (hot || pressed) {
                 cv.round_rect(0.0, 0.0, wf, hf, rad, t.hover, 1.0);
+            }
+            let chip_y = (st.nav_y.value(now) - c.r.y as f32) * d as f32 / 96.0;
+            if chip_y > -hf && chip_y < hf {
+                nav_chip(&mut cv, &t, 0.0, chip_y, wf, s(36) as f32, rad);
             }
             let (label, glyph) = NAV[*page];
             let gc = if *selected { t.accent } else { t.text2 };
@@ -2042,44 +3163,50 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             cv.text(label, s(44), 0, w - s(48), h, st.fonts.get(f), t.text, DT_SINGLELINE | DT_VCENTER);
         }
         Kind::Toggle { on } => {
-            let (sw, sh) = (s(40) as f32, s(20) as f32);
+            let (sw, sh) = (s(44) as f32, s(24) as f32);
             let sx = wf - sw - s(2) as f32;
             let sy = (hf - sh) / 2.0;
-            let label = if *on { "On" } else { "Off" };
-            cv.text(label, 0, 0, (sx as i32) - s(10), h, st.fonts.get(F::Body), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
-            // amount = 0 fully off .. 1 fully on; between the two only while a slide is running.
-            let p = toggle_progress(st, c.id);
-            let amount = if *on { p } else { 1.0 - p };
+            // The thumb travels on the accent spring (a hair of overshoot), squashing along the way with its speed; the
+            // track and its outline cross-fade with the position.
+            let (pos, vel) = spring_state(st, c.id, if *on { 1.0 } else { 0.0 }, now);
+            let amount = pos.clamp(0.0, 1.0);
             let fill = if disabled { t.track } else if pressed || hot { t.accent_press } else { t.accent_fill };
             if amount < 1.0 {
                 if hot {
                     cv.round_rect(sx, sy, sw, sh, sh / 2.0, t.hover_card, 1.0);
                 }
-                cv.round_rect_stroke(sx, sy, sw, sh, sh / 2.0, 1.0_f32.max(s(1) as f32), if disabled { t.track } else { t.text3 }, 1.0);
+                cv.round_rect_stroke(sx, sy, sw, sh, sh / 2.0, 1.5_f32.max(s(1) as f32 * 1.5), if disabled { t.track } else { t.text3 }, 1.0 - amount);
             }
             if amount > 0.0 {
                 cv.round_rect(sx, sy, sw, sh, sh / 2.0, fill, amount);
             }
-            let kx = sx + sh / 2.0 + (sw - sh) * amount;
-            let kr = s(5) as f32 + (s(7) - s(5)) as f32 * amount;
+            let squash = (vel.abs() / 7.0).min(1.0);
+            let kr = s(6) as f32 + (s(9) - s(6)) as f32 * amount;
+            let (kw, kh) = (2.0 * kr * (1.0 + 0.22 * squash), 2.0 * kr * (1.0 - 0.08 * squash));
+            let kx = sx + sh / 2.0 + (sw - sh) * pos;
             let off_knob = if disabled { t.track } else { t.text2 };
-            cv.circle(kx, sy + sh / 2.0, kr, off_knob, 1.0 - amount);
-            cv.circle(kx, sy + sh / 2.0, kr, t.surface, amount);
+            cv.round_rect(kx - kw / 2.0, sy + sh / 2.0 - kh / 2.0, kw, kh, kh / 2.0, off_knob, 1.0 - amount);
+            cv.round_rect(kx - kw / 2.0, sy + sh / 2.0 - kh / 2.0, kw, kh, kh / 2.0, t.surface, amount);
             focus_rect = (sx - s(3) as f32, sy - s(3) as f32, sw + s(6) as f32, sh + s(6) as f32, (sh + s(6) as f32) / 2.0);
         }
         Kind::Choice { title, desc, selected } => {
-            let r8 = s(8) as f32;
-            let fill = if *selected { t.accent_soft } else if hot || pressed { t.hover_card } else { t.surface };
-            cv.round_rect(0.0, 0.0, wf, hf, r8, fill, 1.0);
-            let (bc, bw) = if *selected { (t.accent_fill, 1.5_f32 * d as f32 / 96.0) } else { (t.border, 1.0) };
-            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, bw, bc, 1.0);
+            // Choosing is a moment: the tint fills, the ring comes up and the radio dot pops in on the accent spring
+            // while the card that lost the choice lets go at the same time. Hover is instant.
+            let r8 = s(radius::CARD) as f32;
+            let (sel, _) = spring_state(st, c.id, if *selected { 1.0 } else { 0.0 }, now);
+            let k = sel.clamp(0.0, 1.0);
+            let base = if hot || pressed { t.hover_card } else { t.surface };
+            cv.round_rect(0.0, 0.0, wf, hf, r8, base, 1.0);
+            cv.round_rect(0.0, 0.0, wf, hf, r8, t.accent_soft, k);
+            let hair = if hot && !t.hc { t.control_border } else { t.border };
+            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, 1.0, hair, 1.0 - k);
+            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, 1.5 * d as f32 / 96.0, t.accent_fill, k);
             let (rx, ry) = (s(22) as f32, s(22) as f32);
-            if *selected {
-                cv.circle(rx, ry, s(9) as f32, t.accent_fill, 1.0);
-                cv.circle(rx, ry, s(4) as f32, t.surface, 1.0);
-            } else {
-                cv.circle(rx, ry, s(9) as f32, t.text3, 1.0);
-                cv.circle(rx, ry, s(9) as f32 - 1.25_f32.max(s(1) as f32), fill, 1.0);
+            cv.circle(rx, ry, s(9) as f32, t.text3, 1.0 - k);
+            cv.circle(rx, ry, s(9) as f32, t.accent_fill, k);
+            cv.circle(rx, ry, s(9) as f32 - 1.25_f32.max(s(1) as f32), base, 1.0 - k);
+            if sel > 0.01 {
+                cv.circle(rx, ry, s(4) as f32 * sel.max(0.0), t.surface, 1.0);
             }
             cv.text(title, s(42), s(12), w - s(54), s(20), st.fonts.get(F::BodySemi), t.text, DT_SINGLELINE | DT_END_ELLIPSIS);
             cv.text(desc, s(42), s(34), w - s(54), h - s(36), st.fonts.get(F::Caption), t.text2, DT_WORDBREAK);
@@ -2095,11 +3222,17 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.control_border), t.err_fg),
                 (BtnStyle::Subtle, _) => (if hot || pressed { Some(t.hover) } else { None }, None, t.accent),
             };
+            // Pressed, a button sinks 1 dp (its label with it); a Primary carries a 1 px lit top edge.
+            let sink = if pressed && !disabled { s(1) as f32 } else { 0.0 };
             if let Some(f) = fill {
-                cv.round_rect(0.0, 0.0, wf, hf, rad, f, 1.0);
+                cv.round_rect(0.0, sink, wf, hf - sink, rad, f, 1.0);
+                if *style == BtnStyle::Primary && !disabled && !t.hc && !pressed {
+                    cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, rgb(0xFF, 0xFF, 0xFF), 0.10);
+                    cv.round_rect(rad, 1.0, wf - 2.0 * rad, 1.0, 0.0, rgb(0xFF, 0xFF, 0xFF), 0.22);
+                }
             }
             if let Some(sc_) = stroke {
-                cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, sc_, 1.0);
+                cv.round_rect_stroke(0.0, sink, wf, hf - sink, rad, 1.0, sc_, 1.0);
             }
             if *style == BtnStyle::Status {
                 // Check mark + label, right-aligned with the buttons in the rows above and below.
@@ -2110,7 +3243,7 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 cv.text(label, x, 0, tw + s(4), h, f, fg, DT_SINGLELINE | DT_VCENTER);
             } else {
                 let f = if *style == BtnStyle::Primary { F::BodySemi } else { F::Body };
-                cv.text(label, 0, 0, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                cv.text(label, 0, sink as i32, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             }
         }
         Kind::Combo { items, sel } => {
@@ -2171,26 +3304,139 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 cv.text("\u{E70F}", w - right_w, 0, right_w - s(6), h, st.fonts.get(F::IconSmall), if disabled { t.text3 } else { t.text2 }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
             }
         }
+        Kind::WinBtn { close } => {
+            let (fill, fg) = match (*close, pressed || hot) {
+                (_, false) => (None, t.text2),
+                (true, _) => (Some(t.err_bg), t.err_fg),
+                (false, _) => (Some(t.hover), t.text),
+            };
+            if let Some(f) = fill {
+                cv.round_rect(0.0, 0.0, wf, hf, rad, f, 1.0);
+            }
+            // Segoe Fluent Icons / MDL2: ChromeMinimize, ChromeClose.
+            let glyph = if *close { "\u{E8BB}" } else { "\u{E921}" };
+            cv.text(glyph, 0, 0, w, h, st.fonts.get(F::Icon), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
         _ => {}
     }
     if focus {
         let (x, y, fw, fh, fr) = focus_rect;
-        cv.round_rect_stroke(x, y, fw, fh, fr, 2.0_f32.max(s(2) as f32), t.focus, 1.0);
+        // Emerald ring; on a Primary button (filled with the same emerald) it is drawn in the label colour, one step in.
+        let primary = matches!(c.kind, Kind::Button { style: BtnStyle::Primary, .. });
+        let (ring, inset) = if t.hc { (t.focus, 0.0) } else if primary { (t.on_accent, s(2) as f32) } else { (t.focus_ring, 0.0) };
+        cv.round_rect_stroke(x + inset, y + inset, fw - 2.0 * inset, fh - 2.0 * inset, (fr - inset).max(1.0), 2.0_f32.max(s(2) as f32), ring, 1.0);
     }
-    cv.blit_to(di.hdc, di.rc.left, di.rc.top);
+    Some(cv)
+}
+
+/// The navigation selection: a raised chip (light: white on the deep sidebar with a hairline; dark: one tone up with a
+/// hairline; high contrast: the system highlight outline).
+fn nav_chip(cv: &mut Canvas, t: &Theme, x: f32, y: f32, w: f32, h: f32, rad: f32) {
+    if t.hc {
+        cv.round_rect_stroke(x, y, w, h, rad, 2.0, t.accent_fill, 1.0);
+        return;
+    }
+    cv.round_rect(x, y, w, h, rad, t.surface, 1.0);
+    cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
 }
 
 // ------------------------------------------------------------------------------------------------
 // Commands
 // ------------------------------------------------------------------------------------------------
 
+/// The part of a control still inside the scrolling column (right of the sidebar, below the header), in the
+/// control's OWN coordinates: `SetWindowRgn` takes window-relative pixels, so the control's client position
+/// has to be subtracted. Passing client coordinates clipped every control away for good.
+fn child_region(x: i32, y: i32, w: i32, h: i32, view: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (left, top, right, bottom) = view;
+    let (x0, y0) = (x.max(left) - x, y.max(top) - y);
+    let (x1, y1) = ((x + w).min(right) - x, (y + h).min(bottom) - y);
+    // Scrolled out of view: nothing of the control is left, so it is neither painted nor clickable.
+    if x1 <= x0 || y1 <= y0 { (0, 0, 0, 0) } else { (x0, y0, x1, y1) }
+}
+
+/// Where each content control is visible right now, in its own coordinates. Computed without calling the
+/// system, so it can run while `ST` is borrowed; `apply_regions` does the Win32 calls afterwards.
+fn child_regions(st: &St) -> Vec<(HWND, (i32, i32, i32, i32))> {
+    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe { GetClientRect(st.hwnd, &mut rc) };
+    // The page lives in the raised panel, under its header band: a control scrolled up or down must not paint over
+    // the window buttons or the margin.
+    let (left, ptop, pw, ph) = panel_rect(rc, st.dpi);
+    let top = sc(HEADER_H, st.dpi);
+    let ph = ph + ptop - top;
+    st.ctrls
+        .iter()
+        // Navigation and the header's own buttons stay put; clipping them to the page column would hide them.
+        .filter(|(c, _)| !fixed_in_place(&c.kind))
+        .map(|(c, h)| {
+            let cr = child_rect(c);
+            let (x, y) = (sc(cr.x, st.dpi), sc(cr.y - st.scroll, st.dpi));
+            (*h, child_region(x, y, sc(cr.w, st.dpi), sc(cr.h, st.dpi), (left, top, left + pw, top + ph)))
+        })
+        .collect()
+}
+
+/// A control scrolled out of view is clipped to nothing, so it is neither painted nor clickable, and one that
+/// scrolls back in is whole again.
+unsafe fn apply_regions(regions: &[(HWND, (i32, i32, i32, i32))]) {
+    for (h, (x0, y0, x1, y1)) in regions {
+        // The system owns the region after a successful SetWindowRgn and frees it when it is replaced.
+        let rgn = CreateRectRgn(*x0, *y0, (*x1).max(*x0), (*y1).max(*y0));
+        if SetWindowRgn(*h, rgn, 1) == 0 {
+            DeleteObject(rgn as _);
+        }
+    }
+}
+
+/// Scrolls the page so the control with keyboard focus is visible (Tab can move focus below the fold).
+fn reveal_focused() {
+    let f = unsafe { GetFocus() };
+    let delta = ST.with(|s| {
+        let b = s.try_borrow().ok()?;
+        let st = b.as_ref()?;
+        let (ctrl, _) = st.ctrls.iter().find(|(_, h)| *h == f)?;
+        // The panel ends PANEL_INSET above the window's bottom edge; a control there is not visible yet.
+        reveal_delta(ctrl.r.y, ctrl.r.h, st.scroll, st.view_h - PANEL_INSET)
+    });
+    if let Some(delta) = delta {
+        scroll_by(delta);
+    }
+}
+
+/// The wheel, wherever it lands. Windows sends the wheel to the focused control, so every control forwards
+/// it here instead of swallowing it (that is why the page only scrolled with the pointer on bare canvas).
+fn wheel_scroll(wparam: WPARAM) -> LRESULT {
+    let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+    scroll_by(-(delta * WHEEL_STEP) / 120);
+    0
+}
+
+/// While a confirmation card is up, the page's controls are hidden: the card's buttons are the only ones.
+unsafe fn show_children(st: &St) {
+    let card = MODAL.with(|m| m.borrow().is_some());
+    for (c, h) in &st.ctrls {
+        let own = matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM);
+        // A card hides the page, not the frame: the navigation and the header's window buttons stay visible
+        // (their commands are already refused while a card is up), so the window never looks broken.
+        // While the page enters, its own controls are drawn into the canvas (fading and rising with it) and their
+        // windows wait hidden; the frame (navigation, window buttons) stays live.
+        let page_ctrl = !fixed_in_place(&c.kind);
+        let show = if card { own || !page_ctrl } else { !own && !(st.enter.is_some() && page_ctrl) };
+        ShowWindow(*h, if show { SW_SHOWNA } else { SW_HIDE });
+    }
+}
+
 /// Scrolls the content column (only possible when the window is shorter than the layout).
 fn scroll_by(delta: i32) {
     let moved = ST.with(|s| {
         let mut sb = s.borrow_mut();
         let st = sb.as_mut()?;
-        let max = (WIN_H - st.view_h).max(0);
-        let new = (st.scroll + delta).clamp(0, max);
+        // The client height is the truth, in design units (a resize may not have reached WM_SIZE yet).
+        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe { GetClientRect(st.hwnd, &mut rc) };
+        st.view_h = (rc.bottom as f32 * 96.0 / st.dpi as f32).round() as i32;
+        let new = next_scroll(st.scroll, delta, st.content_h, st.view_h);
         if new == st.scroll {
             return None;
         }
@@ -2198,19 +3444,29 @@ fn scroll_by(delta: i32) {
         let moves: Vec<(HWND, i32, i32)> = st
             .ctrls
             .iter()
-            .filter(|(c, _)| !matches!(c.kind, Kind::Nav { .. }))
+            .filter(|(c, _)| !fixed_in_place(&c.kind))
             .map(|(c, h)| {
                 let cr = child_rect(c);
                 (*h, sc(cr.x, st.dpi), sc(cr.y - new, st.dpi))
             })
             .collect();
-        Some((st.hwnd, moves))
+        Some((st.hwnd, moves, child_regions(st)))
     });
-    if let Some((hwnd, moves)) = moved {
+    if let Some((hwnd, moves, regions)) = moved {
         unsafe {
+            // One deferred batch: every control lands in the same frame as the repaint, so no row tears.
+            let mut hdwp = BeginDeferWindowPos(moves.len() as i32);
             for (h, x, y) in moves {
-                SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                if hdwp.is_null() {
+                    SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                } else {
+                    hdwp = DeferWindowPos(hdwp, h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
             }
+            if !hdwp.is_null() {
+                EndDeferWindowPos(hdwp);
+            }
+            apply_regions(&regions);
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
     }
@@ -2284,22 +3540,58 @@ fn open_url(url: &str) {
 
 fn set_step(step: usize) {
     harvest_and_commit();
+    let from = ST.with(|s| {
+        s.borrow_mut().as_mut().map(|st| std::mem::replace(&mut st.step, step))
+    });
+    // Forward steps slide in from the right, going back from the left.
+    begin_enter(if from.is_some_and(|f| step < f) { -1 } else { 1 });
+    rebuild(false);
+    // Put keyboard focus on the primary action of the new step (once it is shown, if the step is still entering).
     ST.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
-            st.step = step;
-        }
-    });
-    rebuild(false);
-    // Put keyboard focus on the primary action of the new step.
-    ST.with(|s| {
-        if let Some(st) = s.borrow().as_ref() {
-            if let Some((_, h)) = st.ctrls.iter().find(|(c, _)| c.id == if step == 3 { S_PRACTICE } else { S_NEXT }) {
+            let id = if step == 3 { S_PRACTICE } else { S_NEXT };
+            if st.enter.is_some() {
+                st.pending_focus = Some(id);
+            } else if let Some((_, h)) = st.ctrls.iter().find(|(c, _)| c.id == id) {
                 unsafe {
                     SetFocus(*h);
                 }
             }
         }
     });
+    maybe_arm_advance();
+}
+
+/// Setup step 3 only reports progress: once the model is ready it shows that for a beat, then moves on by itself.
+fn maybe_arm_advance() {
+    let ready = snapshot().is_some_and(|m| m.active_model_ready());
+    let target = ST.with(|s| {
+        let b = s.try_borrow().ok()?;
+        let st = b.as_ref()?;
+        (st.page == PAGE_START && st.step == 2).then_some(st.hwnd)
+    });
+    if let (true, Some(h)) = (ready, target) {
+        if !ADVANCE_ARMED.with(|c| c.replace(true)) {
+            unsafe { SetTimer(h, IDT_ADVANCE, ADVANCE_MS, None) };
+        }
+    }
+}
+
+/// Remembers why the last practice attempt produced no text, for the hint under the practice box.
+fn track_practice(m: &SharedUiModel) {
+    let note = match &m.state {
+        EngineState::Listening => Some(0),
+        EngineState::Error(_) => Some(3),
+        EngineState::ReadyToPaste => match &m.last_outcome {
+            Some(ReadyOutcome::NothingHeard) => Some(1),
+            Some(o) if o.is_success() => Some(0),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(n) = note {
+        PRACTICE_NOTE.with(|c| c.set(n));
+    }
 }
 
 fn selected_mic_from_combo(id: i32) -> Option<String> {
@@ -2320,9 +3612,26 @@ fn on_command(id: i32, code: u32) {
     const CBN_SELCHANGE: u32 = 1;
     const EN_KILLFOCUS: u32 = 0x0200;
     const EN_SETFOCUS: u32 = 0x0100;
+    const EN_CHANGE: u32 = 0x0300;
+    // A confirmation card owns the window: nothing on the page behind it reacts until it is answered.
+    if MODAL.with(|m| m.borrow().is_some()) && !matches!(id, MODAL_CANCEL | MODAL_CONFIRM) {
+        return;
+    }
     let click = code == BN_CLICKED || code == BN_DOUBLECLICKED;
     if code == EN_SETFOCUS || code == EN_KILLFOCUS {
         unsafe { InvalidateRect(hwnd(), std::ptr::null(), 0) };
+    }
+    if code == EN_KILLFOCUS && is_dict_edit(id) {
+        unsafe { PostMessageW(hwnd(), WM_DICT_COMMIT, 0, 0) };
+        return;
+    }
+    if code == EN_CHANGE && id == S_PRACTICE {
+        // Setup step 4 turns into its success state as soon as the box holds the dictated text.
+        let heard = !read_text(unsafe { GetDlgItem(hwnd(), S_PRACTICE) }).is_empty();
+        if PRACTICE_HEARD.with(|c| c.replace(heard)) != heard {
+            refresh();
+        }
+        return;
     }
     if click && combo_of(id).is_some() {
         open_select(id);
@@ -2348,8 +3657,22 @@ fn on_command(id: i32, code: u32) {
         commit(|c| c.default_writing_mode = mode);
         return;
     }
-    if (M_ACT..M_ACT + 6).contains(&id) && click {
+    // Every catalogue row, not the first six: SenseVoice and Whisper's buttons were dead.
+    if (M_ACT..M_ACT + ASR_UI_CATALOG.len() as i32).contains(&id) && click {
         model_action(&m, ASR_UI_CATALOG[(id - M_ACT) as usize].id);
+        return;
+    }
+    if id == M_GRAMMAR && click {
+        let downloading = m
+            .download
+            .as_ref()
+            .map(|d| d.is_active() && d.model_id.eq_ignore_ascii_case(GRAMMAR_MODEL_ID))
+            .unwrap_or(false);
+        if downloading {
+            send(UiAction::CancelModelDownload);
+        } else if !m.is_installed(GRAMMAR_MODEL_ID) {
+            send(UiAction::DownloadModel(GRAMMAR_MODEL_ID.to_string()));
+        }
         return;
     }
     if (P_PROF..P_PROF + 3).contains(&id) && click {
@@ -2359,6 +3682,23 @@ fn on_command(id: i32, code: u32) {
     }
 
     match (id, click, code) {
+        (HEADER_MIN, true, _) => unsafe { ShowWindow(hwnd(), SW_MINIMIZE); },
+        // The same path as the system close button.
+        (HEADER_CLOSE, true, _) => unsafe { PostMessageW(hwnd(), WM_CLOSE, 0, 0); },
+        (MODAL_CANCEL, true, _) => close_modal(),
+        (MODAL_CONFIRM, true, _) => {
+            let action = MODAL.with(|m| m.borrow_mut().take().map(|md| md.action)).unwrap_or(ModalAction::Notice);
+            close_modal();
+            match action {
+                // A fresh store: the coordinator puts the learning switch back from the setting.
+                ModalAction::DeleteLearned => commit_style(|s| *s = Default::default()),
+                ModalAction::ResetAll => {
+                    send(UiAction::ResetToDefaults);
+                    flash_saved();
+                }
+                ModalAction::Notice => {}
+            }
+        }
         (G_ENABLED, true, _) => send(UiAction::ToggleAppEnabled),
         (G_AUTOSTART, true, _) => {
             let v = !c.autostart_on_login;
@@ -2372,6 +3712,14 @@ fn on_command(id: i32, code: u32) {
             let a = vi_core::PillClickAction::ALL.get(combo_sel(G_PILL_CLICK)).copied().unwrap_or_default();
             commit(|c| c.pill_click_action = a)
         }
+        (id, _, CBN_SELCHANGE) if (D_MOUSE..D_MOUSE + 3).contains(&id) => {
+            let a = MouseAction::ALL.get(combo_sel(id)).copied().unwrap_or_default();
+            commit(|c| match id - D_MOUSE {
+                0 => c.mouse_middle_action = a,
+                1 => c.mouse_back_action = a,
+                _ => c.mouse_forward_action = a,
+            })
+        }
         (G_PILL_RESET, true, _) => unsafe { crate::ui::win_gui::reset_pill_position() },
         (G_SOUNDS, true, _) => {
             let v = !c.audio_cues_enabled;
@@ -2381,7 +3729,23 @@ fn on_command(id: i32, code: u32) {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
         }
-        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) => start_capture(id),
+        (G_DARK, true, _) => {
+            set_dark_pref(!DARK.load(std::sync::atomic::Ordering::Relaxed));
+            // The same path as a Windows theme change: re-read, re-theme the native pieces, rebuild.
+            unsafe { PostMessageW(hwnd(), WM_THEMECHANGED, 0, 0) };
+        }
+        (A_CUE, _, CBN_SELCHANGE) => {
+            let s = AudioCueStyle::ALL.get(combo_sel(A_CUE)).copied().unwrap_or_default();
+            commit(|c| c.audio_cue_style = s)
+        }
+        (A_VOL, _, CBN_SELCHANGE) => {
+            let v = (combo_sel(A_VOL) * 5).min(100) as u8;
+            commit(|c| c.audio_cue_volume = v)
+        }
+        (A_PLAY, true, _) => send(UiAction::PreviewAudioCue),
+        (D_HOTKEY, true, _) | (D_QF_KEY, true, _) | (D_VOICE_KEY, true, _) | (D_COMPOSER_KEY, true, _) => {
+            start_capture(id)
+        }
         (D_HOTKEY, _, CBN_SELCHANGE) | (S_HOTKEY, _, CBN_SELCHANGE) => {
             if let Some((spec, _)) = hotkey_presets().get(combo_sel(id)) {
                 let spec = spec.clone();
@@ -2399,10 +3763,90 @@ fn on_command(id: i32, code: u32) {
             let v = !c.auto_context_mode;
             commit(|c| c.auto_context_mode = v)
         }
-        (W_VOCAB, _, EN_KILLFOCUS) => {
-            let h = unsafe { GetDlgItem(hwnd(), W_VOCAB) };
-            save_vocab(&read_text(h));
+        (W_VOCAB, true, _) => {
+            vocab_goto(0, false);
+            focus_ctrl(V_TERM);
         }
+        (V_DONE, true, _) => close_vocab(),
+        (V_ADD, true, _) => {
+            harvest_and_commit();
+            let n = dict_len();
+            vocab_goto(n / DICT_ROWS, true);
+            focus_ctrl(V_TERM + (n % DICT_ROWS) as i32);
+        }
+        (V_PREV, true, _) | (V_NEXT, true, _) => {
+            harvest_and_commit();
+            let page = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0);
+            vocab_goto(if id == V_PREV { page.saturating_sub(1) } else { page + 1 }, VOCAB_DRAFT.with(|v| v.get()));
+            focus_ctrl(V_TERM);
+        }
+        (i, true, _) if (V_DEL..V_DEL + DICT_ROWS as i32).contains(&i) => {
+            harvest_and_commit();
+            let abs = VOCAB_VIEW.with(|v| v.get()).unwrap_or(0) * DICT_ROWS + (i - V_DEL) as usize;
+            commit(|c| remove_dict_entry(&mut c.dictionary, abs));
+        }
+        (Y_LEARN, true, _) => {
+            let v = !c.learn_from_edits;
+            commit(|c| c.learn_from_edits = v)
+        }
+        (Y_DIALECT, _, CBN_SELCHANGE) => {
+            let d = [Dialect::Auto, Dialect::British, Dialect::American].get(combo_sel(Y_DIALECT)).copied().unwrap_or_default();
+            commit(|c| c.dialect = d)
+        }
+        (i, true, _) if (Y_ITEM..Y_ITEM + STYLE_ITEMS_PER_PAGE as i32).contains(&i) => {
+            let page = STYLE_PAGE.with(|p| p.get());
+            let Some(item) = m.style.items.get(page * STYLE_ITEMS_PER_PAGE + (i - Y_ITEM) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.remove(&item.key, item.scope, &item.value);
+            });
+        }
+        (i, true, _) if (Y_CAND..Y_CAND + STYLE_CANDIDATES_SHOWN as i32).contains(&i) => {
+            let Some(cand) = m.style.vocabulary_candidates.get((i - Y_CAND) as usize).cloned() else { return };
+            commit(|c| {
+                c.dictionary.add_term(cand.to.clone());
+                dict_sync_enabled(&mut c.dictionary);
+            });
+            commit_style(|s| {
+                s.remove_candidate(&cand.from, &cand.to);
+            });
+        }
+        (i, true, _) if (Y_CAND_DISMISS..Y_CAND_DISMISS + STYLE_CANDIDATES_SHOWN as i32).contains(&i) => {
+            let Some(cand) = m.style.vocabulary_candidates.get((i - Y_CAND_DISMISS) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.remove_candidate(&cand.from, &cand.to);
+            });
+        }
+        (i, true, _) if (Y_APP..Y_APP + STYLE_APPS_SHOWN as i32).contains(&i) => {
+            let Some(app) = m.style.excluded_apps.get((i - Y_APP) as usize).cloned() else { return };
+            commit_style(|s| {
+                s.include_app(&app);
+            });
+        }
+        (Y_PREV, true, _) | (Y_NEXT, true, _) => {
+            let page = STYLE_PAGE.with(|p| p.get());
+            let last = m.style.items.len().div_ceil(STYLE_ITEMS_PER_PAGE).saturating_sub(1);
+            let next = if id == Y_PREV { page.saturating_sub(1) } else { (page + 1).min(last) };
+            STYLE_PAGE.with(|p| p.set(next));
+            refresh();
+        }
+        (Y_RESET, true, _) => commit_style(|s| s.reset_learned()),
+        (Y_EXPORT, true, _) => {
+            let path = vi_core::style::StyleStore::default_path().with_file_name("style-export.json");
+            match m.style.save_atomic(&path) {
+                Ok(()) => {
+                    open_url(&path.to_string_lossy());
+                    flash_saved();
+                }
+                Err(_) => ask(
+                    "The export failed",
+                    "KeyReed could not write style-export.json to its folder. Nothing was changed.",
+                    "OK",
+                    ModalAction::Notice,
+                ),
+            }
+        }
+        (Y_DELETE, true, _) => ask_delete_learned(),
+        (MIC_PRIVACY, true, _) => open_url("ms-settings:privacy-microphone"),
         (O_TYPE, true, _) => commit(|c| c.output_mode = OutputMode::DirectTyping),
         (O_CLIP, true, _) => commit(|c| c.output_mode = OutputMode::Clipboard),
         (O_ASK, true, _) => commit(|c| c.output_mode = OutputMode::AskBeforeInserting),
@@ -2457,6 +3901,10 @@ fn on_command(id: i32, code: u32) {
             let v = !c.privacy.exclude_from_clipboard_history;
             commit(|c| c.privacy.exclude_from_clipboard_history = v)
         }
+        (V_CLOUD_JOBS, true, _) => {
+            let v = !c.text_jobs_allow_cloud;
+            commit(|c| c.text_jobs_allow_cloud = v)
+        }
         (V_CLEAR_HIST, true, _) => send(UiAction::ClearHistory),
         (AB_RELEASES, true, _) => open_url(&format!("{REPO_URL}/releases")),
         (AB_UPDATES, true, _) => open_url(&format!("{REPO_URL}/releases/latest")),
@@ -2470,15 +3918,12 @@ fn on_command(id: i32, code: u32) {
             });
             navigate(PAGE_START);
         }
-        (AB_RESET, true, _) => unsafe {
-            let title = to_wide("Reset all settings?");
-            let body = to_wide("KeyReed will restore its default settings. Downloaded speech models are kept.\n\nReset now?");
-            let r = MessageBoxW(hwnd(), body.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
-            if r == IDOK {
-                send(UiAction::ResetToDefaults);
-                flash_saved();
-            }
-        },
+        (AB_RESET, true, _) => ask(
+            "Reset all settings?",
+            "KeyReed will restore its default settings. Downloaded speech models are kept.",
+            "Reset",
+            ModalAction::ResetAll,
+        ),
         (S_DL, true, _) => {
             let id = if m.active_model_ready() { c.local_asr_model.clone() } else { ASR_UI_CATALOG[0].id.to_string() };
             model_action(&m, &id);
@@ -2487,13 +3932,18 @@ fn on_command(id: i32, code: u32) {
         (S_SKIP, true, _) => finish_setup(false),
         (S_BACK, true, _) => {
             let step = ST.with(|s| s.borrow().as_ref().map(|x| x.step).unwrap_or(0));
-            set_step(step.saturating_sub(1));
+            // The model step moves on by itself once the model is ready, so Back from the practice step skips it.
+            set_step(if step == 3 && m.active_model_ready() { 1 } else { step.saturating_sub(1) });
         }
         (S_NEXT, true, _) => {
             let step = ST.with(|s| s.borrow().as_ref().map(|x| x.step).unwrap_or(0));
             if step >= 3 {
                 finish_setup(true);
             } else {
+                // Welcome: Next is the explicit consent to the one-time download of the speech engine.
+                if step == 0 && !m.active_model_ready() && !m.download.as_ref().is_some_and(|d| d.is_active()) {
+                    model_action(&m, ASR_UI_CATALOG[0].id);
+                }
                 set_step(step + 1);
             }
         }
@@ -2591,6 +4041,7 @@ fn end_capture(id: i32, chord: Option<HotkeySpec>) {
                 ShortcutRole::Dictation => c.ptt_hotkey = spec,
                 ShortcutRole::QuickFix => c.quick_fix_hotkey = spec,
                 ShortcutRole::Composer => c.composer_hotkey = spec,
+                ShortcutRole::VoiceCommand => c.voice_command_hotkey = spec,
             }),
         }
     }
@@ -2629,13 +4080,40 @@ unsafe fn shortcut_field_msg(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) 
     }
 }
 
+/// A text box would scroll its own text on the wheel; the page scrolls instead.
+unsafe extern "system" fn edit_wheel_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _kind: usize) -> LRESULT {
+    if msg == WM_MOUSEWHEEL {
+        return wheel_scroll(wparam);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
 unsafe extern "system" fn btn_subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, is_select: usize) -> LRESULT {
     const VK_UP: usize = 0x26;
     const VK_DOWN: usize = 0x28;
     const VK_F4: usize = 0x73;
+    if msg == WM_MOUSEWHEEL {
+        return wheel_scroll(wparam);
+    }
     if is_select == 2 {
         if let Some(r) = shortcut_field_msg(hwnd, msg, wparam, lparam) {
             return r;
+        }
+    }
+    if is_select == 3 {
+        // The sidebar is a source list: Up and Down move the selection (and with it the page).
+        match msg {
+            WM_GETDLGCODE => return DefSubclassProc(hwnd, msg, wparam, lparam) | DLGC_WANTARROWS as LRESULT,
+            WM_KEYDOWN if wparam == VK_UP || wparam == VK_DOWN => {
+                let cur = GetDlgCtrlID(hwnd) - ID_NAV;
+                let new = if wparam == VK_UP { cur - 1 } else { cur + 1 };
+                if (0..NAV.len() as i32).contains(&new) {
+                    // Posted, not called: switching pages destroys this very control.
+                    PostMessageW(GetParent(hwnd), WM_COMMAND, (ID_NAV + new) as WPARAM, 0);
+                }
+                return 0;
+            }
+            _ => {}
         }
     }
     if is_select == 1 {
@@ -2749,13 +4227,15 @@ unsafe fn apply_menu_theme() {
 unsafe fn apply_window_chrome(hwnd: HWND) {
     apply_menu_theme();
     let t = theme();
-    // Windows 11: tint the caption to match the sidebar and use the brand border. Ignored on Windows 10.
-    let caption: u32 = t.sidebar;
     let border: u32 = t.border;
     let dark = DARK.load(std::sync::atomic::Ordering::Relaxed) as u32;
     DwmSetWindowAttribute(hwnd, 20, &dark as *const u32 as *const _, 4); // DWMWA_USE_IMMERSIVE_DARK_MODE
-    DwmSetWindowAttribute(hwnd, 35, &caption as *const u32 as *const _, 4);
     DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const _, 4);
+    // Frameless (Windows 11; ignored on Windows 10): round the corners, and keep a popup's drop shadow.
+    let round: u32 = 2; // DWMWCP_ROUND
+    DwmSetWindowAttribute(hwnd, 33, &round as *const u32 as *const _, 4); // DWMWA_WINDOW_CORNER_PREFERENCE
+    let shadow: u32 = 2; // DWMNCRP_ENABLED
+    DwmSetWindowAttribute(hwnd, 2, &shadow as *const u32 as *const _, 4); // DWMWA_NCRENDERING_POLICY
     let big = brand_hicon(32);
     let small = brand_hicon(20);
     SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, big as LPARAM);
@@ -2766,6 +4246,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     match msg {
         WM_CREATE => {
             refresh_dark_mode();
+            PRACTICE_HEARD.with(|c| c.set(false));
+            PRACTICE_NOTE.with(|c| c.set(0));
+            ADVANCE_ARMED.with(|c| c.set(false));
+            VOCAB_VIEW.with(|v| v.set(None));
+            VOCAB_DRAFT.with(|v| v.set(false));
             let dpi = window_dpi(hwnd);
             let tooltip = {
                 let cls = to_wide("tooltips_class32");
@@ -2798,22 +4283,67 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     key_draft: String::new(),
                     last_page: page,
                     scroll: 0,
+                    content_h: WIN_H,
                     view_h: WIN_H,
-                    anims: Vec::new(),
+                    springs: Vec::new(),
+                    nav_y: Animated::new(nav_top(page), crate::motion::SNAPPY, 0.25),
+                    enter: None,
+                    pending_focus: None,
                 })
             });
+            // The window appears at once; its content fades and rises 6-8 dp into place.
+            begin_enter(0);
             apply_window_chrome(hwnd);
             rebuild(true);
             0
         }
         WM_ERASEBKGND => 1,
+        // Frameless: no system frame. The client area is the whole window, so the resize grip and the caption
+        // live inside it (WM_NCHITTEST below).
+        WM_NCCALCSIZE if wparam != 0 => 0,
+        WM_NCPAINT => 0,
+        WM_NCHITTEST => {
+            let (x, y) = (((lparam & 0xFFFF) as u16 as i16) as i32, (((lparam >> 16) & 0xFFFF) as u16 as i16) as i32);
+            let mut rc: RECT = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut rc);
+            let dpi = window_dpi(hwnd);
+            let g = sc(6, dpi);
+            let (near_left, near_top) = (x < rc.left + g, y < rc.top + g);
+            let (near_right, near_bottom) = (x >= rc.right - g, y >= rc.bottom - g);
+            let edge = match (near_left, near_top, near_right, near_bottom) {
+                (true, true, _, _) => HTTOPLEFT,
+                (_, true, true, _) => HTTOPRIGHT,
+                (true, _, _, true) => HTBOTTOMLEFT,
+                (_, _, true, true) => HTBOTTOMRIGHT,
+                (true, _, _, _) => HTLEFT,
+                (_, true, _, _) => HTTOP,
+                (_, _, true, _) => HTRIGHT,
+                (_, _, _, true) => HTBOTTOM,
+                _ => 0,
+            };
+            if edge != 0 {
+                return edge as LRESULT;
+            }
+            // The header row drags the window; the page below it does not.
+            if y - rc.top < sc(HEADER_H, dpi) { HTCAPTION as LRESULT } else { HTCLIENT as LRESULT }
+        }
+        // A double-click on the header must not maximise a window that has no maximise button.
+        WM_NCLBUTTONDBLCLK => 0,
+        WM_DICT_COMMIT => {
+            dict_commit_deferred();
+            0
+        }
+        crate::frameclock::WM_APP_FRAME => {
+            on_frame(hwnd);
+            0
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             ST.with(|s| {
                 if let Ok(b) = s.try_borrow() {
                     if let Some(st) = b.as_ref() {
-                        paint(st, hdc);
+                        paint(st, hdc, ps.rcPaint);
                     }
                 }
             });
@@ -2841,15 +4371,24 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
+            if id == IDCANCEL as i32 && MODAL.with(|m| m.borrow().is_some()) {
+                close_modal(); // Esc answers the card first
+                return 0;
+            }
+            if id == IDCANCEL as i32 && VOCAB_VIEW.with(|v| v.get()).is_some() {
+                close_vocab(); // Esc leaves the dictionary editor first, not the window
+                return 0;
+            }
             if id == IDCANCEL as i32 {
-                // Esc closes Settings (but not while the user is dictating into the practice box).
-                let listening = snapshot().map(|m| matches!(m.state, EngineState::Listening | EngineState::Processing | EngineState::Correcting)).unwrap_or(false);
-                if !listening {
+                // Esc closes Settings, except while the user is dictating into the practice box. Every other
+                // recording must not trap the window: while one is stuck, Settings is the only way out.
+                if focused_id() != S_PRACTICE {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 }
                 return 0;
             }
             if id == IDOK as i32 {
+                on_enter();
                 return 0;
             }
             on_command(id, code);
@@ -2860,30 +4399,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             ST.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     st.view_h = (h_px as f32 * 96.0 / st.dpi as f32).round() as i32;
-                    st.scroll = st.scroll.clamp(0, (WIN_H - st.view_h).max(0));
+                    st.scroll = st.scroll.clamp(0, (st.content_h - st.view_h).max(0));
                 }
             });
             0
         }
         WM_MOUSEWHEEL => {
-            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-            scroll_by(-(delta * 56) / 120);
-            0
+            // The card's buttons do not scroll the page behind them.
+            if MODAL.with(|m| m.borrow().is_some()) {
+                return 0;
+            }
+            wheel_scroll(wparam)
         }
         WM_TIMER => {
-            if wparam == IDT_ANIM {
-                let (hs, done) = ST.with(|s| {
-                    let Ok(mut b) = s.try_borrow_mut() else { return (Vec::new(), false) };
-                    let Some(st) = b.as_mut() else { return (Vec::new(), true) };
-                    let hs: Vec<HWND> = st.anims.iter().filter_map(|(id, _)| st.ctrls.iter().find(|(c, _)| c.id == *id).map(|(_, h)| *h)).collect();
-                    st.anims.retain(|(_, t0)| t0.elapsed().as_secs_f32() * 1000.0 < TOGGLE_MS);
-                    (hs, st.anims.is_empty())
-                });
-                for h in hs {
-                    InvalidateRect(h, std::ptr::null(), 0);
-                }
-                if done {
-                    KillTimer(hwnd, IDT_ANIM);
+            if wparam == IDT_ADVANCE {
+                KillTimer(hwnd, IDT_ADVANCE);
+                ADVANCE_ARMED.with(|c| c.set(false));
+                let on_model_step = ST.with(|s| s.try_borrow().ok().and_then(|b| b.as_ref().map(|st| st.page == PAGE_START && st.step == 2))).unwrap_or(false);
+                if on_model_step && snapshot().is_some_and(|m| m.active_model_ready()) {
+                    set_step(3);
                 }
                 return 0;
             }
@@ -2901,6 +4435,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_DPICHANGED => {
             let dpi = ((wparam >> 16) & 0xFFFF) as u32;
             let rc = &*(lparam as *const RECT);
+            harvest_and_commit();
             ST.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     let _ = harvest_edits(st);
@@ -2991,17 +4526,20 @@ mod tests {
             hint: None,
             processing_note: None,
             quick_fix: None,
+            style: Default::default(),
         }
     }
 
+    /// Horizontally on screen and below the top. Taller pages scroll (see `content_height`), so a control
+    /// may sit past the window's bottom edge.
     fn rect_ok(rr: &R) -> bool {
-        rr.x >= 0 && rr.y >= 0 && rr.x + rr.w <= WIN_W && rr.y + rr.h <= WIN_H
+        rr.x >= 0 && rr.y >= 0 && rr.x + rr.w <= WIN_W && rr.y + rr.h <= WIN_H * 2
     }
 
     #[test]
     fn every_page_and_step_fits_the_window_without_overlap() {
         let mut m = model();
-        for variant in 0..3 {
+        for variant in 0..5 {
             match variant {
                 1 => {
                     m.installed_asr_models = vec!["parakeet-tdt-0.6b-v2-int8".into()];
@@ -3011,6 +4549,20 @@ mod tests {
                     m.download = Some(DownloadProgress { model_id: "moonshine-tiny-en-int8".into(), stage: DownloadStage::Downloading, done_bytes: 10, total_bytes: Some(100) });
                     m.config.cloud.encrypted_api_key_b64 = Some("x".into());
                     m.mic_test = MicTestStatus { error: Some("Mic error: x".into()), ..Default::default() };
+                }
+                3 => {
+                    m.mic_test = MicTestStatus { verdict: Some(MicVerdict::Silent), peak_rms: 0.0, device: "Mic".into(), ..Default::default() };
+                }
+                4 => {
+                    // "My style" with content: learned rows and their paging, suggestions, an excluded app.
+                    for n in 0..7 {
+                        m.style.observe(vi_core::style::Source::Samples, &format!("habit_{n}"), vi_core::style::Scope::Everywhere, "yes", 35, 1);
+                    }
+                    m.style.set_locked("dialect", vi_core::style::Scope::Everywhere, "british", 2);
+                    for n in 0..6 {
+                        m.style.record_candidate(&format!("word{n}"), &format!("Word{n}"), "chat", 1);
+                    }
+                    m.style.exclude_app("keepass.exe");
                 }
                 _ => {}
             }
@@ -3047,9 +4599,80 @@ mod tests {
         let (_, ctrls) = build(PAGE_WRITING, 0, &m, false);
         assert_eq!(ctrls.iter().filter(|c| (W_MODE..W_MODE + 6).contains(&c.id)).count(), 6);
         let (_, ctrls) = build(PAGE_MODELS, 0, &m, false);
-        assert_eq!(ctrls.iter().filter(|c| (M_ACT..M_ACT + 6).contains(&c.id)).count(), 6);
+        assert_eq!(ctrls.iter().filter(|c| (M_ACT..M_ACT + ASR_UI_CATALOG.len() as i32).contains(&c.id)).count(), ASR_UI_CATALOG.len());
         let (_, ctrls) = build(PAGE_OUTPUT, 0, &m, false);
         assert_eq!(ctrls.iter().filter(|c| [O_TYPE, O_CLIP, O_ASK].contains(&c.id)).count(), 3);
+    }
+
+    /// The frameless header owns the top of the window, everything else starts below it, and the confirmation
+    /// card fits the design size with Cancel (the default button) to the left of Confirm.
+    #[test]
+    fn the_header_and_the_confirmation_card_fit_the_window() {
+        let (items, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        let win_btn = |id: i32| ctrls.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is missing"));
+        for id in [HEADER_MIN, HEADER_CLOSE] {
+            let b = win_btn(id);
+            assert!(b.r.y >= 0 && b.r.y + b.r.h <= HEADER_H, "window button {id} inside the header: {:?}", b.r);
+            assert!(b.r.x >= SIDEBAR_W && b.r.x + b.r.w <= WIN_W, "window button {id} on the right: {:?}", b.r);
+        }
+        assert!(win_btn(HEADER_MIN).r.x < win_btn(HEADER_CLOSE).r.x, "minimise left of close");
+        let nav = ctrls.iter().find(|c| c.id == ID_NAV + PAGE_GENERAL as i32).expect("nav");
+        assert!(nav.r.y >= HEADER_H, "navigation below the header: {:?}", nav.r);
+        let top = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Text { r, .. } => Some(r.y),
+                _ => None,
+            })
+            .min()
+            .expect("page text");
+        assert!(top >= HEADER_H, "page content below the header, was {top}");
+
+        MODAL.with(|m| {
+            *m.borrow_mut() = Some(Modal {
+                title: "Delete everything KeyReed learned?".into(),
+                body: "Every learned word and habit go.".into(),
+                confirm: "Delete".into(),
+                action: ModalAction::DeleteLearned,
+            })
+        });
+        let (_, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        MODAL.with(|m| *m.borrow_mut() = None);
+        let card = modal_card();
+        assert!(card.x >= 0 && card.y >= 0 && card.x + card.w <= WIN_W && card.y + card.h <= WIN_H, "{card:?}");
+        let cancel = ctrls.iter().find(|c| c.id == MODAL_CANCEL).expect("cancel");
+        let confirm = ctrls.iter().find(|c| c.id == MODAL_CONFIRM).expect("confirm");
+        for b in [cancel, confirm] {
+            assert!(b.r.x >= card.x && b.r.x + b.r.w <= card.x + card.w, "{:?} inside the card", b.r);
+            assert!(b.r.y >= card.y && b.r.y + b.r.h <= card.y + card.h, "{:?} inside the card", b.r);
+        }
+        assert!(cancel.r.x < confirm.r.x, "Cancel on the left of Confirm");
+        assert!(matches!(confirm.kind, Kind::Button { style: BtnStyle::Danger, .. }), "the destructive action is red");
+        assert!(matches!(cancel.kind, Kind::Button { style: BtnStyle::Secondary, .. }));
+    }
+
+    #[test]
+    fn the_grammar_row_installs_but_never_becomes_a_speech_model() {
+        let label = |m: &SharedUiModel, want_enabled: bool| {
+            let (_, ctrls) = build(PAGE_MODELS, 0, m, false);
+            let c = ctrls.iter().find(|c| c.id == M_GRAMMAR).expect("grammar row").clone();
+            assert_eq!(c.enabled, want_enabled);
+            match c.kind {
+                Kind::Button { label, .. } => label,
+                _ => unreachable!(),
+            }
+        };
+        let mut m = model();
+        assert_eq!(label(&m, true), "Download");
+        m.download = Some(DownloadProgress { model_id: GRAMMAR_MODEL_ID.into(), stage: DownloadStage::Downloading, done_bytes: 1, total_bytes: Some(2) });
+        assert_eq!(label(&m, true), "Cancel");
+        m.download = Some(DownloadProgress { model_id: GRAMMAR_MODEL_ID.into(), stage: DownloadStage::Verifying, done_bytes: 0, total_bytes: None });
+        assert_eq!(label(&m, false), "Verifying…");
+        m.download = None;
+        m.installed_asr_models = vec![GRAMMAR_MODEL_ID.into()];
+        assert_eq!(label(&m, false), "Installed");
+        let (items, _) = build(PAGE_MODELS, 0, &m, false);
+        assert!(items.iter().any(|i| matches!(i, Item::Badge { s, .. } if s == "In use by Quick Fix")));
     }
 
     #[test]
@@ -3062,11 +4685,99 @@ mod tests {
             Kind::Button { label, .. } => label.clone(),
             _ => unreachable!(),
         };
+        // Button ids follow the catalogue order, so look the models up instead of hardcoding an index.
+        let idx = |id: &str| M_ACT + ASR_UI_CATALOG.iter().position(|m| m.id.eq_ignore_ascii_case(id)).expect("in the catalogue") as i32;
         assert_eq!(label(M_ACT), "In use");
-        assert_eq!(label(M_ACT + 2), "Use");
-        assert_eq!(label(M_ACT + 5), "Cancel");
-        assert_eq!(label(M_ACT + 3), "Download");
-        assert!(!ctrls.iter().find(|c| c.id == M_ACT + 3).unwrap().enabled, "one download at a time");
+        assert_eq!(label(idx("moonshine-base-en-int8")), "Use");
+        assert_eq!(label(idx("whisper-small.en-int8")), "Cancel");
+        let idle = idx("sense-voice-small-int8");
+        assert_eq!(label(idle), "Download");
+        assert!(!ctrls.iter().find(|c| c.id == idle).unwrap().enabled, "one download at a time");
+    }
+
+    #[test]
+    fn the_dictation_page_offers_every_chord_and_the_three_mouse_buttons() {
+        let m = model();
+        let (_, ctrls) = build(PAGE_DICTATION, 0, &m, false);
+        for id in [D_HOTKEY, D_QF_KEY, D_VOICE_KEY, D_COMPOSER_KEY] {
+            let c = ctrls.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("{id} is missing"));
+            assert!(matches!(c.kind, Kind::Shortcut { .. }), "{id} is a chord field");
+        }
+        for i in 0..3i32 {
+            let c = ctrls.iter().find(|c| c.id == D_MOUSE + i).unwrap_or_else(|| panic!("mouse row {i} is missing"));
+            assert!(matches!(&c.kind, Kind::Combo { items, .. } if items.len() == MouseAction::ALL.len()));
+        }
+    }
+
+    /// A tall page must reach every control, and one that fits must not scroll at all.
+    #[test]
+    fn tall_pages_scroll_to_their_last_control() {
+        let m = model();
+        let view = (SIDEBAR_W + 1, HEADER_H + 1, WIN_W, WIN_H);
+        for (page, name) in [(PAGE_DICTATION, "dictation"), (PAGE_MODELS, "speech models")] {
+            let (items, ctrls) = build(page, 0, &m, false);
+            let h = content_height(&items, &ctrls);
+            let end = max_scroll(h, WIN_H);
+            assert!(h > WIN_H && end > 0, "{name}: content {h} in a {WIN_H} window scrolls ({end})");
+            for c in ctrls.iter().filter(|c| !fixed_in_place(&c.kind)) {
+                let off = (c.r.y + c.r.h - WIN_H).max(0).min(end);
+                let (x0, y0, x1, y1) = child_region(c.r.x, c.r.y - off, c.r.w, c.r.h, view);
+                assert_eq!(
+                    (x0, y0, x1, y1),
+                    (0, 0, c.r.w, c.r.h),
+                    "{name}: control {} is not whole at offset {off}",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends_and_a_page_that_fits_does_not_move() {
+        assert_eq!(WHEEL_STEP, ROW_H, "one notch lands on a row boundary");
+        assert_eq!(next_scroll(0, -WHEEL_STEP, 1000, WIN_H), 0, "never negative");
+        assert_eq!(next_scroll(0, WHEEL_STEP, 1000, WIN_H), WHEEL_STEP);
+        let end = max_scroll(1000, WIN_H);
+        assert_eq!(next_scroll(end - 10, WHEEL_STEP, 1000, WIN_H), end, "stops at the end");
+        assert_eq!(next_scroll(end, WHEEL_STEP, 1000, WIN_H), end);
+        assert_eq!(max_scroll(WIN_H, WIN_H), 0, "a page that fits does not scroll");
+        assert_eq!(max_scroll(WIN_H - 40, WIN_H), 0);
+        assert_eq!(next_scroll(0, WHEEL_STEP, WIN_H - 40, WIN_H), 0);
+    }
+
+    #[test]
+    fn tabbing_to_a_control_below_the_fold_scrolls_it_into_view() {
+        assert_eq!(reveal_delta(100, 32, 0, WIN_H), None, "already in view: no scroll");
+        assert_eq!(reveal_delta(700, 32, 0, WIN_H), Some(700 + 32 - WIN_H + 8), "just enough to show it");
+        assert_eq!(reveal_delta(300, 32, 400, WIN_H), Some(-108), "scrolled past the top: back down");
+        assert!(reveal_delta(WIN_H - 10, 32, 0, WIN_H).is_some(), "half hidden at the bottom edge");
+        assert!(reveal_delta(640, 32, 0, 660).is_some() && reveal_delta(620, 32, 0, 660).is_none());
+    }
+
+    /// The clip is what makes a control scrolled out of view unpainted and unclickable, and one in view whole.
+    #[test]
+    fn a_control_scrolled_out_of_view_is_clipped_away() {
+        let view = (SIDEBAR_W + 1, HEADER_H + 1, WIN_W, WIN_H);
+        assert_eq!(child_region(300, 100, 200, 32, view), (0, 0, 200, 32), "whole when in view");
+        assert_eq!(child_region(300, WIN_H - 10, 200, 32, view), (0, 0, 200, 10), "half past the bottom");
+        assert_eq!(child_region(300, 30, 200, 32, view), (0, HEADER_H + 1 - 30, 200, 32), "top cut off at the header");
+        assert_eq!(child_region(300, 20, 200, 32, view), (0, 0, 0, 0), "scrolled under the header: nothing");
+        assert_eq!(child_region(300, WIN_H + 40, 200, 32, view), (0, 0, 0, 0), "below the window: nothing to paint or click");
+        assert_eq!(child_region(300, -60, 200, 32, view), (0, 0, 0, 0), "above the window");
+        assert_eq!(child_region(10, 100, 200, 32, view), (0, 0, 0, 0), "left of the content column");
+    }
+
+    #[test]
+    fn the_general_page_offers_the_composer_on_a_pill_click() {
+        let (_, ctrls) = build(PAGE_GENERAL, 0, &model(), false);
+        let c = ctrls.iter().find(|c| c.id == G_PILL_CLICK).expect("the pill click choice");
+        match &c.kind {
+            Kind::Combo { items, .. } => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[1], "Open the Composer");
+            }
+            _ => panic!("a drop-down"),
+        }
     }
 
     #[test]
@@ -3110,6 +4821,7 @@ mod tests {
                 ("on_accent/accent_fill", t.on_accent, t.accent_fill), ("on_accent/accent (hover)", t.on_accent, t.accent),
                 ("on_accent/accent_press", t.on_accent, t.accent_press),
                 ("ok", t.ok_fg, t.ok_bg), ("warn", t.warn_fg, t.warn_bg), ("err", t.err_fg, t.err_bg),
+                ("working text/bg", t.working, t.bg), ("working text/surface", t.working, t.surface),
             ];
             for (name, fg, bg) in text_pairs {
                 let r = contrast(fg, bg);
@@ -3118,6 +4830,9 @@ mod tests {
             let ui_pairs = [
                 ("control_border/surface", t.control_border, t.surface), ("control_border/bg", t.control_border, t.bg),
                 ("accent_fill/surface (switch ON)", t.accent_fill, t.surface),
+                ("working dot/sidebar", t.working, t.sidebar),
+                ("focus_ring/bg", t.focus_ring, t.bg), ("focus_ring/surface", t.focus_ring, t.surface),
+                ("focus_ring/sidebar", t.focus_ring, t.sidebar), ("focus_ring/accent_soft", t.focus_ring, t.accent_soft),
             ];
             for (name, fg, bg) in ui_pairs {
                 let r = contrast(fg, bg);
@@ -3125,6 +4840,111 @@ mod tests {
             }
         }
         DARK.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn fits(page: usize, step: usize, m: &SharedUiModel) {
+        let (items, ctrls) = build(page, step, m, false);
+        for c in &ctrls {
+            assert!(rect_ok(&c.r), "page {page} step {step} ctrl {} out of bounds: {:?}", c.id, c.r);
+        }
+        for it in &items {
+            if let Item::Group { r } | Item::Card { r } | Item::Banner { r, .. } = it {
+                assert!(rect_ok(r), "page {page} step {step} item out of bounds: {r:?}");
+            }
+        }
+        let content: Vec<&Ctrl> = ctrls.iter().filter(|c| !matches!(c.kind, Kind::Nav { .. })).collect();
+        for (i, a) in content.iter().enumerate() {
+            for b in content.iter().skip(i + 1) {
+                let overlap = a.r.x < b.r.x + b.r.w && b.r.x < a.r.x + a.r.w && a.r.y < b.r.y + b.r.h && b.r.y < a.r.y + a.r.h;
+                assert!(!overlap, "page {page} step {step}: {} overlaps {}", a.id, b.id);
+            }
+        }
+    }
+
+    #[test]
+    fn dictionary_editor_fits_at_every_size_and_shows_at_most_one_page() {
+        for terms in [0usize, 1, 7, 8, 9, 17, DICT_MAX_TERMS] {
+            let mut m = model();
+            m.config.dictionary.vocabulary = (0..terms).map(|i| format!("Term{i}")).collect();
+            for page in [0usize, 1, 99] {
+                VOCAB_VIEW.with(|v| v.set(Some(page)));
+                fits(PAGE_WRITING, 0, &m);
+                let (_, ctrls) = build(PAGE_WRITING, 0, &m, false);
+                let rows = ctrls.iter().filter(|c| (V_TERM..V_TERM + DICT_ROWS as i32).contains(&c.id)).count();
+                assert!((1..=DICT_ROWS).contains(&rows), "{terms} terms, page {page}: {rows} rows");
+                assert_eq!(ctrls.iter().any(|c| c.id == V_ADD && c.enabled), terms < DICT_MAX_TERMS);
+            }
+        }
+        VOCAB_VIEW.with(|v| v.set(None));
+    }
+
+    #[test]
+    fn setup_practice_step_fits_in_every_state() {
+        let mut m = model();
+        for ready in [false, true] {
+            if ready {
+                m.installed_asr_models = vec!["parakeet-tdt-0.6b-v2-int8".into()];
+            }
+            for state in [EngineState::Idle, EngineState::Listening, EngineState::Processing, EngineState::ReadyToPaste] {
+                m.state = state;
+                for (heard, note) in [(false, 0u8), (true, 0), (false, 1), (false, 3)] {
+                    PRACTICE_HEARD.with(|c| c.set(heard));
+                    PRACTICE_NOTE.with(|c| c.set(note));
+                    fits(PAGE_START, 3, &m);
+                }
+            }
+        }
+        PRACTICE_HEARD.with(|c| c.set(false));
+        PRACTICE_NOTE.with(|c| c.set(0));
+    }
+
+    #[test]
+    fn dictionary_rows_map_terms_to_spellings_without_losing_data() {
+        let mut d = vi_core::PersonalDictionary::default();
+        // A new term with spellings.
+        assert!(apply_dict_row(&mut d, None, " Kubernetes ", "koober netties, cube er nettys"));
+        assert_eq!(d.vocabulary, vec!["Kubernetes".to_string()]);
+        assert_eq!(dict_entries(&d), vec![DictEntry { term: "Kubernetes".into(), sounds: vec!["koober netties".into(), "cube er nettys".into()] }]);
+        assert!(d.enabled);
+        // The same texts again change nothing (this is what a focus change without typing does).
+        assert!(!apply_dict_row(&mut d, Some(0), "Kubernetes", "koober netties, cube er nettys"));
+        // Renaming carries the spellings over; clearing the term text keeps the old term.
+        assert!(apply_dict_row(&mut d, Some(0), "K8s", "koober netties, cube er nettys"));
+        assert!(d.replacements.iter().all(|r| r.written == "K8s"));
+        assert!(!apply_dict_row(&mut d, Some(0), "", "koober netties, cube er nettys"));
+        assert_eq!(d.vocabulary, vec!["K8s".to_string()]);
+        // A duplicate term is refused, an empty blank row adds nothing.
+        assert!(apply_dict_row(&mut d, None, "KeyReed", ""));
+        assert!(!apply_dict_row(&mut d, Some(1), "k8s", ""));
+        assert!(!apply_dict_row(&mut d, None, "  ", "x"));
+        // Emptying the spellings removes their rules only.
+        assert!(apply_dict_row(&mut d, Some(0), "K8s", ""));
+        assert!(d.replacements.is_empty() && d.vocabulary.len() == 2);
+        // A rule written elsewhere still gets a row, and Remove takes the term and its rules.
+        d.upsert_replacement("tea cee pee", "TCP", true);
+        assert_eq!(dict_entries(&d).len(), 3);
+        remove_dict_entry(&mut d, 2);
+        assert!(d.replacements.is_empty());
+        remove_dict_entry(&mut d, 0);
+        remove_dict_entry(&mut d, 0);
+        assert!(d.vocabulary.is_empty() && !d.enabled);
+        // The term limit holds.
+        d.vocabulary = (0..DICT_MAX_TERMS).map(|i| format!("t{i}")).collect();
+        assert!(!apply_dict_row(&mut d, None, "one more", ""));
+    }
+
+    #[test]
+    fn status_chip_uses_the_working_colour_and_shows_the_download() {
+        let t = theme();
+        let mut m = model();
+        m.state = EngineState::Processing;
+        assert_eq!(status_chip(&m, &t), ("Transcribing…".to_string(), t.working));
+        m.state = EngineState::Idle;
+        assert_eq!(status_chip(&m, &t).0, "Speech model needed");
+        m.download = Some(crate::ui::DownloadProgress { model_id: "m".into(), stage: DownloadStage::Downloading, done_bytes: 25, total_bytes: Some(100) });
+        assert_eq!(status_chip(&m, &t), ("Downloading model 25%".to_string(), t.working));
+        m.download = Some(crate::ui::DownloadProgress { model_id: "m".into(), stage: DownloadStage::Failed("x".into()), done_bytes: 0, total_bytes: None });
+        assert_eq!(status_chip(&m, &t).0, "Model download failed");
     }
 
     #[test]
