@@ -99,24 +99,24 @@ out vec4 outColor;
 
 void main() {
   // Brand palette: evergreen #0B3B2C -> emerald #10B981 / #34D399 -> mint #A7F3D0
-  vec3 cBase = vec3(0.035, 0.165, 0.120);
-  vec3 cMid  = vec3(0.063, 0.725, 0.506);
-  vec3 cTip  = vec3(0.655, 0.953, 0.816);
+  vec3 cBase = vec3(0.045, 0.215, 0.155);
+  vec3 cMid  = vec3(0.105, 0.785, 0.545);
+  vec3 cTip  = vec3(0.680, 0.965, 0.835);
 
-  vec3 col = mix(cBase, cMid, smoothstep(0.06, 0.68, vT));
-  col = mix(col, cTip, smoothstep(0.62, 1.0, vT));
+  vec3 col = mix(cBase, cMid, smoothstep(0.05, 0.64, vT));
+  col = mix(col, cTip, smoothstep(0.58, 1.0, vT));
 
   // Tip luminescence boosted by voice envelope & ripple ring
-  float tipBoost = pow(vT, 2.4) * (0.30 + vGlow * 0.85 + uVoiceAmp * 0.45);
-  col += vec3(0.20, 0.82, 0.60) * tipBoost;
+  float tipBoost = pow(vT, 2.2) * (0.36 + vGlow * 0.85 + uVoiceAmp * 0.48);
+  col += vec3(0.22, 0.86, 0.62) * tipBoost;
 
   // Depth fog into dark stage floor (#060B09)
   vec3 fog = vec3(0.024, 0.043, 0.035);
-  float fogAmt = mix(0.62, 0.04, vDepth);
+  float fogAmt = mix(0.55, 0.03, vDepth);
   col = mix(col, fog, fogAmt * (1.0 - vT * 0.35));
 
-  float edgeSoft = smoothstep(1.0, 0.28, abs(vEdge));
-  float alpha = mix(0.45, 0.96, vDepth) * smoothstep(0.0, 0.08, vT) * edgeSoft;
+  float edgeSoft = smoothstep(1.0, 0.24, abs(vEdge));
+  float alpha = mix(0.54, 0.98, vDepth) * smoothstep(0.0, 0.07, vT) * edgeSoft;
   outColor = vec4(col, alpha);
 }
 `;
@@ -152,6 +152,7 @@ export function mountReeds(canvas, options = {}) {
       stencil: false,
       powerPreference: 'low-power',
       premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
     });
     if (!gl) return;
 

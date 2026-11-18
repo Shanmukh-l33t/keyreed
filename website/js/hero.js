@@ -239,7 +239,7 @@ function initHero() {
     const heldMs = performance.now() - holdStartedAt;
     while (wordIndex < RAW_WORDS.length) {
       appendNextWord();
-      if (heldMs < 600) await sleep(28);
+      if (heldMs < 500) await sleep(10);
       if (myRun !== runToken) return;
     }
 
@@ -255,13 +255,13 @@ function initHero() {
         opacity: 0,
         scale: 0.4,
         y: -4,
-        stagger: 0.025,
-        duration: 0.24,
+        stagger: 0.018,
+        duration: 0.18,
         ease: 'power2.in',
       });
     }
 
-    await sleep(320);
+    await sleep(200);
     if (myRun !== runToken) return;
     fillers.forEach((f) => f.classList.add('collapsed'));
 
@@ -283,7 +283,7 @@ function initHero() {
       await new Promise((resolve) => {
         gsap.to(proxy, {
           t: 1,
-          duration: 0.46,
+          duration: 0.34,
           ease: 'power2.inOut',
           onUpdate() {
             const u = 1 - proxy.t;
@@ -300,9 +300,9 @@ function initHero() {
     }
 
     // Phase 4: Type clean sentence at caret + draw check mark
-    for (let i = 4; i <= CLEAN_TEXT.length; i += 4) {
+    for (let i = 7; i <= CLEAN_TEXT.length; i += 7) {
       mailTyped.textContent = CLEAN_TEXT.slice(0, i);
-      await sleep(16);
+      await sleep(14);
       if (myRun !== runToken) return;
     }
     mailTyped.textContent = CLEAN_TEXT;

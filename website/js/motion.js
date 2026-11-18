@@ -62,6 +62,9 @@ export function initMotion() {
     });
     gsap.ticker.lagSmoothing(0);
   }
+  if (ScrollTrigger) {
+    window.addEventListener('scroll', () => ScrollTrigger.update(), { passive: true });
+  }
 
   // Smooth in-page anchor navigation that respects keyboard-only jumps and reduced motion.
   document.addEventListener('click', (e) => {

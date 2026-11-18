@@ -289,8 +289,8 @@ html.js:not(.rm) [data-reveal].in {
 html.js:not(.rm) [data-stagger] > * {
   opacity: 0;
   transform: translate3d(0, 18px, 0);
-  transition: opacity 0.85s var(--ease-out) calc(var(--i, 0) * 70ms),
-              transform 0.85s var(--ease-out) calc(var(--i, 0) * 70ms);
+  transition: opacity 0.75s var(--ease-out) min(calc(var(--i, 0) * 55ms), 330ms),
+              transform 0.75s var(--ease-out) min(calc(var(--i, 0) * 55ms), 330ms);
 }
 html.js:not(.rm) [data-stagger].in > * {
   opacity: 1;
@@ -437,6 +437,7 @@ body.on-dark-hero .nav:not(.scrolled) {
   --strong: #ffffff;
   --text: #e9f2ed;
   --text-2: #c5d8cf;
+  --em: #34d399;
   --line-2: rgba(167, 243, 208, .24);
   --btn-ghost-bg: rgba(167, 243, 208, .07);
 }
@@ -453,7 +454,7 @@ body.on-dark-hero .nav:not(.scrolled) {
   letter-spacing: -0.03em;
   color: var(--strong);
 }
-.wordmark b { font-weight: 600; color: var(--em-bright); }
+.wordmark b { font-weight: 600; color: var(--em); }
 
 .nav-links {
   display: flex;
@@ -625,8 +626,8 @@ body.on-dark-hero .nav:not(.scrolled) {
 
 /* ---------- 7. Block 1 — Hero: "Reeds that hear you" ---------- */
 .hero-slab {
-  min-height: min(920px, 96svh);
-  padding: 108px 0 156px;
+  min-height: min(860px, 94svh);
+  padding: 86px 0 112px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -675,7 +676,7 @@ body.on-dark-hero .nav:not(.scrolled) {
 /* Big H1 (§5.1): clamp(48px, 9vw, 128px), Geist 600, tracking -0.045em, line-height 0.95.
    Visible on first paint so LCP is never delayed! */
 .h-hero {
-  margin-top: 22px;
+  margin-top: 16px;
   max-width: 14ch;
   font-size: clamp(48px, 9vw, 128px);
   font-weight: 600;
@@ -724,15 +725,15 @@ html.js:not(.rm) .h-hero .serif {
 }
 
 .hero-sub {
-  margin-top: 20px;
+  margin-top: 14px;
   max-width: 58ch;
-  font-size: clamp(16.5px, 1.55vw, 20px);
-  line-height: 1.5;
+  font-size: clamp(16px, 1.45vw, 19px);
+  line-height: 1.48;
   color: #c2d7cd;
 }
 
 .hero-ctas {
-  margin-top: 26px;
+  margin-top: 20px;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -743,17 +744,17 @@ html.js:not(.rm) .h-hero .serif {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .cta-meta {
   font: 400 12px/1.3 var(--mono);
-  color: #93aca0;
+  color: #9bb4a8;
 }
 
 /* Interactive Hero Toy Stage */
 .hero-toy {
   position: relative;
-  margin-top: 34px;
+  margin-top: 24px;
   width: 100%;
   max-width: 920px;
   display: grid;
@@ -991,7 +992,7 @@ html.js:not(.rm) .h-hero .serif {
 
 /* Raw spoken stream row */
 .raw-stream {
-  min-height: 44px;
+  min-height: 64px;
   padding: 9px 12px;
   border-radius: 12px;
   background: rgba(4, 10, 8, .66);
@@ -1001,6 +1002,7 @@ html.js:not(.rm) .h-hero .serif {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  align-content: flex-start;
   gap: 0.3em;
 }
 .raw-stream .rw {
@@ -1055,10 +1057,14 @@ html.js:not(.rm) .h-hero .serif {
 .hm-meta b { font-weight: 600; color: #13251d; }
 .hm-body {
   padding: 12px 14px 14px;
-  min-height: 66px;
+  min-height: 74px;
   font-size: 14.5px;
   line-height: 1.5;
   color: #0d1d16;
+}
+@media (max-width: 600px) {
+  .raw-stream { min-height: 86px; }
+  .hm-body { min-height: 92px; }
 }
 .hm-caret {
   display: inline-block;
@@ -1099,7 +1105,7 @@ html.js:not(.rm) .h-hero .serif {
 .reeds-bed {
   position: absolute;
   inset: auto 0 0 0;
-  height: clamp(160px, 24vw, 250px);
+  height: clamp(185px, 26vw, 275px);
   pointer-events: none;
   z-index: 2;
   background: url(assets/reeds-poster.webp) center bottom / cover no-repeat;
@@ -2157,14 +2163,23 @@ html:not(.js) .qa .a {
   display: flex;
   flex-direction: column;
   gap: 56px;
+  min-width: 0;
+  max-width: 100%;
 }
 .det-sec {
   scroll-margin-top: 88px;
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
-.det-sec p { color: var(--text-2); max-width: 70ch; }
+.det-sec p { color: var(--text-2); max-width: 70ch; overflow-wrap: anywhere; }
+.det-list li { overflow-wrap: anywhere; }
+.det-card, .code-receipt {
+  min-width: 0;
+  max-width: 100%;
+}
 .det-card {
   border-radius: var(--r-lg);
   background: var(--surface);
@@ -2172,6 +2187,13 @@ html:not(.js) .qa .a {
   box-shadow: var(--shadow-soft);
   padding: 22px;
   overflow-x: auto;
+}
+@media (max-width: 640px) {
+  .det-card { padding: 14px; }
+  .data-table { font-size: 12.5px; }
+  .data-table th, .data-table td { padding: 9px 8px; }
+  .cmp-table { font-size: 13px; }
+  .cmp-table th, .cmp-table td { padding: 11px 10px; }
 }
 .data-table {
   width: 100%;
