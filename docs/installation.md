@@ -15,7 +15,7 @@ Both files are on the [latest release](https://github.com/Shanmukh-l33t/keyreed/
 | File | Use it when | Notes |
 | --- | --- | --- |
 | `KeyReed-Setup-x64.exe` | You want the normal install. **Start here.** | Lightweight `24.4 MB` user-scoped installer (`%LOCALAPPDATA%\Programs\KeyReed`). Downloads speech models on demand in Settings with SHA-256 verification. |
-| `keyreed-2.1.0-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `47.3 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
+| `keyreed-2.1.1-windows-x86_64-portable.zip` | You want a portable no-installer folder. | `46.2 MB` archive containing `keyreed.exe`, native speech/grammar runtimes, and `silero_vad.onnx`. |
 | `gector-bert-en-int8.tar.bz2` | Settings downloads it for you (Quick Fix grammar model). | `73.1 MB` archive of the Apache-2.0 `gector-bert-en` model (int8) with its LICENSE and NOTICE, pinned by SHA-256 in the app. |
 | `SHA256SUMS.txt` | You want to verify a download. | Checksums for the files above. |
 
@@ -42,11 +42,11 @@ The Windows files are not code-signed, so check the hash against the one publish
 Get-FileHash .\KeyReed-Setup-x64.exe -Algorithm SHA256
 ```
 
-For release 2.1.0:
+For release 2.1.1:
 
 ```text
-e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd  KeyReed-Setup-x64.exe
-ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c  keyreed-2.1.0-windows-x86_64-portable.zip
+6abae134861325cf84f99e927081e5b8dfebb47a67193179923c0fe17d516ca5  KeyReed-Setup-x64.exe
+dd4bc184afdb228a86374be709cbed4fa4067aba351b761b50eb4adaea81ce09  keyreed-2.1.1-windows-x86_64-portable.zip
 5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0  gector-bert-en-int8.tar.bz2
 ```
 

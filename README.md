@@ -29,7 +29,7 @@
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** **2.1.0**, released 18 November 2026. Its interface was checked with automated tests and screenshots; dictation was not re-run by hand for this release, so review your first dictations. The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** **2.1.1**, released 18 November 2026. It fixes Quick Fix and the Composer working only some of the time, a crash when clicking the idle pill, and a slow, choppy installer. These were checked with automated tests and, for the installer, frame timing; dictation was not re-run by hand for this release, so review your first dictations. The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## What is new in 2.1
 
@@ -41,13 +41,13 @@ It is built as an inspectable alternative to cloud dictation tools such as Wispr
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`24.4 MB`) from the [2.1.0 release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0).
+1. Download **`KeyReed-Setup-x64.exe`** (`24.4 MB`) from the [2.1.1 release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.1).
 2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
 5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.1.0-windows-x86_64-portable.zip` (`47.3 MB`), which holds the exe and its runtime DLLs but no models, so it cannot dictate until it downloads one. No full offline archive is built for this release.
+No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.1.1-windows-x86_64-portable.zip` (`46.2 MB`), which holds the exe and its runtime DLLs but no models, so it cannot dictate until it downloads one. No full offline archive is built for this release.
 
 ## Why KeyReed
 
@@ -165,7 +165,7 @@ Rust 1.80 or newer. Release builds: `scripts/build-release.sh`; installer: `scri
 
 ## Known limits
 
-- Dictation was **not re-run by hand for 2.1.0**. Beam search with hotwords, the new resampler and the post-release tail have not been benchmarked on a real microphone. The interface was run on Windows 11 by the automated gallery (every page, state and animation, light and dark).
+- Dictation was **not re-run by hand for 2.1.1**. Beam search with hotwords, the new resampler and the post-release tail have not been benchmarked on a real microphone. The interface was run on Windows 11 by the automated gallery (every page, state and animation, light and dark).
 - The Windows executable, bundled runtimes and installer are **unsigned**. SmartScreen behaviour has not been observed for this download.
 - Quick Fix has not been checked by hand in Chromium-based apps, Outlook or Word; the automated check ran in a plain Windows edit control. English only.
 - The Composer needs the local writing model (Qwen3.5 0.8B) installed; without it, a request stops with a message instead of sending anything. There is no Settings picker for it yet.

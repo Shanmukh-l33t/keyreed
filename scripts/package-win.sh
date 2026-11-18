@@ -135,7 +135,10 @@ if [[ "$MODE" != "slim" ]]; then
 fi
 
 # 5) provenance: license, readme, checksums
-[[ -f "$ROOT/LICENSE" ]] && cp -f "$ROOT/LICENSE" "$DIST/LICENSE" || true
+# The dual-license texts (MIT or Apache-2.0) travel with every bundle; a legacy LICENSE pointer file too, if one exists.
+for lic in LICENSE LICENSE-MIT LICENSE-APACHE; do
+  [[ -f "$ROOT/$lic" ]] && cp -f "$ROOT/$lic" "$DIST/$lic"
+done
 cat > "$DIST/README.txt" <<EOF
 Keyreed Windows bundle (offline-first push-to-talk dictation).
 Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
