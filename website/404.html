@@ -2,24 +2,49 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Page not found | KeyReed</title>
   <meta name="robots" content="noindex">
   <meta name="theme-color" content="#f6f9f6">
-  <script src="/theme.js"></script>
   <link rel="icon" href="/favicon.ico" sizes="48x48">
   <link rel="stylesheet" href="/styles.css">
+  <script src="/theme.js"></script>
 </head>
-<body>
-  <main class="nf">
-    <img src="/assets/icon-192.png" alt="" width="72" height="72">
-    <p class="eyebrow">Error 404</p>
-    <h1>Nothing was said <span class="serif">here.</span></h1>
-    <p class="sec-sub">That page does not exist. The product, the source and the downloads are all on the home page.</p>
-    <div class="cta-row center">
-      <a class="btn btn-primary btn-lg" href="/">Back to KeyReed</a>
-      <a class="btn btn-ghost btn-lg" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">View on GitHub</a>
+<body class="on-dark-hero">
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .5A11.5 11.5 0 0 0 .5 12.2c0 5.2 3.3 9.6 7.9 11.1.6.1.8-.3.8-.6v-2.2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.4 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6a11.7 11.7 0 0 0 7.9-11.1A11.5 11.5 0 0 0 12 .5Z"/></symbol>
+    </defs>
+  </svg>
+
+  <main class="slab-shell end" id="main">
+    <div class="slab-dark nf-stage">
+      <p class="eyebrow">Error 404</p>
+      <h1 class="h1-sub">Can't find <span class="serif">that key.</span></h1>
+      <p class="sec-sub center">Nothing is bound to this address. Press the keycap below, or head back to KeyReed.</p>
+
+      <button class="keycap-3d" id="nf-keycap" type="button" aria-pressed="false" style="margin-top:8px">
+        <span class="kc-skirt" aria-hidden="true"></span>
+        <span class="kc-top">
+          <span class="kc-led" aria-hidden="true"></span>
+          <span class="kc-label">404 · ?</span>
+        </span>
+      </button>
+      <p class="fine mono" id="nf-status" aria-live="polite">Press the keycap to test the switch.</p>
+
+      <div class="hero-ctas" style="margin-top:8px">
+        <a class="btn btn-lg btn-primary" href="/">Back to KeyReed<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <a class="btn btn-lg btn-ghost" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+      </div>
+
+      <div class="reeds-bed" aria-hidden="true">
+        <canvas id="hero-reeds"></canvas>
+      </div>
     </div>
   </main>
+
+  <script type="module" src="/js/site.js"></script>
+  <script type="module" src="/js/hero.js"></script>
 </body>
 </html>

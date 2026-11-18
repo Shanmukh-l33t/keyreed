@@ -1,6 +1,6 @@
 <div align="center">
   <br />
-  <a href="https://keyreed-website.vercel.app">
+  <a href="https://www.keyreed.com">
     <img src="assets/branding/banner.png" alt="KeyReed: your voice, your words, your machine. Open-source, local-first voice dictation for Windows." width="100%" />
   </a>
   <br /><br />
@@ -12,7 +12,7 @@
     <img src="https://img.shields.io/badge/built%20with-Rust-0f5a3f?style=flat-square" alt="Built with Rust" />
   </p>
   <p>
-    <a href="https://keyreed-website.vercel.app"><strong>Website</strong></a> ·
+    <a href="https://www.keyreed.com"><strong>Website</strong></a> ·
     <a href="https://github.com/Shanmukh-l33t/keyreed/releases"><strong>Download</strong></a> ·
     <a href="docs/installation.md"><strong>Install guide</strong></a> ·
     <a href="docs/architecture.md"><strong>Architecture</strong></a> ·
@@ -72,7 +72,7 @@ No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.
 </p>
 <p align="center"><sub>Real captures from KeyReed 0.5.0 on Windows 11. Settings follows the Windows light or dark app mode.</sub></p>
 
-The [website](https://keyreed-website.vercel.app) has an animated walkthrough of the dictation flow (an illustration, not a recording) and an honest [KeyReed vs Wispr Flow](https://keyreed-website.vercel.app/vs-wispr-flow) comparison.
+The [website](https://www.keyreed.com) has an animated walkthrough of the dictation flow (an illustration, not a recording) and an honest [KeyReed vs Wispr Flow](https://www.keyreed.com/vs-wispr-flow) comparison.
 
 ## Features
 
@@ -203,6 +203,6 @@ Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your 
 
 ## Links
 
-[Website](https://keyreed-website.vercel.app) · [Releases](https://github.com/Shanmukh-l33t/keyreed/releases) · [Issues](https://github.com/Shanmukh-l33t/keyreed/issues) · [Changelog](CHANGELOG.md)
+[Website](https://www.keyreed.com) · [Releases](https://github.com/Shanmukh-l33t/keyreed/releases) · [Issues](https://github.com/Shanmukh-l33t/keyreed/issues) · [Changelog](CHANGELOG.md)
 
 KeyReed is an independent project and is not affiliated with Wispr or any other company named here.

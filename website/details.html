@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Everything in detail | KeyReed technical reference</title>
+  <meta name="description" content="Complete technical reference for KeyReed 2.1.1: all 8 SHA-256-pinned speech models, processing pipeline, privacy architecture, benchmarks, and known limits.">
+  <link rel="canonical" href="https://www.keyreed.com/details">
+  <meta name="theme-color" content="#f6f9f6">
+  <meta name="color-scheme" content="light dark">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="KeyReed">
+  <meta property="og:title" content="KeyReed — Everything, in detail">
+  <meta property="og:description" content="Models catalog, local processing pipeline, RAM-only privacy architecture, shortcuts, measured speed numbers, and known limitations.">
+  <meta property="og:url" content="https://www.keyreed.com/details">
+  <meta property="og:image" content="https://www.keyreed.com/assets/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://www.keyreed.com/assets/og-image.png">
+
+  <link rel="icon" href="favicon.ico" sizes="48x48">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/icon-32.png">
+  <link rel="apple-touch-icon" href="assets/icon-180.png">
+  <link rel="manifest" href="site.webmanifest">
+  <link rel="preload" href="assets/fonts/geist-var.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script src="theme.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "@id": "https://www.keyreed.com/details",
+    "headline": "KeyReed 2.1.1 — Everything, in detail",
+    "url": "https://www.keyreed.com/details",
+    "dateModified": "2026-11-18",
+    "image": "https://www.keyreed.com/assets/og-image.png",
+    "about": { "@type": "SoftwareApplication", "name": "KeyReed", "softwareVersion": "2.1.1" }
+  }
+  </script>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .5A11.5 11.5 0 0 0 .5 12.2c0 5.2 3.3 9.6 7.9 11.1.6.1.8-.3.8-.6v-2.2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.4 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6a11.7 11.7 0 0 0 7.9-11.1A11.5 11.5 0 0 0 12 .5Z"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-windows" viewBox="0 0 24 24"><path fill="currentColor" d="M3 5.5 10.4 4.5v6.7H3V5.5Zm8.5-1.1L21 3v8.2h-9.5V4.4ZM3 12.2h7.4V19L3 18v-5.8Zm8.5 0H21V21l-9.5-1.3v-7.5Z"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></symbol>
+      <symbol id="i-vol-on" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 5 6 9H3v6h3l5 4V5Zm4.5 3.5a5 5 0 0 1 0 7m2.8-9.8a9 9 0 0 1 0 12.6"/></symbol>
+      <symbol id="i-vol-off" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 5 6 9H3v6h3l5 4V5Zm6 4 5 6m0-6-5 6"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
+    </defs>
+  </svg>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="nav">
+    <div class="nav-in">
+      <a class="brand" href="/" aria-label="KeyReed home">
+        <img src="assets/icon-48.png" alt="" width="30" height="30">
+        <span class="wordmark">Key<b>Reed</b></span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="/#features">Features</a>
+        <a href="/#privacy">Privacy</a>
+        <a href="/#open-source">Open source</a>
+        <a href="/#faq">FAQ</a>
+        <a href="details" class="active">Details</a>
+      </nav>
+      <div class="nav-actions">
+        <button class="icon-btn sound-btn" id="sound-btn" type="button" aria-pressed="false" aria-label="Turn sound effects on" title="Turn sound effects on">
+          <svg class="ic i-vol-on" aria-hidden="true"><use href="#i-vol-on"/></svg>
+          <svg class="ic i-vol-off" aria-hidden="true"><use href="#i-vol-off"/></svg>
+        </button>
+        <button class="icon-btn theme-btn" id="theme-btn" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+          <svg class="ic i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+          <svg class="ic i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <a class="nav-gh" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">
+          <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+          <span>GitHub</span>
+          <span class="gh-stars" data-gh-stars hidden></span>
+        </a>
+        <a class="btn btn-sm btn-primary nav-dl" href="/#download">Download</a>
+        <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open menu">
+          <svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="mobile-nav" id="mobile-nav" hidden>
+      <div class="mobile-sheet-links">
+        <a href="/">Home</a>
+        <a href="/#features">Features</a>
+        <a href="/#privacy">Privacy</a>
+        <a href="vs-wispr-flow">vs Wispr Flow</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>
+      </div>
+      <div class="mobile-sheet-foot">
+        <a class="btn btn-lg btn-primary" href="https://github.com/Shanmukh-l33t/keyreed/releases/latest/download/KeyReed-Setup-x64.exe"><svg class="ic" aria-hidden="true"><use href="#i-windows"/></svg>Download for Windows</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="sub-hero" id="top">
+      <div class="wrap">
+        <p class="eyebrow">Technical Reference · KeyReed <span data-bind="version">2.1.1</span></p>
+        <h1 class="h1-sub">Everything, <span class="serif">in detail.</span></h1>
+        <p class="sec-sub">Every model, pipeline stage, privacy guarantee, shortcut, benchmark, and limitation in the current 2.1.1 source — with zero hand-waving.</p>
+      </div>
+    </section>
+
+    <section class="sec" style="padding-top:16px">
+      <div class="wrap details-layout">
+        <!-- Sticky Table of Contents -->
+        <nav class="toc" aria-label="On this page">
+          <p class="toc-title">On this page</p>
+          <a href="#overview" data-toc="overview" class="active">The real app</a>
+          <a href="#models" data-toc="models">Speech &amp; writing models</a>
+          <a href="#pipeline" data-toc="pipeline">Processing pipeline</a>
+          <a href="#privacy" data-toc="privacy">Privacy &amp; code</a>
+          <a href="#shortcuts" data-toc="shortcuts">Shortcuts &amp; CLI</a>
+          <a href="#benchmarks" data-toc="benchmarks">Speed &amp; method</a>
+          <a href="#requirements" data-toc="requirements">Requirements</a>
+          <a href="#limitations" data-toc="limitations">Known limitations</a>
+        </nav>
+
+        <div class="det-content">
+          <!-- 1. Overview & Real App Captures -->
+          <section class="det-sec" id="overview" data-reveal>
+            <h2 class="h3">The real app on Windows</h2>
+            <p>KeyReed is a native Win32 Rust workspace (<code>vi-core</code>, <code>vi-asr</code>, <code>vi-rewrite</code>, <code>vi-audio</code>, <code>vi-win32</code>, <code>vi-app</code>) dual licensed under MIT or Apache-2.0. At idle, the floating listener is a 36×36 logical-pixel mark with zero background timer activity; Settings opens on a 60 Hz spring-animated Win32 surface that follows light or dark mode.</p>
+
+            <div class="app-gallery">
+              <figure class="det-card" style="padding:12px">
+                <img class="th-light" src="assets/app/settings-writing-light.webp" width="940" height="660" loading="lazy" decoding="async" alt="KeyReed 2.1 Settings window in light mode showing the six writing modes and real input/output preview.">
+                <img class="th-dark" src="assets/app/settings-writing-dark.webp" width="940" height="660" loading="lazy" decoding="async" alt="KeyReed 2.1 Settings window in dark mode showing the six writing modes and real input/output preview.">
+              </figure>
+
+              <ol class="listener-states" aria-label="Actual floating listener captures">
+                <li><img src="assets/app/listener-idle.png" width="42" height="42" loading="lazy" alt="Idle listener circle"><div><b>Idle</b><br><span class="fine">Paints zero frames at rest.</span></div></li>
+                <li><img src="assets/app/listener-listening.png" width="66" height="26" loading="lazy" alt="Listening waveform bars"><div><b>Listening</b><br><span class="fine">11-bar RMS level meter from centre.</span></div></li>
+                <li><img src="assets/app/listener-transcribing.png" width="148" height="42" loading="lazy" alt="Transcribing lines of text"><div><b>Transcribing</b><br><span class="fine">Mint lines: voice becomes text.</span></div></li>
+                <li><img src="assets/app/listener-inserted.png" width="124" height="42" loading="lazy" alt="Inserted check state"><div><b>Inserted</b><br><span class="fine">Draws check when text lands.</span></div></li>
+                <li><img src="assets/app/listener-hover.png" width="160" height="42" loading="lazy" alt="Hover state showing Smart and Right Ctrl"><div><b>Hover</b><br><span class="fine">Shows active mode &amp; shortcut.</span></div></li>
+              </ol>
+            </div>
+            <p class="fine">Actual captures from KeyReed 2.1 via its built-in <code>--ui-gallery</code> mode.</p>
+          </section>
+
+          <!-- 2. Models Table -->
+          <section class="det-sec" id="models" data-reveal>
+            <h2 class="h3">Speech, grammar &amp; writing models</h2>
+            <p>All eight speech models are INT8 ONNX archives run on your CPU through <code>sherpa-onnx</code>. None download unless you ask, and every archive is verified against a compile-time size and SHA-256 digest in <code>crates/vi-asr/src/catalog.rs</code> before activation.</p>
+
+            <div class="det-card">
+              <table class="data-table">
+                <caption class="sr">KeyReed 2.1.1 local speech models catalog</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">Languages</th>
+                    <th scope="col">Download</th>
+                    <th scope="col">Approx. RAM</th>
+                    <th scope="col">Hotwords</th>
+                    <th scope="col">Licence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><b>Parakeet TDT 0.6B v2</b> (default)</td><td>English (US/UK/IN + punctuation)</td><td>≈460 MB</td><td>≈690 MB</td><td>Yes</td><td>CC-BY-4.0</td></tr>
+                  <tr><td><b>Parakeet TDT 0.6B v3</b></td><td>25 European languages</td><td>≈465 MB</td><td>≈710 MB</td><td>Yes</td><td>CC-BY-4.0</td></tr>
+                  <tr><td><b>Parakeet TDT 0.6B Ultra</b></td><td>25 European languages</td><td>≈465 MB</td><td>≈715 MB</td><td>Yes</td><td>CC-BY-4.0</td></tr>
+                  <tr><td><b>Parakeet TDT 110M</b></td><td>English (low-RAM tier)</td><td>≈103 MB</td><td>≈190 MB</td><td>Yes</td><td>CC-BY-4.0</td></tr>
+                  <tr><td><b>Whisper Small.en</b></td><td>English</td><td>≈606 MB</td><td>≈440 MB</td><td>No</td><td>MIT</td></tr>
+                  <tr><td><b>SenseVoice Small</b></td><td>en, zh, ja, ko, yue</td><td>≈999 MB</td><td>≈290 MB</td><td>No</td><td>FunASR</td></tr>
+                  <tr><td><b>Moonshine Base</b></td><td>English</td><td>≈239 MB</td><td>≈165 MB</td><td>No</td><td>MIT</td></tr>
+                  <tr><td><b>Moonshine Tiny</b></td><td>English (legacy PCs)</td><td>≈103 MB</td><td>≈95 MB</td><td>No</td><td>MIT</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p class="fine"><b>Quick Fix &amp; Composer local models:</b> Quick Fix uses the Windows spell checker plus the SHA-256-pinned <code>gector-bert-en-int8</code> grammar tagger (~73.1 MB archive, ~250 MB RAM, Apache-2.0). The Composer and optional dictation polish use local GGUF writing models via <code>llama-server</code>: <code>Qwen3.5-0.8B-Q4_K_M</code> (~508 MB download, ~900 MB RAM, Apache-2.0, default), plus optional <code>2B</code> and <code>4B</code> tiers.</p>
+          </section>
+
+          <!-- 3. Processing Pipeline -->
+          <section class="det-sec" id="pipeline" data-reveal>
+            <h2 class="h3">Processing pipeline &amp; guards</h2>
+            <p>Every dictation passes through deterministic stages designed so an optional language model can never hallucinate assistant chatter or alter numbers without falling back safely.</p>
+            <ul class="det-list">
+              <li><b>1. Hotkey &amp; Capture (<code>vi-win32</code>, <code>vi-audio</code>):</b> Low-level keyboard hook ignores key repeat (110 ms minimum hold). Recording keeps 200 ms after release (up to 600 ms if speech continues) so final syllables are not clipped, resampled to 16 kHz via a polyphase Blackman-Harris windowed-sinc filter with a 20 Hz DC blocker and 30 ms level gate. Capped at 30 minutes (processed at the cap, not discarded).</li>
+              <li><b>2. Streaming CPU ASR (<code>vi-asr</code>):</b> Silero VAD segments speech as you talk so completed phrases decode before you release the key. When your personal dictionary has entries, Parakeet switches to <code>modified_beam_search</code> with BPE hotword biasing.</li>
+              <li><b>3. Tier 0 deterministic rules (<code>vi-rewrite/src/tier0.rs</code>):</b> Strips fillers and stutters, resolves spoken self-repairs, preserves identifiers/paths/ports/versions, applies your vocabulary, and compiles spoken flags/pipes in <em>Terminal / Code</em> mode (~0.3 ms).</li>
+              <li><b>4. Optional local grammar model + Guards (<code>vi-rewrite/src/guards.rs</code>):</b> In Smart, Professional, Casual, and Technical modes, <code>Qwen3.5 0.8B</code> polishes phrasing when needed (skipped on clean sentences). Strict guards reject empty output, assistant chatter, changed numbers/identifiers, or runaway length — falling back automatically to Tier 0.</li>
+              <li><b>5. Delivery (<code>vi-win32/src/typing.rs</code>):</b> <em>Auto Insert</em> types into the active window via batched Unicode <code>SendInput</code> (~600 chars/s) and falls back to the clipboard on password boxes, elevated Administrator windows (UIPI), or focus changes during transcription.</li>
+            </ul>
+          </section>
+
+          <!-- 4. Privacy & Code Viewer -->
+          <section class="det-sec" id="privacy" data-reveal>
+            <h2 class="h3">Privacy specifics &amp; real source excerpts</h2>
+            <ul class="det-list">
+              <li><b>Offline by default:</b> <code>ProcessingProfile::MaxPrivacyOffline</code> forbids network calls for audio or text, enforced by a unit test. Network is only touched when you download a model over HTTPS.</li>
+              <li><b>Audio in RAM only:</b> Recorded samples live in memory, never touch disk on the normal dictation path, and are zeroized once decoded.</li>
+              <li><b>Optional cloud profiles:</b> <em>Balanced</em> and <em>Maximum Accuracy</em> only run if you opt in and enter your own API key (stored encrypted with Windows DPAPI; KeyReed ships no key).</li>
+              <li><b>Clipboard hygiene:</b> Excluding fallback clipboard writes from Windows Clipboard History defaults to <code>true</code> for new configurations in <code>%LOCALAPPDATA%\keyreed\config.json</code>.</li>
+              <li><b>Audit note:</b> The style store and edit watcher exist in <code>vi-core</code> with unit tests, but neither is wired into the 2.1.1 runtime — KeyReed reads back none of your edits. An independent third-party packet capture of the offline profile has not been published yet; inspect the code below or capture your own.</li>
+            </ul>
+
+            <div class="code-receipt lit keep-dark">
+              <div class="cr-bar" style="gap:8px;flex-wrap:wrap;height:auto;padding:10px 14px">
+                <div role="tablist" aria-label="Repository source excerpts" style="display:flex;gap:6px;flex-wrap:wrap">
+                  <button class="cmp-chip" type="button" role="tab" aria-selected="true" data-code-tab="privacy">types.rs</button>
+                  <button class="cmp-chip" type="button" role="tab" aria-selected="false" tabindex="-1" data-code-tab="config">config.rs</button>
+                  <button class="cmp-chip" type="button" role="tab" aria-selected="false" tabindex="-1" data-code-tab="pin">catalog.rs</button>
+                  <button class="cmp-chip" type="button" role="tab" aria-selected="false" tabindex="-1" data-code-tab="tree">Cargo.toml</button>
+                </div>
+                <span id="det-code-path">crates/vi-core/src/types.rs</span>
+              </div>
+              <pre class="cr-pre"><code id="det-code-pre"></code></pre>
+              <div class="cr-foot">
+                <span>Generated directly from the repository by <code>scripts/gen-excerpts.py</code>.</span>
+                <a class="link-arrow" href="https://github.com/Shanmukh-l33t/keyreed/tree/main/crates" rel="noopener">Browse all crates<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+              </div>
+            </div>
+          </section>
+
+          <!-- 5. Shortcuts & CLI -->
+          <section class="det-sec" id="shortcuts" data-reveal>
+            <h2 class="h3">Default shortcuts &amp; CLI flags</h2>
+            <div class="det-card">
+              <table class="data-table">
+                <caption class="sr">Default keyboard shortcuts</caption>
+                <thead>
+                  <tr><th scope="col">Action</th><th scope="col">Default shortcut</th><th scope="col">Notes</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Dictate (hold or toggle)</td><td><span class="keys-inline"><kbd>Right Ctrl</kbd></span></td><td>Configurable in Settings › Dictation</td></tr>
+                  <tr><td>Quick Fix selection</td><td><span class="keys-inline"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span></td><td>Sure fixes replace with Undo; uncertain/formatted open Review</td></tr>
+                  <tr><td>Open the Composer</td><td><span class="keys-inline"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span></td><td>Fix, Improve, Shorter, Tone, Summarise, or custom prompt</td></tr>
+                  <tr><td>Cancel active recording</td><td><span class="keys-inline"><kbd>Esc</kbd></span></td><td>Discards audio without touching target or clipboard</td></tr>
+                  <tr><td>Cycle writing mode</td><td><span class="keys-inline"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></span></td><td>Shows quiet 1.6 s mode pill hint</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="fine">Useful CLI flags on <code>keyreed.exe</code>: <code>--help</code>, <code>--version</code>, <code>--settings</code>, <code>--list-models</code>, <code>--download-model &lt;id&gt;</code>, <code>--print-foreground</code>.</p>
+          </section>
+
+          <!-- 6. Speed & Method -->
+          <section class="det-sec" id="benchmarks" data-reveal>
+            <h2 class="h3">Speed method &amp; measured numbers</h2>
+            <p>Measurements were recorded on a 2018 laptop (Intel Core i7-8850H 6C/12T CPU, 64 GB RAM, NVIDIA Quadro P2000, Windows 11). Your hardware will differ.</p>
+            <ul class="det-list">
+              <li><b>0.5–0.7 s post-release on a 47 s dictation:</b> Parakeet TDT 0.6B v2 INT8 on CPU in Exact mode without the grammar model, streaming chunks during speech (synthetic TTS test audio; down from 9.8–26 s in v0.4.0).</li>
+              <li><b>Under 2.4 s post-release on long synthetic clips:</b> Measured across 80 s, 215 s, and 446 s (7.4 min) clips with automatic pause-based paragraph splitting.</li>
+              <li><b>With local grammar rewrite enabled:</b> A 60 s dictation typed into an external Win32 edit control took ~7.2 s from key release to fully typed (~3.5 s of it local SLM rewrite). On the Quadro P2000 via Vulkan, warm grammar rewrites ran 2.7–6× faster than CPU (0.6–0.8 s vs 2.1–3.9 s).</li>
+              <li><b>Real-speech sample check (12 clips):</b> LibriSpeech <code>2.85%</code> WER and CMU Arctic Indian English <code>6.25%</code> WER on Parakeet v2 (small sample; noisy-room human mic dictation is not yet benchmarked).</li>
+            </ul>
+            <p class="fine">Full raw worklog and verification matrix: <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/research/08-e2e-speed-accuracy-worklog.md" rel="noopener">docs/research/08-e2e-speed-accuracy-worklog.md</a>.</p>
+          </section>
+
+          <!-- 7. System Requirements -->
+          <section class="det-sec" id="requirements" data-reveal>
+            <h2 class="h3">System requirements</h2>
+            <div class="det-card">
+              <table class="data-table">
+                <caption class="sr">Windows system requirements</caption>
+                <tbody>
+                  <tr><th scope="row">Operating system</th><td>64-bit Windows 11 (UI and gallery verified). Windows 10 x64 is supported by the Win32/WASAPI code but was not re-tested for 2.1.1. No macOS, Linux, 32-bit, or ARM builds.</td></tr>
+                  <tr><th scope="row">Processor &amp; GPU</th><td>x64 CPU; no dedicated GPU required. Optional grammar/writing model uses Vulkan GPU if available (<code>KEYREED_SLM_DEVICE=cpu</code> forces CPU).</td></tr>
+                  <tr><th scope="row">Disk space</th><td>24.4 MB installer (or 46.2 MB portable zip) + ~460 MB for the default speech model + 73.1 MB for Quick Fix's grammar archive if enabled.</td></tr>
+                  <tr><th scope="row">Memory</th><td>On a 3-core, 4 GB test VM, KeyReed + the local grammar runtime used ~1.6 GB together. Lighter ASR models (Moonshine Tiny ~95 MB RAM, Parakeet 110M ~190 MB RAM) fit tighter machines.</td></tr>
+                  <tr><th scope="row">Audio input</th><td>Any microphone permitted for desktop apps in Windows Privacy settings.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- 8. Known Limitations & Docs -->
+          <section class="det-sec" id="limitations" data-reveal>
+            <h2 class="h3">Known limitations (2.1.1)</h2>
+            <ul class="det-list">
+              <li><b>Automated verification on 2.1.1:</b> The new v3 Win32 interface was verified via automated tests and screenshot galleries on Windows 11; live microphone dictation, beam-search hotwords, and Quick Fix in Chromium/Outlook/Word were not re-tested by hand for 2.1.1. Review your first dictations.</li>
+              <li><b>Unsigned Windows binaries:</b> <code>KeyReed-Setup-x64.exe</code>, <code>keyreed.exe</code>, and bundled DLLs are not code-signed yet, so Windows SmartScreen may warn. Compare SHA-256 checksums before running.</li>
+              <li><b>Composer model setup:</b> The Composer requires the local writing model (<code>Qwen3.5 0.8B</code>) installed; without it, requests stop cleanly with a local notice and send nothing anywhere.</li>
+              <li><b>Not in 2.1.1:</b> Voice commands to edit text, a "My style" Settings page, learning from user edits, and scored Hindi WER are open roadmap items.</li>
+            </ul>
+            <p class="fine">Read more in the repository: <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Installation guide</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/architecture.md" rel="noopener">Architecture</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/troubleshooting.md" rel="noopener">Troubleshooting</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/development.md" rel="noopener">Development</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/tree/main/docs/release" rel="noopener">Release audits</a>.</p>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <div class="foot-brand">
+        <a class="brand" href="/"><img src="assets/icon-48.png" alt="" width="28" height="28"><span class="wordmark">Key<b>Reed</b></span></a>
+        <p>Open-source, local-first voice dictation for Windows.</p>
+        <p class="fine">Independent project. Not affiliated with Wispr or any company named here.</p>
+      </div>
+      <nav class="foot-col" aria-label="Product">
+        <p class="foot-heading">Product</p>
+        <a href="/#features">Features</a>
+        <a href="/#privacy">Privacy</a>
+        <a href="details">Everything in detail</a>
+        <a href="vs-wispr-flow">vs Wispr Flow</a>
+        <a href="/#download">Download</a>
+      </nav>
+      <nav class="foot-col" aria-label="Project">
+        <p class="foot-heading">Project</p>
+        <a href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener">GitHub</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/releases" rel="noopener">Releases</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CHANGELOG.md" rel="noopener">Changelog</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Install guide</a>
+      </nav>
+      <nav class="foot-col" aria-label="Community">
+        <p class="foot-heading">Community</p>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/SECURITY.md" rel="noopener">Security</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-MIT" rel="noopener">MIT license</a>
+        <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>
+      </nav>
+    </div>
+    <div class="wrap foot-base">
+      <span>Code: MIT or Apache-2.0. Fonts: Geist &amp; Instrument Serif (OFL). Motion: GSAP &amp; Lenis.</span>
+      <a href="#top">Back to top<svg class="ic up" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+  </footer>
+
+  <script src="vendor/gsap/gsap.min.js" defer></script>
+  <script src="vendor/gsap/ScrollTrigger.min.js" defer></script>
+  <script src="vendor/lenis/lenis.min.js" defer></script>
+  <script src="excerpts.js" defer></script>
+  <script type="module" src="js/site.js"></script>
+  <script type="module" src="js/scenes.js"></script>
+</body>
+</html>
