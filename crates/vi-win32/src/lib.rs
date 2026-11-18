@@ -4,6 +4,8 @@ pub mod canvas;
 pub mod composer;
 pub mod clipboard;
 pub mod context;
+#[cfg(windows)]
+pub mod frameclock;
 pub mod hotkey;
 pub mod icon_data;
 pub mod motion;

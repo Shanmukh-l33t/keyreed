@@ -146,6 +146,18 @@ pub struct PillFrame<'a> {
     pub ring: f32,
     /// Processing only: the sheen leans emerald while polishing, mint while transcribing.
     pub polishing: bool,
+    /// Milliseconds since this state began (`f32::INFINITY` under Reduce Motion: every entrance at its end).
+    pub age_ms: f32,
+    /// The state before this one, for entrances that continue it (bars -> text lines -> check).
+    pub from: PillKind,
+    /// Logical pixels the labels sit below their resting line while they rise in (0 at rest).
+    pub rise: f32,
+    /// Drag lift, 0..=1: a deeper shadow while the pill is held.
+    pub lift: f32,
+    /// Hovered action chip on `Fixed` / `Error` pills (index), so it answers the pointer.
+    pub chip_hover: Option<usize>,
+    /// The capsule's window-sized box inside the buffer `(x, y, w, h)`; `None` = the whole buffer.
+    pub rect: Option<(f32, f32, f32, f32)>,
 }
 
 /// Physical geometry derived from scale.
@@ -424,19 +436,36 @@ pub fn scaled_icon(n: usize) -> Vec<u32> {
 
 /// Renders a frame into a premultiplied BGRA buffer of `width x height` (window size incl. margin).
 pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
-    let mut px = vec![0u32; width * height];
+    let mut px = Vec::new();
+    render_pill_into(&mut px, width, height, f);
+    px
+}
+
+thread_local! {
+    /// The frame before content was drawn, reused for the right-edge clip (no per-frame allocation once warm).
+    static BASE: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `render_pill` into a buffer the caller keeps, so a steady animation allocates nothing.
+pub fn render_pill_into(buf: &mut Vec<u32>, width: usize, height: usize, f: &PillFrame) {
+    buf.clear();
+    buf.resize(width * height, 0);
     if width < 8 || height < 8 {
-        return px;
+        return;
     }
+    let px: &mut [u32] = &mut buf[..];
     let m = PillMetrics::for_pill(f.scale, f.kind);
+    // The capsule's box (window metrics incl. margin) inside the buffer: the whole buffer, or a sub-pixel rectangle
+    // the window code passes so a springing width grows symmetrically without its edges wobbling by a pixel.
+    let (rx, ry, rw, rh) = f.rect.unwrap_or((0.0, 0.0, width as f32, height as f32));
     // The pop grows the capsule into its shadow margin (about 4 percent on every side at the peak).
-    let margin = m.margin as f32 - f.pop.clamp(0.0, 1.0) * 0.04 * m.cap_h as f32;
-    let cap_h = (height as f32 - 2.0 * margin).max(4.0);
-    let cap_w = (width as f32 - 2.0 * margin).max(cap_h);
+    let margin = m.margin as f32 - f.pop.clamp(-0.5, 1.2) * 0.04 * m.cap_h as f32;
+    let cap_h = (rh - 2.0 * margin).max(4.0);
+    let cap_w = (rw - 2.0 * margin).max(cap_h);
     let radius = cap_h * 0.5;
-    let cy = margin + radius;
-    let left_cx = margin + radius;
-    let right_cx = margin + cap_w - radius;
+    let cy = ry + margin + radius;
+    let left_cx = rx + margin + radius;
+    let right_cx = rx + margin + cap_w - radius;
 
     let ring = f.ring.clamp(0.0, 1.0);
     let (accent, border_a, surface) = match f.kind {
@@ -456,7 +485,9 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
     let body_alpha = 0.96f32;
     let opacity = f.opacity.clamp(0.0, 1.0);
     let border_w = (1.0 * f.scale).max(1.0);
+    // A lifted (dragged) pill casts a deeper shadow.
     let shadow_r = margin.max(1.0);
+    let shadow_a = 0.22 * (1.0 + 0.4 * f.lift.clamp(0.0, 1.0));
     let unit = cap_h / PILL_HEIGHT;
 
     // 1) Capsule body + hairline border + top inner highlight + soft shadow (signed distance field).
@@ -468,6 +499,9 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
             let pxf = x as f32 + 0.5;
             let cx = pxf.clamp(left_cx, right_cx);
             let d = ((pxf - cx).powi(2) + (py - cy).powi(2)).sqrt() - radius; // <0 inside
+            if d >= shadow_r {
+                continue;
+            }
             let mut col = (0f32, 0f32, 0f32, 0f32); // straight rgb, alpha
             if d < 0.75 {
                 let cov = (0.5 - d).clamp(0.0, 1.0);
@@ -477,15 +511,15 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                 c = mix_f(c, palette::MINT, lip);
                 // One soft band of light, once per 600 ms, only while Quick Fix is working.
                 if f.kind == PillKind::Fixing {
-                    let band_x = margin + cap_w * ((f.phase / 0.6).fract() * 1.5 - 0.25);
+                    let band_x = rx + margin + cap_w * ((f.phase / 0.6).fract() * 1.5 - 0.25);
                     c = mix_f(c, palette::MINT, 0.14 * (1.0 - ((pxf - band_x).abs() / (cap_h * 1.2))).clamp(0.0, 1.0));
                 }
                 col = (c.0, c.1, c.2, body_alpha * cov);
             }
             // Shadow outside the body (quadratic fall-off over the margin), warmed to emerald by a success glow.
-            if d > -0.5 && d < shadow_r {
+            if d > -0.5 {
                 let t = 1.0 - (d.max(0.0) / shadow_r);
-                let (sa, ga) = (0.22 * t * t, 0.45 * glow * t * t);
+                let (sa, ga) = (shadow_a * t * t, 0.45 * glow * t * t);
                 let s_a = sa + ga * (1.0 - sa);
                 let g = if s_a > 0.0 { ga / s_a } else { 0.0 };
                 let e = palette::EMERALD_2;
@@ -506,23 +540,31 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
 
     // 2) Brand mark in the left well (centred in a circle of diameter cap_h). The keycap is pressed while the key is
     // held: it sinks 1.5 dp and its well darkens a touch.
-    let press = f.press.clamp(0.0, 1.0);
+    let press = f.press.clamp(0.0, 1.2);
     let icon_n = m.icon.min(cap_h as usize);
     let icon = cached_icon(icon_n);
     let icon_alpha = if f.kind == PillKind::Disabled { 0.45 } else { 1.0 } * opacity;
-    let well = mix_rgb(palette::WELL, (0, 0, 0), 0.06 * press);
-    fill_circle(&mut px, width, height, left_cx, cy, radius - 3.0 * f.scale, well, opacity);
+    let well = mix_rgb(palette::WELL, (0, 0, 0), (0.06 * press).min(0.08));
+    fill_circle(px, width, height, left_cx, cy, radius - 3.0 * f.scale * unit.min(1.0), well, opacity);
     let ix0 = (left_cx - icon_n as f32 / 2.0).round() as isize;
     let iy0 = (cy - icon_n as f32 / 2.0 + 1.5 * unit * press).round() as isize;
-    blit_premul(&mut px, width, height, icon.as_slice(), icon_n, icon_n, ix0, iy0, icon_alpha);
+    blit_premul(px, width, height, icon.as_slice(), icon_n, icon_n, ix0, iy0, icon_alpha);
 
     if matches!(f.kind, PillKind::Idle | PillKind::Disabled) {
-        return px;
+        return;
     }
 
-    let base = px.clone();
-    let content_x = m.content_x as f32;
-    let opacity = opacity * f.content_opacity.clamp(0.0, 1.0);
+    BASE.with(|b| {
+        let mut base = b.borrow_mut();
+        base.clear();
+        base.extend_from_slice(px);
+    });
+    let content_x = rx + m.content_x as f32;
+    // Shapes (bars, lines, glyphs) carry their own entrances and show within a frame; labels fade and rise in.
+    let text_op = opacity * f.content_opacity.clamp(0.0, 1.0);
+    let age = f.age_ms;
+    // Labels rise into place as they fade in.
+    let ty = cy + f.rise * f.scale;
     match f.kind {
         PillKind::Listening => {
             let max_half = cap_h * 0.30;
@@ -536,28 +578,43 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
             let mean = (0..WAVE_BARS).map(|i| level_at(i.abs_diff(mid))).sum::<f32>() / WAVE_BARS as f32;
             let pad = 2.0 * f.scale;
             let (gx, gy) = (content_x - pad, cy - max_half - pad);
-            fill_hcapsule(&mut px, width, height, gx, gy, m.wave_width() as f32 + 2.0 * pad, 2.0 * (max_half + pad), |_| palette::EMERALD, (0.03 + 0.10 * mean) * opacity);
+            fill_hcapsule(px, width, height, gx, gy, m.wave_width() as f32 + 2.0 * pad, 2.0 * (max_half + pad), |_| palette::EMERALD, (0.03 + 0.10 * mean) * opacity);
             for i in 0..WAVE_BARS {
-                let age = i.abs_diff(mid);
-                let lvl = level_at(age);
-                let half = min_half + (max_half - min_half) * lvl;
+                let k = i.abs_diff(mid);
+                // The bars grow in from the centre outwards when listening starts (14 ms apart, the accent spring).
+                let grow = arrive(age - crate::motion::stagger_ms(k));
+                let lvl = level_at(k);
+                let half = (min_half + (max_half - min_half) * lvl) * grow.max(0.0);
                 // A short phosphor tail (older bars a little dimmer); silence rests as quiet dots, never a fake wave.
-                let tail = 1.0 - 0.03 * age as f32;
+                let tail = 1.0 - 0.03 * k as f32;
                 let rest = 0.4 + 0.6 * smoothstep(0.0, 0.12, lvl);
                 let bx = content_x + i as f32 * (m.bar_w + m.bar_gap);
-                fill_round_rect(&mut px, width, height, bx, cy - half, m.bar_w, half * 2.0, bar_color(lvl), opacity * tail * rest);
+                if half > 0.05 {
+                    fill_round_rect(px, width, height, bx, cy - half, m.bar_w, half * 2.0, bar_color(lvl), opacity * tail * rest * grow.clamp(0.0, 1.0));
+                }
             }
         }
         PillKind::Done | PillKind::Error | PillKind::Attention | PillKind::Fixed => {
             let g = m.glyph as f32;
             let gx = content_x;
             let gy = cy - g / 2.0;
+            // Coming from the text lines, the lines first fold into the point where the check begins.
+            if f.kind == PillKind::Done && f.from == PillKind::Processing && age < LINES_FOLD_MS {
+                let q = crate::motion::STANDARD.eval(age / LINES_FOLD_MS);
+                let (th, pitch) = (1.75 * f.scale, 3.5 * f.scale);
+                let (ax, ay) = (gx + g * 0.40, gy + g * 0.82);
+                for (j, frac) in LINE_FRACS.into_iter().enumerate() {
+                    let (lx, ly) = (content_x, cy + (j as f32 - 1.0) * pitch - th / 2.0);
+                    let w = (m.lines_w as f32 * frac * (1.0 - q)).max(th);
+                    fill_capsule(px, width, height, lerp(lx, ax - th / 2.0, q), lerp(ly, ay - th / 2.0, q), w, th, |_| palette::TEXT_3, opacity * (1.0 - q));
+                }
+            }
             match f.kind {
                 PillKind::Done | PillKind::Fixed => {
-                    draw_check(&mut px, width, height, gx, gy, g, palette::EMERALD_2, f.scale, f.tick, opacity)
+                    draw_check(px, width, height, gx, gy, g, palette::EMERALD_2, f.scale, f.tick, opacity)
                 }
-                PillKind::Attention => draw_alert(&mut px, width, height, gx, gy, g, palette::WARN, f.scale, opacity),
-                _ => draw_alert(&mut px, width, height, gx, gy, g, palette::ROSE, f.scale, opacity),
+                PillKind::Attention => draw_alert(px, width, height, gx, gy, g, palette::WARN, f.scale, opacity),
+                _ => draw_alert(px, width, height, gx, gy, g, palette::ROSE, f.scale, opacity),
             }
             if let Some(t) = f.label {
                 let c = match f.kind {
@@ -566,7 +623,7 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                     _ => palette::ROSE_TEXT,
                 };
                 let tx = content_x + g + m.gap as f32;
-                blend_text(&mut px, width, height, &t, tx, cy, c, None, opacity);
+                blend_text(px, width, height, &t, tx, ty, c, None, text_op);
             }
             if matches!(f.kind, PillKind::Fixed | PillKind::Error) {
                 let label_w = f.label.map_or(0, |t| t.width);
@@ -579,22 +636,24 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
                     (palette::ROSE, palette::ROSE_TEXT)
                 };
                 let mut spans = fixed_chips(f.scale, label_w, widths).into_iter();
-                for t in texts.into_iter().flatten().filter(|t| t.width > 0) {
+                for (k, t) in texts.into_iter().flatten().filter(|t| t.width > 0).enumerate() {
                     let Some((x0, x1)) = spans.next() else { break };
-                    fill_hcapsule(&mut px, width, height, x0, cy - ch / 2.0, x1 - x0, ch, |_| tint, 0.18 * opacity);
-                    blend_text(&mut px, width, height, &t, x0 + (x1 - x0 - t.width as f32) / 2.0, cy, ink, None, opacity);
+                    let (x0, x1) = (x0 + rx, x1 + rx);
+                    let hot = f.chip_hover == Some(k);
+                    fill_hcapsule(px, width, height, x0, cy - ch / 2.0, x1 - x0, ch, |_| tint, if hot { 0.32 } else { 0.18 } * text_op);
+                    blend_text(px, width, height, &t, x0 + (x1 - x0 - t.width as f32) / 2.0, ty, ink, None, text_op);
                 }
             }
         }
         PillKind::Fixing => {
             if let Some(t) = f.label {
-                blend_text(&mut px, width, height, &t, content_x, cy, palette::WORKING_TEXT, None, opacity);
+                blend_text(px, width, height, &t, content_x, ty, palette::WORKING_TEXT, None, text_op);
             }
         }
         PillKind::Processing => {
-            // "Voice becomes text": the waveform has settled into three text lines (100 / 76 / 52 %). While the work is
-            // real a slow sheen passes over lines and label alike (1.1 s); it is mint while transcribing, emerald while
-            // polishing, and it stops the instant the state changes.
+            // "Voice becomes text": three waveform bars tip over and settle into three text lines (100 / 76 / 52 %),
+            // each on the accent spring, 40 ms apart. While the work is real a slow sheen passes over lines and label
+            // alike (1.1 s): mint while transcribing, emerald while polishing. It stops the instant the state changes.
             let sheen = if f.polishing { palette::EMERALD_2 } else { palette::MINT };
             let label_w = f.label.map_or(0, |t| t.width) as f32;
             let (lines_w, gap) = (m.lines_w as f32, m.gap as f32);
@@ -603,47 +662,88 @@ pub fn render_pill(width: usize, height: usize, f: &PillFrame) -> Vec<u32> {
             let bx = content_x - band + (lines_w + gap + label_w + 2.0 * band) * sweep;
             let lit = |x: f32| (1.0 - (x - bx).abs() / band).clamp(0.0, 1.0);
             let (th, pitch) = (1.75 * f.scale, 3.5 * f.scale);
-            for (j, frac) in [1.0f32, 0.76, 0.52].into_iter().enumerate() {
-                let ly = cy + (j as f32 - 1.0) * pitch - th / 2.0;
-                fill_hcapsule(&mut px, width, height, content_x, ly, lines_w * frac, th, |x| mix_rgb(palette::TEXT_3, sheen, lit(x)), opacity);
+            for (j, frac) in LINE_FRACS.into_iter().enumerate() {
+                let p = arrive(age - 40.0 * j as f32);
+                // From: a standing bar (heights like a voice: 50 / 80 / 36 % of the line slot's height budget).
+                let bar_h = [0.50f32, 0.80, 0.36][j] * cap_h * 0.5;
+                let bar_x = content_x + lines_w * [0.15f32, 0.5, 0.85][j] - th / 2.0;
+                let (x0, y0, w0, h0) = (bar_x, cy - bar_h / 2.0, th, bar_h);
+                // To: a line of text.
+                let (x1, y1, w1, h1) = (content_x, cy + (j as f32 - 1.0) * pitch - th / 2.0, lines_w * frac, th);
+                let (x, y, w, h) = (lerp(x0, x1, p), lerp(y0, y1, p), lerp(w0, w1, p).max(th * 0.5), lerp(h0, h1, p).max(th * 0.5));
+                let from_c = palette::EMERALD_2;
+                fill_capsule(px, width, height, x, y, w, h, |xx| mix_rgb(mix_rgb(from_c, palette::TEXT_3, p.clamp(0.0, 1.0)), sheen, lit(xx) * p.clamp(0.0, 1.0)), opacity);
             }
             if let Some(t) = f.label {
-                blend_text(&mut px, width, height, &t, content_x + lines_w + gap, cy, palette::WORKING_TEXT, Some((bx, band, sheen)), opacity);
+                blend_text(px, width, height, &t, content_x + lines_w + gap, ty, palette::WORKING_TEXT, Some((bx, band, sheen)), text_op);
             }
         }
         PillKind::Notice => {
             if let Some(t) = f.label {
-                blend_text(&mut px, width, height, &t, content_x, cy, palette::TEXT_2, None, opacity);
+                blend_text(px, width, height, &t, content_x, ty, palette::TEXT_2, None, text_op);
             }
         }
         PillKind::IdleHover => {
             let mut tx = content_x;
             if let Some(t) = f.label {
-                blend_text(&mut px, width, height, &t, tx, cy, palette::TEXT, None, opacity);
+                blend_text(px, width, height, &t, tx, ty, palette::TEXT, None, text_op);
                 tx += (t.width + m.gap) as f32;
             }
             if let Some(t2) = f.secondary {
-                blend_text(&mut px, width, height, &t2, tx, cy, palette::TEXT_3, None, opacity);
+                blend_text(px, width, height, &t2, tx, ty, palette::TEXT_3, None, text_op);
             }
         }
         _ => {}
     }
-    // Content never paints over the border or outside the capsule, even while the width is still tweening
+    // Content never paints over the border or outside the capsule, even while the width is still springing
     // towards a wider state (labels and chips would otherwise hang past the right edge for a few frames).
     let inner_r = radius - border_w;
-    for y in 0..height {
-        let py = y as f32 + 0.5;
-        for x in (right_cx.floor().max(0.0) as usize)..width {
-            let pxf = x as f32 + 0.5;
-            let d = ((pxf - right_cx).powi(2) + (py - cy).powi(2)).sqrt() - inner_r;
-            let keep = (0.5 - d).clamp(0.0, 1.0);
-            if keep < 1.0 {
-                let i = y * width + x;
-                px[i] = mix_px(base[i], px[i], keep);
+    BASE.with(|b| {
+        let base = b.borrow();
+        for y in 0..height {
+            let py = y as f32 + 0.5;
+            for x in (right_cx.floor().max(0.0) as usize)..width {
+                let pxf = x as f32 + 0.5;
+                let d = ((pxf - right_cx).powi(2) + (py - cy).powi(2)).sqrt() - inner_r;
+                let keep = (0.5 - d).clamp(0.0, 1.0);
+                if keep < 1.0 {
+                    let i = y * width + x;
+                    px[i] = mix_px(base[i], px[i], keep);
+                }
+            }
+        }
+    });
+}
+
+/// Progress 0 -> 1 of an entrance `ms` after it began, on the accent spring (a hair of overshoot). An infinite `ms`
+/// (Reduce Motion, or a frame drawn at rest) is simply there.
+fn arrive(ms: f32) -> f32 {
+    if !ms.is_finite() {
+        return 1.0;
+    }
+    crate::motion::ACCENT.sample(0.0, 0.0, 1.0, ms.max(0.0) / 1000.0).0
+}
+
+/// Widths of the three text lines, as fractions of the line slot.
+const LINE_FRACS: [f32; 3] = [1.0, 0.76, 0.52];
+/// How long the lines take to fold into the check's starting point.
+pub const LINES_FOLD_MS: f32 = 120.0;
+
+/// Anti-aliased capsule of any proportion (corner radius = half the shorter side), coloured by `c(x)`.
+#[allow(clippy::too_many_arguments)]
+fn fill_capsule(px: &mut [u32], w: usize, h: usize, x: f32, y: f32, cw: f32, ch: f32, c: impl Fn(f32) -> (u8, u8, u8), alpha: f32) {
+    let r = cw.min(ch) / 2.0;
+    let (l, rr, t, b) = (x + r, (x + cw - r).max(x + r), y + r, (y + ch - r).max(y + r));
+    for yy in (y.floor().max(0.0) as usize)..((y + ch).ceil().max(0.0) as usize).min(h) {
+        for xx in (x.floor().max(0.0) as usize)..((x + cw).ceil().max(0.0) as usize).min(w) {
+            let (fx, fy) = (xx as f32 + 0.5, yy as f32 + 0.5);
+            let d = ((fx - fx.clamp(l, rr)).powi(2) + (fy - fy.clamp(t, b)).powi(2)).sqrt();
+            let cov = (r - d + 0.5).clamp(0.0, 1.0) * alpha;
+            if cov > 0.0 {
+                px[yy * w + xx] = over(px[yy * w + xx], c(fx), cov);
             }
         }
     }
-    px
 }
 
 /// Per-channel blend of two premultiplied pixels: `a` at `t = 0`, `b` at `t = 1`.
@@ -902,6 +1002,12 @@ mod tests {
             press: 0.0,
             ring: 0.0,
             polishing: false,
+            age_ms: f32::INFINITY,
+            from: PillKind::Idle,
+            rise: 0.0,
+            lift: 0.0,
+            chip_hover: None,
+            rect: None,
         }
     }
 

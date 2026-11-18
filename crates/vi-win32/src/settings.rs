@@ -77,6 +77,8 @@ const WIN_H: i32 = 660;
 const HEADER_H: i32 = 52;
 /// First navigation row, below the header.
 const NAV_Y: i32 = HEADER_H + 20;
+/// Distance between navigation items (36 tall, 2 apart).
+const NAV_PITCH: i32 = 38;
 const SIDEBAR_W: i32 = 236;
 const X0: i32 = SIDEBAR_W + 40;
 const CW: i32 = WIN_W - X0 - 40;
@@ -103,6 +105,7 @@ const G_PILL_CLICK: i32 = 204;
 const G_PILL_RESET: i32 = 205;
 const G_SOUNDS: i32 = 206;
 const G_NOTIFY: i32 = 207;
+const G_DARK: i32 = 208;
 const D_HOTKEY: i32 = 301;
 const D_HOLD: i32 = 302;
 const D_TOGGLE: i32 = 303;
@@ -204,6 +207,7 @@ const WM_MOUSELEAVE_U: u32 = 0x02A3;
 // ------------------------------------------------------------------------------------------------
 
 pub(crate) use crate::tokens::Theme;
+use crate::motion::Animated;
 use crate::tokens::{elevation, radius};
 
 #[repr(C)]
@@ -223,27 +227,37 @@ pub(crate) fn high_contrast_on() -> bool {
 
 static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Re-reads which colour scheme Settings should use: Windows "Choose your default app mode"
-/// (HKCU\...\Themes\Personalize\AppsUseLightTheme). If the value is missing or unreadable the
-/// light theme is used. `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
+/// Re-reads which colour scheme KeyReed's windows use: light unless the person turned on Dark mode in General (kept
+/// in HKCU\Software\KeyReed, value DarkMode). `KEYREED_UI_THEME=dark|light` overrides it for screenshots and testing.
+/// The listener stays dark in both.
 pub(crate) fn refresh_dark_mode() {
     let forced = std::env::var("KEYREED_UI_THEME").ok();
     let dark = match forced.as_deref() {
         Some("dark") => true,
         Some("light") => false,
-        _ => system_apps_use_dark(),
+        _ => dark_pref(),
     };
     DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn system_apps_use_dark() -> bool {
+const PREF_KEY: &str = r"Software\KeyReed";
+const PREF_DARK: &str = "DarkMode";
+
+/// The Dark mode switch: off (light) when never set or unreadable.
+fn dark_pref() -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
-    let key = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-    let val = to_wide("AppsUseLightTheme");
-    let mut data: u32 = 1;
+    let (key, val) = (to_wide(PREF_KEY), to_wide(PREF_DARK));
+    let mut data: u32 = 0;
     let mut len = std::mem::size_of::<u32>() as u32;
     let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut len) };
-    rc == 0 && data == 0
+    rc == 0 && data != 0
+}
+
+fn set_dark_pref(on: bool) {
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD};
+    let (key, val) = (to_wide(PREF_KEY), to_wide(PREF_DARK));
+    let data: u32 = on as u32;
+    unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), REG_DWORD, &data as *const u32 as *const _, 4) };
 }
 
 pub(crate) fn theme() -> Theme {
@@ -513,7 +527,8 @@ impl Builder {
     }
 
     fn title(&mut self, title: &str, subtitle: &str) {
-        self.text(r(X0, self.y, CW, 36), title, F::Title, C::Text, DT_SINGLELINE);
+        // 40 tall: the 30 px display face's descenders ("g" in Writing) need the whole cell.
+        self.text(r(X0, self.y, CW, 40), title, F::Display, C::Text, DT_SINGLELINE);
         self.y += 40;
         if !subtitle.is_empty() {
             self.text(r(X0, self.y, CW, 40), subtitle, F::Body, C::Text2, DT_WORDBREAK);
@@ -657,23 +672,37 @@ struct St {
     content_h: i32,
     /// Logical client height.
     view_h: i32,
-    /// Toggles sliding to a new state: (control id, start). Empty unless a switch was just flipped.
-    anims: Vec<(i32, Instant)>,
+    /// Switch thumbs (0 off .. 1 on) and choice-card selections (0 .. 1), each on its own spring. A control without
+    /// an entry is at rest at its state.
+    springs: Vec<(i32, Animated)>,
+    /// Top edge (logical px) of the navigation selection: one object that slides between items, never a duplicate.
+    nav_y: Animated,
+    /// Page entrance: motion-clock start and direction (0 rises; -1 / +1 slides in from the left / right). Until it
+    /// ends, the page's own controls are drawn into the canvas and their windows stay hidden.
+    enter: Option<(f64, i32)>,
+    /// The control to focus when the entrance ends (it is hidden until then).
+    pending_focus: Option<i32>,
 }
 
-const IDT_ANIM: usize = 9002;
-const TOGGLE_MS: f32 = 150.0;
+/// Logical top edge of navigation item `page` (and of the selection when it rests there).
+fn nav_top(page: usize) -> f32 {
+    (NAV_Y + page as i32 * NAV_PITCH) as f32
+}
 
-/// 0..1 progress of a toggle slide, eased out (cubic). 1.0 when no slide is running.
-fn toggle_progress(st: &St, id: i32) -> f32 {
-    st.anims
-        .iter()
-        .find(|(i, _)| *i == id)
-        .map(|(_, t0)| {
-            let p = (t0.elapsed().as_secs_f32() * 1000.0 / TOGGLE_MS).clamp(0.0, 1.0);
-            1.0 - (1.0 - p).powi(3)
-        })
-        .unwrap_or(1.0)
+/// A switch's or choice card's spring value and speed at `now`, or its resting value `rest`.
+fn spring_state(st: &St, id: i32, rest: f32, now: f64) -> (f32, f32) {
+    st.springs.iter().find(|(i, _)| *i == id).map_or((rest, 0.0), |(_, a)| a.state(now))
+}
+
+/// How far into its entrance the page is, for an item whose top is `y` (logical, unscrolled): `(opacity, dx, dy)` in
+/// logical pixels. Groups lower on the page start a little later (up to three steps).
+fn enter_state(st: &St, y: i32, now: f64) -> (f32, f32, f32) {
+    let Some((t0, dir)) = st.enter else { return (1.0, 0.0, 0.0) };
+    let band = ((y - (HEADER_H + 24)).max(0) / 120).min(3) as usize;
+    let ms = ((now - t0) * 1000.0) as f32 - crate::motion::stagger_ms(band) * 2.0;
+    let p = crate::motion::STANDARD.eval((ms / (crate::motion::PAGE_MS - 42.0)).clamp(0.0, 1.0));
+    let travel = 1.0 - p;
+    if dir == 0 { (p, 0.0, 8.0 * travel) } else { (p, 12.0 * dir as f32 * travel, 0.0) }
 }
 
 thread_local! {
@@ -937,6 +966,12 @@ pub fn pre_translate(msg: &MSG) -> bool {
             return false;
         }
         if msg.hwnd == h || IsChild(h, msg.hwnd) != 0 {
+            // Any key or click while a page enters finishes the entrance first: motion never delays input.
+            if matches!(msg.message, WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MOUSEWHEEL)
+                && ST.with(|s| s.try_borrow().ok().is_some_and(|b| b.as_ref().is_some_and(|st| st.enter.is_some())))
+            {
+                finish_enter();
+            }
             let handled = IsDialogMessageW(h, msg) != 0;
             if handled {
                 // Tab can land on a control below the fold: bring it into view.
@@ -979,6 +1014,22 @@ pub fn confirm_delete_for_test() {
 /// Test hook (gallery perf): flips the Notifications switch on the General page the way a click does.
 pub fn flip_toggle_for_test() {
     on_command(G_NOTIFY, 0);
+}
+
+/// Test hook (filmstrips): chooses writing mode `i` the way a click does.
+pub fn select_mode_for_test(i: usize) {
+    on_command(W_MODE + i as i32, 0);
+}
+
+/// Test hook (filmstrips): repaints the whole window and its controls now, at whatever the motion clock says.
+pub fn repaint_for_test() {
+    let h = hwnd();
+    if !h.is_null() {
+        unsafe {
+            on_frame(h);
+            windows_sys::Win32::Graphics::Gdi::RedrawWindow(h, std::ptr::null(), std::ptr::null_mut(), 0x0001 | 0x0080 | 0x0100);
+        }
+    }
 }
 
 pub fn dismiss_modal_for_test() {
@@ -1040,6 +1091,7 @@ fn navigate(page: usize) {
         }
     });
     if changed {
+        begin_enter(0);
         rebuild(true);
     } else {
         refresh();
@@ -1053,8 +1105,8 @@ fn navigate(page: usize) {
 fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>, Vec<Ctrl>) {
     let mut b = Builder::new();
     // The frameless header's window buttons: real controls, so hover, press and focus draw as everywhere else.
-    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - 92, 10, 40, 32), Bg::Sidebar, "Minimize");
-    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - 48, 10, 40, 32), Bg::Sidebar, "Close");
+    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - PANEL_INSET - 96, 16, 40, 32), Bg::Content, "Minimize");
+    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - PANEL_INSET - 52, 16, 40, 32), Bg::Content, "Close");
     // Navigation
     for (i, (label, _)) in NAV.iter().enumerate() {
         let y = NAV_Y + i as i32 * 38;
@@ -1351,6 +1403,10 @@ fn nav_buttons(b: &mut Builder, next: &str) {
 fn page_general(b: &mut Builder, m: &SharedUiModel) {
     let c = &m.config;
     b.title("General", "How KeyReed starts and stays out of your way.");
+    b.section("Appearance");
+    b.group();
+    b.toggle_row(G_DARK, "Dark mode", "Settings, Quick Fix and the Composer in dark colours. The listener is always dark", DARK.load(std::sync::atomic::Ordering::Relaxed), !high_contrast_on());
+    b.end_group();
     b.section("Startup");
     b.group();
     b.toggle_row(G_ENABLED, "KeyReed is on", "When off, the shortcut is ignored and the microphone stays closed.", c.app_enabled, true);
@@ -2376,6 +2432,9 @@ fn rebuild(focus_first: bool) {
         let saved = st.saved_at.map(|t| t.elapsed().as_millis() < 1800).unwrap_or(false);
         let (items, ctrls) = build(st.page, st.step, &m, saved);
         let old: Vec<(Ctrl, HWND)> = st.ctrls.drain(..).collect();
+        // New controls start at rest; the selection slides from wherever it is to the page's item.
+        st.springs.clear();
+        st.nav_y.retarget(nav_top(st.page), crate::motion::now());
         st.content_h = content_height(&items, &ctrls);
         st.items = items;
         Some((ctrls, old, ctx_of(st), st.page))
@@ -2393,12 +2452,22 @@ fn rebuild(focus_first: bool) {
             let h = create_ctrl(&cx, &c);
             (c, h)
         }).collect();
+        let entering = ST.with(|s| s.borrow().as_ref().is_some_and(|st| st.enter.is_some()));
         let target = if MODAL.with(|m| m.borrow().is_some()) {
             created.iter().find(|(c, _)| matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM)).map(|(_, h)| *h)
         } else if focus_first {
             created.iter().find(|(c, _)| c.id == ID_NAV + page as i32).map(|(_, h)| *h)
         } else {
-            focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h))
+            // A page control is hidden while the page enters: it gets the focus when the entrance ends.
+            match focused_id.and_then(|id| created.iter().find(|(c, _)| c.id == id)) {
+                Some((c, _)) if entering && !fixed_in_place(&c.kind) => {
+                    let id = c.id;
+                    ST.with(|s| s.borrow_mut().as_mut().map(|st| st.pending_focus = Some(id)));
+                    None
+                }
+                Some((_, h)) => Some(*h),
+                None => None,
+            }
         };
         // Phase 3: store.
         let regions = ST.with(|s| {
@@ -2418,6 +2487,112 @@ fn rebuild(focus_first: bool) {
             }
         }
         InvalidateRect(cx.hwnd, std::ptr::null(), 0);
+        start_ticking(cx.hwnd);
+    }
+}
+
+/// Begins a page entrance (rise, or a slide for setup steps) unless Reduce Motion is on.
+fn begin_enter(dir: i32) {
+    if crate::ui::win_gui::reduced_motion() {
+        return;
+    }
+    ST.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.enter = Some((crate::motion::now(), dir));
+        }
+    });
+}
+
+/// Ends a page entrance now: the page's controls appear and the waiting control gets the focus. Any key or click
+/// during an entrance calls this first, so motion never stands between the user and the page.
+fn finish_enter() {
+    let done = ST.with(|s| {
+        let mut b = s.try_borrow_mut().ok()?;
+        let st = b.as_mut()?;
+        st.enter.take()?;
+        unsafe { show_children(st) };
+        let focus = st.pending_focus.take().and_then(|id| st.ctrls.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h));
+        Some((st.hwnd, child_regions(st), focus))
+    });
+    if let Some((hwnd, regions, focus)) = done {
+        unsafe {
+            apply_regions(&regions);
+            if let Some(h) = focus {
+                if GetForegroundWindow() == hwnd {
+                    SetFocus(h);
+                }
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+    }
+}
+
+/// Asks the frame clock for frames while anything on the page moves (see `on_frame`).
+fn start_ticking(hwnd: HWND) {
+    crate::frameclock::subscribe(hwnd);
+}
+
+/// One frame: repaint exactly what moves (the sliding selection, the springing controls, the entering page), end
+/// the entrance when its time is up, and let the clock go once everything drawn is at rest.
+fn on_frame(hwnd: HWND) {
+    crate::frameclock::frame_taken(hwnd);
+    let now = crate::motion::now();
+    let Some((dirty, sidebar, panel, ended, moving)) = ST.with(|s| {
+        let mut b = s.try_borrow_mut().ok()?;
+        let st = b.as_mut()?;
+        let find = |id: i32| st.ctrls.iter().find(|(c, _)| c.id == id).map(|(_, h)| *h);
+        let mut dirty: Vec<HWND> = Vec::new();
+        let mut moving = false;
+        for (id, a) in &st.springs {
+            if !a.at_rest(now) {
+                moving = true;
+            }
+            // One more frame after rest, so the final position is what stays on screen.
+            if !a.at_rest(now - 0.034) {
+                dirty.extend(find(*id));
+            }
+        }
+        let nav_moving = !st.nav_y.at_rest(now - 0.034);
+        moving |= !st.nav_y.at_rest(now);
+        if nav_moving {
+            dirty.extend(st.ctrls.iter().filter(|(c, _)| matches!(c.kind, Kind::Nav { .. })).map(|(_, h)| *h));
+        }
+        let mut ended = false;
+        let entering = st.enter.is_some();
+        if let Some((t0, _)) = st.enter {
+            if (now - t0) * 1000.0 >= crate::motion::PAGE_MS as f64 {
+                ended = true;
+            } else {
+                moving = true;
+            }
+        }
+        Some((dirty, nav_moving, entering, ended, crate::frameclock::stay_subscribed(moving)))
+    }) else {
+        crate::frameclock::unsubscribe(hwnd);
+        return;
+    };
+    unsafe {
+        for h in dirty {
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        let dpi = window_dpi(hwnd);
+        let mut rc: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rc);
+        if sidebar {
+            let side = RECT { left: 0, top: sc(NAV_Y - 8, dpi), right: sc(SIDEBAR_W, dpi), bottom: sc(NAV_Y + NAV.len() as i32 * NAV_PITCH + 8, dpi) };
+            InvalidateRect(hwnd, &side, 0);
+        }
+        if panel {
+            let p = panel_rect(rc, dpi);
+            let pr = RECT { left: p.0, top: p.1, right: p.0 + p.2, bottom: p.1 + p.3 };
+            InvalidateRect(hwnd, &pr, 0);
+        }
+    }
+    if ended {
+        finish_enter();
+    }
+    if !moving {
+        crate::frameclock::unsubscribe(hwnd);
     }
 }
 
@@ -2462,12 +2637,25 @@ fn refresh() {
             if new.enabled != old.enabled {
                 ops.push(Op::Enable(*h, new.enabled));
             }
-            if let (Kind::Toggle { on: a }, Kind::Toggle { on: b }) = (&new.kind, &old.kind) {
-                if a != b && !crate::ui::win_gui::reduced_motion() {
-                    st.anims.retain(|(i, _)| *i != new.id);
-                    st.anims.push((new.id, Instant::now()));
-                    ops.push(Op::Animate);
+            // A flipped switch slides its thumb and a newly chosen card grows its dot, both on the accent spring; the
+            // card losing the choice lets go at the same time. Reduce Motion lands them at once (motion::Animated).
+            let flip = match (&new.kind, &old.kind) {
+                (Kind::Toggle { on: a }, Kind::Toggle { on: b }) if a != b => Some(*a),
+                (Kind::Choice { selected: a, .. }, Kind::Choice { selected: b, .. }) if a != b => Some(*a),
+                _ => None,
+            };
+            if let Some(on) = flip {
+                let now = crate::motion::now();
+                let target = if on { 1.0 } else { 0.0 };
+                match st.springs.iter_mut().find(|(i, _)| *i == new.id) {
+                    Some((_, a)) => a.retarget_with(target, crate::motion::ACCENT, now),
+                    None => {
+                        let mut a = Animated::new(1.0 - target, crate::motion::ACCENT, 0.002);
+                        a.retarget(target, now);
+                        st.springs.push((new.id, a));
+                    }
                 }
+                ops.push(Op::Animate);
             }
             if new.name != old.name && !matches!(new.kind, Kind::Edit { .. }) {
                 ops.push(Op::Title(*h, new.name.clone()));
@@ -2500,7 +2688,7 @@ fn refresh() {
                     InvalidateRect(h, std::ptr::null(), 0);
                 }
                 Op::Animate => {
-                    SetTimer(parent, IDT_ANIM, 16, None);
+                    start_ticking(parent);
                 }
             }
         }
@@ -2558,22 +2746,83 @@ fn status_chip(m: &SharedUiModel, t: &Theme) -> (String, u32) {
     }
 }
 
-unsafe fn paint(st: &St, hdc: HDC) {
+unsafe fn paint(st: &St, hdc: HDC, dirty: RECT) {
     let _pf = crate::perf::frame("settings");
-    let t = theme();
-    let d = st.dpi;
-    let s = |v: i32| sc(v, d);
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(st.hwnd, &mut rc);
-    let Some(mut cv) = Canvas::new(rc.right, rc.bottom) else { return };
-    // Frameless: the header and the sidebar share the deepest tone, and the page lives in one raised, rounded panel
-    // beside them (light: a soft shadow; dark: a tone step and a hairline; high contrast: a plain outline).
+    // One back buffer for the window's life (remade only when the size changes); only the dirty part is drawn and
+    // copied, so a frame that moves the selection does not repaint the whole window.
+    BACK.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.as_ref().is_none_or(|cv| cv.size() != (rc.right, rc.bottom)) {
+            *b = Canvas::new(rc.right, rc.bottom);
+        }
+        if let Some(cv) = b.as_mut() {
+            cv.clear_clip();
+            cv.narrow_clip(dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top);
+            paint_into(st, cv, rc);
+            cv.blit_clip_to(hdc);
+        }
+    });
+}
+
+unsafe fn paint_into(st: &St, cv: &mut Canvas, rc: RECT) {
+    let t = theme();
+    let d = st.dpi;
+    paint_frame(st, cv, &t, rc);
+    let panel = panel_rect(rc, d);
+    // The page scrolls inside the panel, under the header band that holds the window buttons.
+    let view = (panel.0, sc(HEADER_H, d), panel.0 + panel.2, panel.1 + panel.3);
+    match st.enter {
+        Some((t0, _)) => {
+            // An entering page is drawn once (controls included), then each frame blends it in row by row: rising (or
+            // sliding) and fading, lower groups a beat later.
+            let key = (t0.to_bits(), rc.right, rc.bottom, st.scroll, st.page, st.step);
+            LAYER.with(|l| {
+                let mut l = l.borrow_mut();
+                if l.as_ref().is_none_or(|(k, _)| *k != key) {
+                    // Drawn whole (not just the dirty part): every later frame of the entrance blends from it.
+                    *l = Canvas::new(rc.right, rc.bottom).map(|mut layer| {
+                        paint_frame(st, &mut layer, &t, rc);
+                        paint_page(st, &mut layer, &t, rc, true);
+                        (key, layer)
+                    });
+                }
+                if let Some((_, layer)) = l.as_ref() {
+                    let now = crate::motion::now();
+                    cv.blend_rows_from(layer, view, |y| {
+                        let ly = (y as f32 * 96.0 / d as f32).round() as i32 + st.scroll;
+                        let (op, dx, dy) = enter_state(st, ly, now);
+                        (op, (dx * d as f32 / 96.0).round() as i32, (dy * d as f32 / 96.0).round() as i32)
+                    });
+                }
+            });
+        }
+        None => {
+            LAYER.with(|l| l.borrow_mut().take());
+            paint_page(st, cv, &t, rc, false);
+        }
+    }
+    paint_modal(st, cv, &t, rc);
+}
+
+thread_local! {
+    /// The window's back buffer.
+    static BACK: RefCell<Option<Canvas>> = const { RefCell::new(None) };
+    /// The entering page, drawn once per entrance and blended in by every frame of it.
+    static LAYER: RefCell<Option<((u64, i32, i32, i32, usize, usize), Canvas)>> = const { RefCell::new(None) };
+}
+
+/// Everything around the page: the deep sidebar with the brand and the sliding selection, the raised panel, and the
+/// live status at the foot of the sidebar.
+unsafe fn paint_frame(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT) {
+    let d = st.dpi;
+    let s = |v: i32| sc(v, d);
     cv.fill(t.sidebar);
-    let head = s(HEADER_H);
     let panel = panel_rect(rc, d);
     {
         let (x, y, w, h) = (panel.0 as f32, panel.1 as f32, panel.2 as f32, panel.3 as f32);
-        let rad = s(radius::CARD) as f32;
+        let rad = s(radius::PANEL) as f32;
         if t.shadows {
             cv.shadow(x, y, w, h, rad, &elevation::PANEL, d as f32 / 96.0, elevation::TINT);
         }
@@ -2582,33 +2831,73 @@ unsafe fn paint(st: &St, hdc: HDC) {
             cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
         }
     }
+    // The brand sits at the top of the sidebar: the mark, the name, and what this window is.
+    let head = s(HEADER_H);
+    let mark = s(26);
+    blit_icon(cv, s(20), (head - mark) / 2 + s(2), mark as usize);
+    let ty = (head - s(22)) / 2 + s(2);
+    cv.text(PRODUCT_NAME, s(54), ty, s(160), s(22), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_VCENTER);
+    // The selection chip, where it is right now (the items paint over it; this fills the gaps between them).
+    let now = crate::motion::now();
+    let rad = s(radius::CONTROL) as f32;
+    nav_chip(cv, t, s(12) as f32, st.nav_y.value(now) * d as f32 / 96.0, s(SIDEBAR_W - 24) as f32, s(36) as f32, rad);
 
-    // The mark lives in the header now, where the stock title bar used to be.
-    blit_icon(&mut cv, s(16), (head - s(20)) / 2, s(20) as usize);
-    let ty = (head - s(20)) / 2;
-    cv.text(PRODUCT_NAME, s(46), ty, s(160), s(20), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_VCENTER);
-    let dot_x = s(46) + text_width(PRODUCT_NAME, st.fonts.get(F::Brand)) + s(8);
-    cv.text("\u{00B7}", dot_x, ty, s(12), s(20), st.fonts.get(F::Body), t.text3, DT_SINGLELINE | DT_VCENTER);
-    cv.text("Settings", dot_x + s(14), ty, s(140), s(20), st.fonts.get(F::BodySemi), t.text2, DT_SINGLELINE | DT_VCENTER);
-
-    // Status chip at the bottom of the sidebar
-    // Skipped when the window is so short (e.g. 200% scaling on a 1080p display) that the chip would overlap the last nav item.
-    let nav_bottom = s(NAV_Y + NAV.len() as i32 * 38);
-    if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
-        let (label, dot) = status_chip(&m, &t);
-        let y = rc.bottom - s(52);
-        cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(radius::CONTROL) as f32, t.surface, 1.0);
-        cv.round_rect_stroke(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(radius::CONTROL) as f32, 1.0, t.border, 1.0);
-        cv.circle(s(28) as f32, (y + s(18)) as f32, s(4) as f32, dot, 1.0);
-        cv.text(&label, s(40), y, s(SIDEBAR_W - 64), s(36), st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    // Status at the foot of the sidebar: the listener's own idle mark (drawn by its renderer) and what KeyReed is
+    // doing. Skipped when the window is so short that it would overlap the last navigation item.
+    let nav_bottom = s(NAV_Y + NAV.len() as i32 * NAV_PITCH);
+    if let Some(m) = snapshot().filter(|_| rc.bottom - s(60) >= nav_bottom) {
+        let (label, dot) = status_chip(&m, t);
+        let scale = d as f32 / 96.0;
+        let pw = crate::overlay::pill_window_width(scale, crate::overlay::PillKind::Idle, 0, 0, 0);
+        let ph = crate::overlay::PillMetrics::for_scale(scale).window_height();
+        let frame = crate::overlay::PillFrame {
+            scale,
+            kind: if matches!(m.state, EngineState::Disabled) { crate::overlay::PillKind::Disabled } else { crate::overlay::PillKind::Idle },
+            levels: &[],
+            phase: 0.0,
+            label: None,
+            secondary: None,
+            tertiary: None,
+            pop: 0.0,
+            tick: 1.0,
+            opacity: 1.0,
+            content_opacity: 1.0,
+            press: 0.0,
+            ring: 0.0,
+            polishing: false,
+            age_ms: f32::INFINITY,
+            from: crate::overlay::PillKind::Idle,
+            rise: 0.0,
+            lift: 0.0,
+            chip_hover: None,
+            rect: None,
+        };
+        let px = crate::overlay::render_pill(pw, ph, &frame);
+        let (x, y) = (s(14), rc.bottom - s(14) - ph as i32);
+        cv.blend_premul(&px, pw as i32, ph as i32, x, y);
+        // The state dot rides on the pill's edge, the way a status light sits on a device.
+        let (dx, dy) = (x + pw as i32 - s(8), y + s(9));
+        cv.circle(dx as f32, dy as f32, s(5) as f32, t.sidebar, 1.0);
+        cv.circle(dx as f32, dy as f32, s(3) as f32 + 0.5, dot, 1.0);
+        let tx = x + pw as i32 + s(6);
+        cv.text(&label, tx, y, s(SIDEBAR_W) - tx - s(12), ph as i32, st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
+}
 
+/// The page itself: cards, rows, text and field frames, clipped to the scrolling view. With `ctrls`, the page's own
+/// controls are drawn in too (their windows are hidden while the page enters).
+unsafe fn paint_page(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT, ctrls: bool) {
+    let t = *t;
+    let d = st.dpi;
+    let panel = panel_rect(rc, d);
+    let head = sc(HEADER_H, d);
     let off = st.scroll;
     let s = |v: i32| sc(v, d);
     let sy = |v: i32| sc(v - off, d);
     // Only the panel scrolls: clip the canvas to it so no scrolled row can paint over the sidebar, the header or the
     // deep margin around the panel.
-    cv.set_clip(panel.0, panel.1, panel.2, panel.3);
+    let outer = cv.clip();
+    cv.narrow_clip(panel.0, head, panel.2, panel.1 + panel.3 - head);
     // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
     let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
@@ -2682,7 +2971,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
             }
             Item::Glyph { r: rr, ch, font, color: c } => {
                 if *ch == '\u{0}' {
-                    blit_icon(&mut cv, s(rr.x), sy(rr.y), s(rr.w) as usize);
+                    blit_icon(cv, s(rr.x), sy(rr.y), s(rr.w) as usize);
                 } else {
                     let g: String = ch.to_string();
                     cv.text(&g, s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), DT_SINGLELINE | DT_LEFT | DT_VCENTER);
@@ -2736,35 +3025,48 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let max = max_scroll(st.content_h, view_h);
     if max > 0 {
         let (bar_w, inset) = (s(4), s(6));
-        let (bar_x, top) = (panel.0 + panel.2 - inset - bar_w, panel.1 + inset);
-        let track_h = (panel.3 - 2 * inset).max(1);
+        let (bar_x, top) = (panel.0 + panel.2 - inset - bar_w, head + inset);
+        let track_h = (panel.1 + panel.3 - head - 2 * inset).max(1);
         let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24), track_h);
         let thumb_y = top + (track_h - thumb_h) * st.scroll / max;
         let rad = (bar_w / 2) as f32;
         cv.round_rect(bar_x as f32, top as f32, bar_w as f32, track_h as f32, rad, t.track, 1.0);
         cv.round_rect(bar_x as f32, thumb_y as f32, bar_w as f32, thumb_h as f32, rad, t.text3, 1.0);
     }
-    cv.clear_clip();
-    // The confirmation card: the page dims behind it, and only the card's own buttons (child windows) stay live.
+    if ctrls {
+        for (c, _) in st.ctrls.iter().filter(|(c, _)| !fixed_in_place(&c.kind) && !matches!(c.kind, Kind::Edit { .. })) {
+            let cr = child_rect(c);
+            let (x, y, w, h) = (sc(cr.x, d), sc(cr.y - st.scroll, d), sc(cr.w, d), sc(cr.h, d));
+            if let Some(img) = render_ctrl(st, c, if c.enabled { 0 } else { ODS_DISABLED }, w, h) {
+                cv.draw_canvas(&img, x, y);
+            }
+        }
+    }
+    cv.restore_clip(outer);
+}
+
+/// The confirmation card: the page dims behind it, and only the card's own buttons (child windows) stay live.
+unsafe fn paint_modal(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT) {
+    let s = |v: i32| sc(v, st.dpi);
     if let Some(md) = MODAL.with(|m| m.borrow().clone()) {
         cv.round_rect(0.0, 0.0, rc.right as f32, rc.bottom as f32, 0.0, rgb(0, 0, 0), 0.55);
         let card = modal_card();
         let (x, y, w, h) = (s(card.x) as f32, s(card.y) as f32, s(card.w) as f32, s(card.h) as f32);
         cv.round_rect(x - s(6) as f32, y + s(4) as f32, w + s(12) as f32, h + s(14) as f32, s(16) as f32, rgb(0, 0, 0), 0.12);
-        cv.round_rect(x, y, w, h, s(12) as f32, t.surface, 1.0);
-        cv.round_rect_stroke(x, y, w, h, s(12) as f32, 1.0, t.border, 1.0);
+        cv.round_rect(x, y, w, h, s(radius::PANEL) as f32, t.surface, 1.0);
+        cv.round_rect_stroke(x, y, w, h, s(radius::PANEL) as f32, 1.0, t.border, 1.0);
         cv.text(&md.title, s(card.x + 24), s(card.y + 22), s(card.w - 48), s(24), st.fonts.get(F::Brand), t.text, DT_SINGLELINE | DT_END_ELLIPSIS);
         cv.text(&md.body, s(card.x + 24), s(card.y + 54), s(card.w - 48), s(62), st.fonts.get(F::Body), t.text2, DT_WORDBREAK);
     }
-    cv.blit_to(hdc, 0, 0);
 }
 
 /// Space between the raised content panel and the window's right and bottom edges.
 const PANEL_INSET: i32 = 8;
 
-/// The raised content panel in client pixels `(x, y, w, h)`: right of the sidebar, under the header.
+/// The raised content panel in client pixels `(x, y, w, h)`: right of the sidebar, inset from the other three edges.
+/// Its top band (under `HEADER_H`) holds the window buttons and drags the window; the page scrolls below it.
 fn panel_rect(rc: RECT, dpi: u32) -> (i32, i32, i32, i32) {
-    let (x, y) = (sc(SIDEBAR_W, dpi), sc(HEADER_H, dpi));
+    let (x, y) = (sc(SIDEBAR_W, dpi), sc(PANEL_INSET, dpi));
     (x, y, (rc.right - x - sc(PANEL_INSET, dpi)).max(0), (rc.bottom - y - sc(PANEL_INSET, dpi)).max(0))
 }
 
@@ -2806,21 +3108,38 @@ const ODS_NOFOCUSRECT: u32 = 0x0200;
 unsafe fn draw_item(st: &St, di: &DrawItem) {
     let _pf = crate::perf::frame("settings_ctrl");
     let Some((c, _)) = st.ctrls.iter().find(|(c, _)| c.id == di.ctl_id as i32) else { return };
+    let Some(cv) = render_ctrl(st, c, di.item_state, di.rc.right - di.rc.left, di.rc.bottom - di.rc.top) else { return };
+    let d = st.dpi;
+    // An owner-drawn control paints into its own window, whose coordinates start at its own top edge, so a
+    // control scrolled under the header is cut off here instead of hanging over it.
+    let cut = if fixed_in_place(&c.kind) { 0 } else { sc(HEADER_H + 1, d) - sc(child_rect(c).y - st.scroll, d) };
+    let saved = if cut > 0 { SaveDC(di.hdc) } else { 0 };
+    if cut > 0 {
+        IntersectClipRect(di.hdc, 0, cut, 1 << 20, 1 << 20);
+    }
+    cv.blit_to(di.hdc, di.rc.left, di.rc.top);
+    if cut > 0 {
+        RestoreDC(di.hdc, saved);
+    }
+}
+
+/// Draws control `c` (`item_state` = the ODS_* flags) into a canvas of its window's size. The page entrance uses it
+/// too, to draw controls into the page while their windows wait hidden.
+unsafe fn render_ctrl(st: &St, c: &Ctrl, item_state: u32, w: i32, h: i32) -> Option<Canvas> {
     let t = theme();
     let d = st.dpi;
     let s = |v: i32| sc(v, d);
-    let w = di.rc.right - di.rc.left;
-    let h = di.rc.bottom - di.rc.top;
-    let Some(mut cv) = Canvas::new(w, h) else { return };
+    let now = crate::motion::now();
+    let mut cv = Canvas::new(w, h)?;
     let bg = match c.bg {
         Bg::Sidebar => t.sidebar,
         Bg::Content => t.bg,
         Bg::Surface => t.surface,
     };
     cv.fill(bg);
-    let pressed = di.item_state & ODS_SELECTED != 0;
-    let disabled = di.item_state & ODS_DISABLED != 0;
-    let focus = di.item_state & ODS_FOCUS != 0 && di.item_state & ODS_NOFOCUSRECT == 0;
+    let pressed = item_state & ODS_SELECTED != 0;
+    let disabled = item_state & ODS_DISABLED != 0;
+    let focus = item_state & ODS_FOCUS != 0 && item_state & ODS_NOFOCUSRECT == 0;
     let hot = st.hot == c.id && !disabled;
     let (wf, hf) = (w as f32, h as f32);
     let rad = s(radius::CONTROL) as f32;
@@ -2828,11 +3147,14 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
 
     match &c.kind {
         Kind::Nav { page, selected } => {
-            if *selected {
-                cv.round_rect(0.0, 0.0, wf, hf, rad, t.accent_soft, 1.0);
-                cv.round_rect(0.0, (hf - s(16) as f32) / 2.0, s(3) as f32, s(16) as f32, s(2) as f32, t.accent_fill, 1.0);
-            } else if hot || pressed {
+            // Hover is instant and only on the item itself; the selection is one raised chip that slides between
+            // items (each item paints its own slice of it, the sidebar paints the gaps).
+            if !*selected && (hot || pressed) {
                 cv.round_rect(0.0, 0.0, wf, hf, rad, t.hover, 1.0);
+            }
+            let chip_y = (st.nav_y.value(now) - c.r.y as f32) * d as f32 / 96.0;
+            if chip_y > -hf && chip_y < hf {
+                nav_chip(&mut cv, &t, 0.0, chip_y, wf, s(36) as f32, rad);
             }
             let (label, glyph) = NAV[*page];
             let gc = if *selected { t.accent } else { t.text2 };
@@ -2841,42 +3163,50 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             cv.text(label, s(44), 0, w - s(48), h, st.fonts.get(f), t.text, DT_SINGLELINE | DT_VCENTER);
         }
         Kind::Toggle { on } => {
-            let (sw, sh) = (s(40) as f32, s(20) as f32);
+            let (sw, sh) = (s(44) as f32, s(24) as f32);
             let sx = wf - sw - s(2) as f32;
             let sy = (hf - sh) / 2.0;
-            // amount = 0 fully off .. 1 fully on; between the two only while a slide is running.
-            let p = toggle_progress(st, c.id);
-            let amount = if *on { p } else { 1.0 - p };
+            // The thumb travels on the accent spring (a hair of overshoot), squashing along the way with its speed; the
+            // track and its outline cross-fade with the position.
+            let (pos, vel) = spring_state(st, c.id, if *on { 1.0 } else { 0.0 }, now);
+            let amount = pos.clamp(0.0, 1.0);
             let fill = if disabled { t.track } else if pressed || hot { t.accent_press } else { t.accent_fill };
             if amount < 1.0 {
                 if hot {
                     cv.round_rect(sx, sy, sw, sh, sh / 2.0, t.hover_card, 1.0);
                 }
-                cv.round_rect_stroke(sx, sy, sw, sh, sh / 2.0, 1.0_f32.max(s(1) as f32), if disabled { t.track } else { t.text3 }, 1.0);
+                cv.round_rect_stroke(sx, sy, sw, sh, sh / 2.0, 1.5_f32.max(s(1) as f32 * 1.5), if disabled { t.track } else { t.text3 }, 1.0 - amount);
             }
             if amount > 0.0 {
                 cv.round_rect(sx, sy, sw, sh, sh / 2.0, fill, amount);
             }
-            let kx = sx + sh / 2.0 + (sw - sh) * amount;
-            let kr = s(5) as f32 + (s(7) - s(5)) as f32 * amount;
+            let squash = (vel.abs() / 7.0).min(1.0);
+            let kr = s(6) as f32 + (s(9) - s(6)) as f32 * amount;
+            let (kw, kh) = (2.0 * kr * (1.0 + 0.22 * squash), 2.0 * kr * (1.0 - 0.08 * squash));
+            let kx = sx + sh / 2.0 + (sw - sh) * pos;
             let off_knob = if disabled { t.track } else { t.text2 };
-            cv.circle(kx, sy + sh / 2.0, kr, off_knob, 1.0 - amount);
-            cv.circle(kx, sy + sh / 2.0, kr, t.surface, amount);
+            cv.round_rect(kx - kw / 2.0, sy + sh / 2.0 - kh / 2.0, kw, kh, kh / 2.0, off_knob, 1.0 - amount);
+            cv.round_rect(kx - kw / 2.0, sy + sh / 2.0 - kh / 2.0, kw, kh, kh / 2.0, t.surface, amount);
             focus_rect = (sx - s(3) as f32, sy - s(3) as f32, sw + s(6) as f32, sh + s(6) as f32, (sh + s(6) as f32) / 2.0);
         }
         Kind::Choice { title, desc, selected } => {
+            // Choosing is a moment: the tint fills, the ring comes up and the radio dot pops in on the accent spring
+            // while the card that lost the choice lets go at the same time. Hover is instant.
             let r8 = s(radius::CARD) as f32;
-            let fill = if *selected { t.accent_soft } else if hot || pressed { t.hover_card } else { t.surface };
-            cv.round_rect(0.0, 0.0, wf, hf, r8, fill, 1.0);
-            let (bc, bw) = if *selected { (t.accent_fill, 1.5_f32 * d as f32 / 96.0) } else { (t.border, 1.0) };
-            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, bw, bc, 1.0);
+            let (sel, _) = spring_state(st, c.id, if *selected { 1.0 } else { 0.0 }, now);
+            let k = sel.clamp(0.0, 1.0);
+            let base = if hot || pressed { t.hover_card } else { t.surface };
+            cv.round_rect(0.0, 0.0, wf, hf, r8, base, 1.0);
+            cv.round_rect(0.0, 0.0, wf, hf, r8, t.accent_soft, k);
+            let hair = if hot && !t.hc { t.control_border } else { t.border };
+            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, 1.0, hair, 1.0 - k);
+            cv.round_rect_stroke(0.0, 0.0, wf, hf, r8, 1.5 * d as f32 / 96.0, t.accent_fill, k);
             let (rx, ry) = (s(22) as f32, s(22) as f32);
-            if *selected {
-                cv.circle(rx, ry, s(9) as f32, t.accent_fill, 1.0);
-                cv.circle(rx, ry, s(4) as f32, t.surface, 1.0);
-            } else {
-                cv.circle(rx, ry, s(9) as f32, t.text3, 1.0);
-                cv.circle(rx, ry, s(9) as f32 - 1.25_f32.max(s(1) as f32), fill, 1.0);
+            cv.circle(rx, ry, s(9) as f32, t.text3, 1.0 - k);
+            cv.circle(rx, ry, s(9) as f32, t.accent_fill, k);
+            cv.circle(rx, ry, s(9) as f32 - 1.25_f32.max(s(1) as f32), base, 1.0 - k);
+            if sel > 0.01 {
+                cv.circle(rx, ry, s(4) as f32 * sel.max(0.0), t.surface, 1.0);
             }
             cv.text(title, s(42), s(12), w - s(54), s(20), st.fonts.get(F::BodySemi), t.text, DT_SINGLELINE | DT_END_ELLIPSIS);
             cv.text(desc, s(42), s(34), w - s(54), h - s(36), st.fonts.get(F::Caption), t.text2, DT_WORDBREAK);
@@ -2892,11 +3222,17 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 (BtnStyle::Danger, _) => (Some(if pressed { t.err_bg } else if hot { t.err_bg } else { t.surface }), Some(t.control_border), t.err_fg),
                 (BtnStyle::Subtle, _) => (if hot || pressed { Some(t.hover) } else { None }, None, t.accent),
             };
+            // Pressed, a button sinks 1 dp (its label with it); a Primary carries a 1 px lit top edge.
+            let sink = if pressed && !disabled { s(1) as f32 } else { 0.0 };
             if let Some(f) = fill {
-                cv.round_rect(0.0, 0.0, wf, hf, rad, f, 1.0);
+                cv.round_rect(0.0, sink, wf, hf - sink, rad, f, 1.0);
+                if *style == BtnStyle::Primary && !disabled && !t.hc && !pressed {
+                    cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, rgb(0xFF, 0xFF, 0xFF), 0.10);
+                    cv.round_rect(rad, 1.0, wf - 2.0 * rad, 1.0, 0.0, rgb(0xFF, 0xFF, 0xFF), 0.22);
+                }
             }
             if let Some(sc_) = stroke {
-                cv.round_rect_stroke(0.0, 0.0, wf, hf, rad, 1.0, sc_, 1.0);
+                cv.round_rect_stroke(0.0, sink, wf, hf - sink, rad, 1.0, sc_, 1.0);
             }
             if *style == BtnStyle::Status {
                 // Check mark + label, right-aligned with the buttons in the rows above and below.
@@ -2907,7 +3243,7 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
                 cv.text(label, x, 0, tw + s(4), h, f, fg, DT_SINGLELINE | DT_VCENTER);
             } else {
                 let f = if *style == BtnStyle::Primary { F::BodySemi } else { F::Body };
-                cv.text(label, 0, 0, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                cv.text(label, 0, sink as i32, w, h, st.fonts.get(f), fg, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             }
         }
         Kind::Combo { items, sel } => {
@@ -2990,17 +3326,18 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
         let (ring, inset) = if t.hc { (t.focus, 0.0) } else if primary { (t.on_accent, s(2) as f32) } else { (t.focus_ring, 0.0) };
         cv.round_rect_stroke(x + inset, y + inset, fw - 2.0 * inset, fh - 2.0 * inset, (fr - inset).max(1.0), 2.0_f32.max(s(2) as f32), ring, 1.0);
     }
-    // An owner-drawn control paints into its own window, whose coordinates start at its own top edge, so a
-    // control scrolled under the header is cut off here instead of hanging over it.
-    let cut = if fixed_in_place(&c.kind) { 0 } else { sc(HEADER_H + 1, d) - sc(child_rect(c).y - st.scroll, d) };
-    let saved = if cut > 0 { SaveDC(di.hdc) } else { 0 };
-    if cut > 0 {
-        IntersectClipRect(di.hdc, 0, cut, 1 << 20, 1 << 20);
+    Some(cv)
+}
+
+/// The navigation selection: a raised chip (light: white on the deep sidebar with a hairline; dark: one tone up with a
+/// hairline; high contrast: the system highlight outline).
+fn nav_chip(cv: &mut Canvas, t: &Theme, x: f32, y: f32, w: f32, h: f32, rad: f32) {
+    if t.hc {
+        cv.round_rect_stroke(x, y, w, h, rad, 2.0, t.accent_fill, 1.0);
+        return;
     }
-    cv.blit_to(di.hdc, di.rc.left, di.rc.top);
-    if cut > 0 {
-        RestoreDC(di.hdc, saved);
-    }
+    cv.round_rect(x, y, w, h, rad, t.surface, 1.0);
+    cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -3023,8 +3360,11 @@ fn child_region(x: i32, y: i32, w: i32, h: i32, view: (i32, i32, i32, i32)) -> (
 fn child_regions(st: &St) -> Vec<(HWND, (i32, i32, i32, i32))> {
     let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     unsafe { GetClientRect(st.hwnd, &mut rc) };
-    // The page lives in the raised panel: a control scrolled up or down must not paint over the header or the margin.
-    let (left, top, pw, ph) = panel_rect(rc, st.dpi);
+    // The page lives in the raised panel, under its header band: a control scrolled up or down must not paint over
+    // the window buttons or the margin.
+    let (left, ptop, pw, ph) = panel_rect(rc, st.dpi);
+    let top = sc(HEADER_H, st.dpi);
+    let ph = ph + ptop - top;
     st.ctrls
         .iter()
         // Navigation and the header's own buttons stay put; clipping them to the page column would hide them.
@@ -3079,7 +3419,10 @@ unsafe fn show_children(st: &St) {
         let own = matches!(c.id, MODAL_CANCEL | MODAL_CONFIRM);
         // A card hides the page, not the frame: the navigation and the header's window buttons stay visible
         // (their commands are already refused while a card is up), so the window never looks broken.
-        let show = if card { own || fixed_in_place(&c.kind) } else { !own };
+        // While the page enters, its own controls are drawn into the canvas (fading and rising with it) and their
+        // windows wait hidden; the frame (navigation, window buttons) stays live.
+        let page_ctrl = !fixed_in_place(&c.kind);
+        let show = if card { own || !page_ctrl } else { !own && !(st.enter.is_some() && page_ctrl) };
         ShowWindow(*h, if show { SW_SHOWNA } else { SW_HIDE });
     }
 }
@@ -3197,16 +3540,19 @@ fn open_url(url: &str) {
 
 fn set_step(step: usize) {
     harvest_and_commit();
+    let from = ST.with(|s| {
+        s.borrow_mut().as_mut().map(|st| std::mem::replace(&mut st.step, step))
+    });
+    // Forward steps slide in from the right, going back from the left.
+    begin_enter(if from.is_some_and(|f| step < f) { -1 } else { 1 });
+    rebuild(false);
+    // Put keyboard focus on the primary action of the new step (once it is shown, if the step is still entering).
     ST.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
-            st.step = step;
-        }
-    });
-    rebuild(false);
-    // Put keyboard focus on the primary action of the new step.
-    ST.with(|s| {
-        if let Some(st) = s.borrow().as_ref() {
-            if let Some((_, h)) = st.ctrls.iter().find(|(c, _)| c.id == if step == 3 { S_PRACTICE } else { S_NEXT }) {
+            let id = if step == 3 { S_PRACTICE } else { S_NEXT };
+            if st.enter.is_some() {
+                st.pending_focus = Some(id);
+            } else if let Some((_, h)) = st.ctrls.iter().find(|(c, _)| c.id == id) {
                 unsafe {
                     SetFocus(*h);
                 }
@@ -3382,6 +3728,11 @@ fn on_command(id: i32, code: u32) {
         (G_NOTIFY, true, _) => {
             let v = !c.notify_on_ready;
             commit(|c| c.notify_on_ready = v)
+        }
+        (G_DARK, true, _) => {
+            set_dark_pref(!DARK.load(std::sync::atomic::Ordering::Relaxed));
+            // The same path as a Windows theme change: re-read, re-theme the native pieces, rebuild.
+            unsafe { PostMessageW(hwnd(), WM_THEMECHANGED, 0, 0) };
         }
         (A_CUE, _, CBN_SELCHANGE) => {
             let s = AudioCueStyle::ALL.get(combo_sel(A_CUE)).copied().unwrap_or_default();
@@ -3934,9 +4285,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     scroll: 0,
                     content_h: WIN_H,
                     view_h: WIN_H,
-                    anims: Vec::new(),
+                    springs: Vec::new(),
+                    nav_y: Animated::new(nav_top(page), crate::motion::SNAPPY, 0.25),
+                    enter: None,
+                    pending_focus: None,
                 })
             });
+            // The window appears at once; its content fades and rises 6-8 dp into place.
+            begin_enter(0);
             apply_window_chrome(hwnd);
             rebuild(true);
             0
@@ -3977,13 +4333,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             dict_commit_deferred();
             0
         }
+        crate::frameclock::WM_APP_FRAME => {
+            on_frame(hwnd);
+            0
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             ST.with(|s| {
                 if let Ok(b) = s.try_borrow() {
                     if let Some(st) = b.as_ref() {
-                        paint(st, hdc);
+                        paint(st, hdc, ps.rcPaint);
                     }
                 }
             });
@@ -4052,22 +4412,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             wheel_scroll(wparam)
         }
         WM_TIMER => {
-            if wparam == IDT_ANIM {
-                let (hs, done) = ST.with(|s| {
-                    let Ok(mut b) = s.try_borrow_mut() else { return (Vec::new(), false) };
-                    let Some(st) = b.as_mut() else { return (Vec::new(), true) };
-                    let hs: Vec<HWND> = st.anims.iter().filter_map(|(id, _)| st.ctrls.iter().find(|(c, _)| c.id == *id).map(|(_, h)| *h)).collect();
-                    st.anims.retain(|(_, t0)| t0.elapsed().as_secs_f32() * 1000.0 < TOGGLE_MS);
-                    (hs, st.anims.is_empty())
-                });
-                for h in hs {
-                    InvalidateRect(h, std::ptr::null(), 0);
-                }
-                if done {
-                    KillTimer(hwnd, IDT_ANIM);
-                }
-                return 0;
-            }
             if wparam == IDT_ADVANCE {
                 KillTimer(hwnd, IDT_ADVANCE);
                 ADVANCE_ARMED.with(|c| c.set(false));

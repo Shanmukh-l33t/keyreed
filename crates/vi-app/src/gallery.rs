@@ -35,7 +35,8 @@ fn pump_for(ms: u64) {
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while Instant::now() < until {
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            // Checks the time between messages too: animation frames can keep the queue busy for as long as they run.
+            while Instant::now() < until && PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                 if vi_win32::settings::pre_translate(&msg) {
                     continue;
                 }
@@ -188,6 +189,14 @@ impl Gallery {
         let cy = (rc.top + rc.bottom) / 2;
         let (cw, ch) = ((w + 80).max(340), (h + 60).max(100)); // wide states (Quick Fix chips) must not be cropped
         capture(cx - cw / 2, cy - ch / 2, cw, ch, &self.dir.join(format!("{name}.bmp")), None)?;
+        // The listener's own pixels too, with transparency (scripts/design/shots.py rgba turns them into PNGs).
+        if let Some((pw, ph, px)) = win_gui::pill_pixels_for_test() {
+            let mut raw = Vec::with_capacity(8 + px.len() * 4);
+            raw.extend_from_slice(&pw.to_le_bytes());
+            raw.extend_from_slice(&ph.to_le_bytes());
+            px.iter().for_each(|p| raw.extend_from_slice(&p.to_le_bytes()));
+            std::fs::write(self.dir.join(format!("{name}.rgba")), raw)?;
+        }
         let dbg = win_gui::pill_debug_info();
         self.report.push(serde_json::json!({
             "shot": name,
@@ -388,6 +397,47 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     g.shot_pill("pill_15_mode_hint", "Mode switched by shortcut: brief hint instead of a notification")?;
     pump_for(1800);
     g.shot_pill("pill_16_hint_expired", "Hint collapses back to idle by itself")?;
+
+    // ---- Filmstrips: key transitions frozen at fixed instants on the motion clock (design v3, section 10.3) ----
+    const FILM_MS: [f64; 10] = [0.0, 16.0, 33.0, 50.0, 83.0, 116.0, 166.0, 233.0, 300.0, 450.0];
+    let film = |g: &mut Gallery, name: &str, trigger: &dyn Fn(&WinGuiHandle)| -> Result<()> {
+        // Frozen from the live now: the shots take longer than 450 ms of live time, so when the live clock takes over
+        // again every motion the strip started has already ended.
+        let t0 = vi_win32::motion::now() * 1000.0;
+        vi_win32::motion::set_time_override(Some(t0));
+        trigger(&g.gui);
+        pump_for(80);
+        for ms in FILM_MS {
+            vi_win32::motion::set_time_override(Some(t0 + ms));
+            win_gui::refresh_pill_for_test();
+            pump_for(40);
+            g.shot_pill(&format!("film_{name}_{:03}", ms as u32), &format!("{name} at {ms} ms"))?;
+        }
+        vi_win32::motion::set_time_override(None);
+        pump_for(100);
+        Ok(())
+    };
+    g.gui.sync(EngineState::Idle, 0.0, None);
+    pump_for(500);
+    film(&mut g, "p1_hover", &|_| win_gui::set_pill_hover_for_test(true))?;
+    win_gui::set_pill_hover_for_test(false);
+    pump_for(600);
+    film(&mut g, "p2_listen", &|gui| gui.sync(EngineState::Listening, 0.14, None))?;
+    for i in 0..14 {
+        g.gui.sync(EngineState::Listening, env[i % env.len()], None);
+        pump_for(60);
+    }
+    film(&mut g, "p3_transcribe", &|gui| gui.sync(EngineState::Processing, 0.0, None))?;
+    pump_for(400);
+    film(&mut g, "p4_inserted", &|gui| {
+        gui.set_outcome(ReadyOutcome::Inserted);
+        gui.sync(EngineState::ReadyToPaste, 0.0, None);
+    })?;
+    pump_for(300);
+    film(&mut g, "p4b_settle_idle", &|gui| gui.sync(EngineState::Idle, 0.0, None))?;
+    pump_for(400);
+    film(&mut g, "p11_hint", &|gui| gui.flash_hint("Professional Writing", ""))?;
+    pump_for(1900);
 
     // ---- Quick Fix pill (plan F1 and F4): mid-motion and settled ----
     g.gui.quick_fix(QuickFixStage::Working);
@@ -601,7 +651,9 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
     )?;
     anyhow::ensure!(
         after.left == before.left + 60 && after.top == (before.top - 40).max(0),
-        "the bar keeps the spot it was dragged to"
+        "the bar keeps the spot it was dragged to: before {:?}, after {:?}",
+        (before.left, before.top),
+        (after.left, after.top)
     );
     g.gui.composer(ComposerMsg::Open(ComposerRequest { cloud: true, route: "Cloud · api.groq.com · gpt-oss-20b".into(), ..local(None) }));
     pump_for(500);
@@ -653,6 +705,34 @@ pub fn run_ui_gallery(dir: PathBuf, installed: Vec<String>, mics: Vec<String>, s
         pump_for(400);
     }
     let toggle_perf = perf_json();
+
+    // Settings filmstrips: the selection sliding and the page rising in, a switch, a writing-mode card.
+    let sfilm = |g: &mut Gallery, name: &str, trigger: &dyn Fn()| -> Result<()> {
+        let t0 = vi_win32::motion::now() * 1000.0;
+        vi_win32::motion::set_time_override(Some(t0));
+        trigger();
+        pump_for(120);
+        for ms in FILM_MS {
+            vi_win32::motion::set_time_override(Some(t0 + ms));
+            vi_win32::settings::repaint_for_test();
+            pump_for(50);
+            g.shot_settings(&format!("film_{name}_{:03}", ms as u32), &format!("{name} at {ms} ms"))?;
+        }
+        vi_win32::motion::set_time_override(None);
+        pump_for(300);
+        Ok(())
+    };
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    sfilm(&mut g, "s3_page_writing", &|| vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_WRITING, 0))?;
+    sfilm(&mut g, "s5_choice", &|| vi_win32::settings::select_mode_for_test(2))?;
+    vi_win32::settings::select_mode_for_test(0);
+    pump_for(400);
+    vi_win32::settings::show_page_for_test(vi_win32::settings::PAGE_GENERAL, 0);
+    pump_for(600);
+    sfilm(&mut g, "s4_toggle", &vi_win32::settings::flip_toggle_for_test)?;
+    vi_win32::settings::flip_toggle_for_test();
+    pump_for(400);
 
     // The Sounds group on the Microphone page, with the cue volume at its top step.
     let mut loud = AppConfig::default();

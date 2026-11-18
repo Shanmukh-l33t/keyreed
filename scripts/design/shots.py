@@ -3,6 +3,7 @@
     python scripts/design/shots.py png <dir>                      # every .bmp in <dir> -> .png, the .bmp removed
     python scripts/design/shots.py sheet <out.png> <cols> <img>...  # images (bmp or png) on one contact sheet
     python scripts/design/shots.py strip <out.png> <img>...         # one row, for filmstrips
+    python scripts/design/shots.py rgba <dir>                     # listener .rgba dumps -> transparent PNGs (cropped)
 
 Gallery BMPs are 32-bit top-down (negative height); PNGs are written as 8-bit RGB.
 """
@@ -69,6 +70,32 @@ def write_png(p, w, h, rows):
     Path(p).write_bytes(png)
 
 
+def rgba_png(src, out):
+    """A listener frame (int32 w, int32 h, premultiplied BGRA) -> RGBA PNG cropped to its visible pixels."""
+    b = Path(src).read_bytes()
+    w, h = struct.unpack_from("<ii", b, 0)
+    px = b[8:]
+    alpha = lambda x, y: px[(y * w + x) * 4 + 3]
+    ys = [y for y in range(h) if any(alpha(x, y) > 2 for x in range(w))]
+    xs = [x for x in range(w) if any(alpha(x, y) > 2 for y in ys)]
+    if not ys or not xs:
+        return
+    x0, x1, y0, y1 = xs[0], xs[-1] + 1, ys[0], ys[-1] + 1
+    rows = []
+    for y in range(y0, y1):
+        row = bytearray()
+        for x in range(x0, x1):
+            bl, g, r, a = px[(y * w + x) * 4:(y * w + x) * 4 + 4]
+            un = (lambda c: min(255, c * 255 // a)) if a else (lambda c: 0)
+            row += bytes((un(r), un(g), un(bl), a))
+        rows.append(bytes(row))
+    raw = b"".join(b"\x00" + r for r in rows)
+    chunk = lambda k, d: struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xFFFFFFFF)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", x1 - x0, y1 - y0, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+    Path(out).write_bytes(png)
+
+
 def sheet(out, cols, paths):
     imgs = [read(p) for p in paths]
     cols = max(1, min(cols, len(imgs)))
@@ -94,6 +121,10 @@ if __name__ == "__main__":
         for bmp in sorted(Path(sys.argv[2]).glob("*.bmp")):
             write_png(bmp.with_suffix(".png"), *read_bmp(bmp))
             bmp.unlink()
+    elif cmd == "rgba":
+        for f in sorted(Path(sys.argv[2]).glob("*.rgba")):
+            rgba_png(f, f.with_name(f.stem + "-alpha.png"))
+            f.unlink()
     elif cmd == "sheet":
         sheet(sys.argv[2], int(sys.argv[3]), sys.argv[4:])
     elif cmd == "strip":

@@ -122,6 +122,8 @@ pub mod radius {
     pub const CARD: i32 = 12;
     /// Buttons, inputs, drop-downs, navigation items.
     pub const CONTROL: i32 = 10;
+    /// The raised content panel and modal cards.
+    pub const PANEL: i32 = 14;
 }
 
 /// The light theme's elevation: CSS box-shadow layers `(y offset, blur, spread, alpha)` in the tint #0B3B2C.
