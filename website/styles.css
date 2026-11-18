@@ -706,10 +706,18 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 .vs-sources{margin-top:36px}
 @media (max-width:860px){.vs-pick,.vs-cols{grid-template-columns:1fr}.cmp{font-size:14px}.cmp th,.cmp td{padding:14px}}
 
-/* ---------- New in this release ---------- */
-.news{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:40px}
-.news li{padding:22px 22px 20px;border-radius:14px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--card-shadow)}
-.news b{display:block;font-weight:600;font-size:16px;letter-spacing:-.015em}
-.news span{display:block;margin-top:6px;font-size:14.5px;line-height:1.5;color:var(--text-2);text-wrap:pretty}
-@media (max-width:860px){.news{grid-template-columns:1fr}}
+/* ---------- Core features (after How it works) ---------- */
+.core{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.core-card{display:flex;flex-direction:column;gap:12px;padding:24px 22px 22px;border-radius:var(--r);background:var(--surface);border:1px solid var(--line);box-shadow:var(--card-shadow)}
+.core-card:hover{border-color:var(--line-2)}
+.core-keys{display:inline-flex;gap:5px}
+.core-keys kbd{min-width:30px;height:30px;padding:0 9px;font-size:12px}
+.core-tag{align-self:flex-start;font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--em-2);padding:9px 10px;border-radius:999px;background:rgba(16,185,129,.09)}
+.core-card h3{font-size:19px;letter-spacing:-.02em;margin-top:6px}
+.core-card p{font-size:14.5px;line-height:1.6;color:var(--text-2);text-wrap:pretty;flex:1}
+.core-more{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--mint)}
+.core-more .arrow{width:15px;height:15px;transition:transform .25s var(--ease)}
+.core-card:hover .core-more .arrow{transform:translateX(4px)}
+@media (max-width:1020px){.core{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
 .states img{image-rendering:auto}

@@ -254,6 +254,43 @@
       </div>
     </section>
 
+    <!-- ============ CORE FEATURES ============ -->
+    <section class="sec" id="core">
+      <div class="wrap">
+        <header class="sec-head" data-reveal>
+          <p class="eyebrow">Beyond dictation</p>
+          <h2>Dictate, fix, rewrite. <span class="serif">All on your PC.</span></h2>
+          <p class="sec-sub">The same shortcut habit, three more tools. Each one runs locally and starts no network call.</p>
+        </header>
+        <div class="core" data-stagger>
+          <a class="core-card lit" href="#quick-fix">
+            <span class="core-keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>
+            <h3>Quick Fix</h3>
+            <p>Select text in any app and fix its spelling and grammar in place. A fix KeyReed is sure about lands straight away, with Undo on the listener.</p>
+            <span class="core-more">How it works<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
+          </a>
+          <a class="core-card lit" href="#quick-fix">
+            <span class="core-keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span>
+            <h3>The Composer</h3>
+            <p>Fix, Improve, Shorter, Change tone, Summarise, or your own instruction, answered by a small writing model on this PC.</p>
+            <span class="core-more">How it works<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
+          </a>
+          <a class="core-card lit" href="#models">
+            <span class="core-tag">8 models</span>
+            <h3>Eight speech models</h3>
+            <p>Parakeet by default, Parakeet 110M for light English, Parakeet Ultra for 25 languages, plus Whisper, SenseVoice and Moonshine.</p>
+            <span class="core-more">Compare them<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
+          </a>
+          <a class="core-card lit" href="#features">
+            <span class="core-tag">Your words</span>
+            <h3>Your vocabulary, heard</h3>
+            <p>Names and jargon you add reach the speech decoder itself, so Parakeet listens for them instead of fixing them afterwards.</p>
+            <span class="core-more">See all features<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
+          </a>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ PRODUCT: WRITING MODES ============ -->
     <section class="sec sec-alt" id="product">
       <div class="wrap">
@@ -320,11 +357,6 @@
             <li><img src="assets/app/listener-hover.png" width="160" height="42" loading="lazy" alt="Hover state showing the writing mode Smart and the shortcut Right Ctrl."><b>Hover</b><span>Shows the active mode and shortcut.</span></li>
           </ol>
         </div>
-        <ul class="news" data-reveal aria-label="New in 2.1.0">
-          <li><b>Light by default</b><span>A Dark mode switch in General, kept per Windows user. The listener stays dark in both.</span></li>
-          <li><b>Motion on springs</b><span>Pages rise in, the selection slides, switches travel. One 60 Hz frame clock, nothing at rest.</span></li>
-          <li><b>Steady frames</b><span>Listener frames now arrive every 17.7 ms at the 95th percentile, down from 34.5 ms, measured in the app's own timing mode.</span></li>
-        </ul>
         <p class="fine center" data-reveal>Captured from the running app with its built-in <code>--ui-gallery</code> mode. Windows Animation effects off turns the motion off.</p>
       </div>
     </section>
@@ -416,19 +448,19 @@
           </div>
         </article>
 
-        <article class="feat" data-reveal>
+        <article class="feat" id="quick-fix" data-reveal>
           <div class="feat-copy">
             <p class="eyebrow sm">Quick Fix and the Composer</p>
             <h3>Fix what you selected. Or ask for it shorter.</h3>
-            <p>Select text in another application and press <strong>Ctrl + Win + G</strong>. KeyReed marks every proposed change in a Review panel and replaces nothing until you press Enter; Esc leaves the text as it was. Spelling comes from the Windows spell checker, grammar from a small local model.</p>
+            <p>Select text in another application and press <strong>Ctrl + Win + G</strong>. A fix KeyReed is sure about replaces the text straight away, with Undo on the listener; turn on the Review panel in Settings to see every change first. Spelling comes from the Windows spell checker, grammar from a small local model.</p>
             <p class="muted"><strong>Ctrl + Win + K</strong> opens the Composer: Fix, Improve, Shorter, Change tone, Summarise or your own instruction, answered on this PC. Undo sits on the pill after a fix.</p>
           </div>
           <div class="feat-vis">
             <ol class="pipe lit" data-stagger>
               <li><b>Your selection</b><span>read through the clipboard, which is put back afterwards</span></li>
               <li><b>Spelling and grammar</b><span>Windows spell checker, then a local tagger; links, addresses, paths and names are left alone</span></li>
-              <li class="guard"><b>Review panel</b><span>every change is shown before anything is replaced</span></li>
-              <li class="end"><b>Enter replaces</b><span>Esc keeps your text, Undo puts the original back</span></li>
+              <li class="guard"><b>Sure fixes apply</b><span>anything uncertain, formatted or rewritten opens the Review panel instead</span></li>
+              <li class="end"><b>Undo on the listener</b><span>puts the original back</span></li>
             </ol>
           </div>
         </article>
