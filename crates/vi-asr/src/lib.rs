@@ -164,7 +164,10 @@ impl Default for ChunkPolicy {
         // Dev knobs for the chunking benchmark: KEYREED_ASR_MERGE_GAP_MS, KEYREED_ASR_MAX_CHUNK_S.
         let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
         Self {
-            merge_gap: env("KEYREED_ASR_MERGE_GAP_MS").map(|ms| ms * 16).unwrap_or(8_800),
+            // 250 ms, not 550: a normal breath inside a sentence used to keep the whole utterance
+            // waiting for release. Closing chunks at shorter pauses decodes them while the user is
+            // still talking — real-clip p50 1009 -> 532 ms, p95 4171 -> 1073 ms, WER unchanged (10.18%).
+            merge_gap: env("KEYREED_ASR_MERGE_GAP_MS").map(|ms| ms * 16).unwrap_or(4_000),
             max_chunk: env("KEYREED_ASR_MAX_CHUNK_S").map(|s| s * 16_000).unwrap_or(24 * 16_000),
         }
     }
