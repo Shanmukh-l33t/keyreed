@@ -146,7 +146,7 @@ window.KR_CODE={
    "]",
    " ",
    "<span class=\"sx-t\">[workspace.package]</span>",
-   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"2.1.0-beta.1\"</span>",
+   "<span class=\"sx-f\">version</span> = <span class=\"sx-s\">\"2.1.0\"</span>",
    "<span class=\"sx-f\">edition</span> = <span class=\"sx-s\">\"2021\"</span>",
    "<span class=\"sx-f\">license</span> = <span class=\"sx-s\">\"MIT OR Apache-2.0\"</span>",
    " ",

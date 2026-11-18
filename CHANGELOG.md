@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 (2026-11-18)
 
+The first full 2.1 release: a new interface, plus the Quick Fix and sound fixes below, on top of everything in 2.1.0-beta.1. Speech recognition, cleanup, insertion and your settings file work exactly as before. The grammar model now downloads from the 2.1.0 release (same file, same SHA-256), because the beta releases were taken down.
+
+### Interface
+
+- **Light by default, with a Dark mode switch.** Settings, Quick Fix and the Composer open in the light theme. General > Appearance > Dark mode switches them; the choice is kept per Windows user. The listener stays dark in both.
+- **A new Settings window.** A deep sidebar with the KeyReed mark, and the page on one raised, rounded panel. Larger page titles, uppercase section labels, softer corners (12 px cards, 10 px controls) and fewer borders.
+- **Motion that moves like a physical thing.** Every animation now runs on springs (duration and bounce) driven by one 60 Hz frame clock on a high-resolution timer, instead of `WM_TIMER` at the 15.6 ms system tick. The navigation selection slides between pages, pages rise in with their groups a beat apart, setup steps slide in from the side they come from, switches travel with a small squash, a chosen writing mode pops its dot in, and buttons sink 1 px when pressed. Any key or click during a page change finishes it at once. Hover responds instantly. Windows Animation effects off turns all of it off.
+- **The listener.** Waveform history travels out from the centre, silence rests as dots, the processing state shows lines of text (voice becomes text) in mint instead of a spinner, and the width springs symmetrically from its centre. Copied text no longer flashes the success animation.
+- **Steadier frames.** One back buffer for Settings and the listener, dirty-rectangle repaints, and a straight-edge fast path for shapes. Measured with `KEYREED_UI_PERF=1` at 100 % against 2.1.0-beta.1: listener frames arrive every 17.7 ms at the 95th percentile (was 34.5 ms) and take 0.6 ms to draw; a switch animates at 17.8 ms per frame (was 35.2 ms); an animated Settings frame takes 19 ms at the 95th percentile, about what a full repaint took before; idle Settings and listener windows paint nothing.
+
+### Quick Fix and sound
 - **Quick Fix works on the second press.** The Review panel takes the foreground when it opens, so a chord pressed again straight after a fix was refused as KeyReed's own window or read a stale selection. A chord that lands on KeyReed's own window now acts on the last external window the app saw, and the target is put back in front before its selection is copied. A press while a change is still on screen says so instead of doing nothing.
 - **Quick Fix applies instead of asking.** The Review panel is off by default (`quick_fix_always_review`): a fix the edit-class table marks silent replaces the text straight away, with the Undo chip. Formatting in the selection, review-only edit classes and every writing-model fix still open the Review panel. The Settings switch asks for review of every change.
 - **Quick Fix without the grammar model.** A missing grammar model goes to the writing model instead of reporting a load failure, and the error names both models only when neither is installed. The fallback keeps the strict Fix prompt at temperature 0 and one proofreader pass runs only when that changed nothing on a text with an obvious error (a doubled word or a common misspelling). Measured on 15 sentences with planted errors against Qwen3.5 0.8B: see the ignored `writing_model_quality_against_a_live_server` test.

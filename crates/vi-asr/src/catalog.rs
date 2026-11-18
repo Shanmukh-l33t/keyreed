@@ -153,7 +153,7 @@ pub const GRAMMAR_CATALOG: &[AsrModelSpec] = &[AsrModelSpec {
     display_name: "Grammar tagger (GECToR BERT, INT8, English)",
     architecture: AsrArchitecture::GectorTagger,
     folder_name: "gector-bert-en-int8",
-    download_url: "https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.0.0-beta.1/gector-bert-en-int8.tar.bz2",
+    download_url: "https://github.com/Shanmukh-l33t/keyreed/releases/download/v2.1.0/gector-bert-en-int8.tar.bz2",
     expected_sha256: "5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0",
     approx_download_mb: 70,
     approx_ram_mb: 250,

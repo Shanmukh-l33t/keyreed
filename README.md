@@ -29,10 +29,11 @@
 
 It is built as an inspectable alternative to cloud dictation tools such as Wispr Flow: you can read the code, run it offline, and decide for yourself whether any audio ever leaves the machine.
 
-> **Status:** beta **2.1.0-beta.1**, released 17 November 2026. It was built on Linux for Windows x64 and published without being run or benchmarked, so install it where you can review the first dictations. The Windows build is unsigned; read [Known limits](#known-limits) for details.
+> **Status:** **2.1.0**, released 18 November 2026. Its interface was checked with automated tests and screenshots; dictation was not re-run by hand for this release, so review your first dictations. The Windows build is unsigned; read [Known limits](#known-limits) for details.
 
 ## What is new in 2.1
 
+- **A new interface.** Light by default with a Dark mode switch in General, a raised Settings panel with a sliding selection and pages that rise in, and spring motion on a 60 Hz frame clock throughout. The listener shows lines of text while it works, and an idle window paints nothing.
 - **Your vocabulary now reaches the decoder.** Parakeet runs `modified_beam_search` with hotwords when your dictionary has terms; before, they were passed to a greedy decoder that ignored them. Audio in is cleaner too: a polyphase windowed-sinc resampler, a 20 Hz DC blocker, a 30 ms windowed level gate that keeps quiet speech, and 200 ms of audio kept after key-up so the last word is not clipped.
 - **Quick Fix.** Select text in any application and press **Ctrl + Win + G**. KeyReed proposes spelling and grammar corrections in a Review panel and replaces nothing until you confirm. Undo is on the pill. Everything runs on your PC.
 - **The Composer.** **Ctrl + Win + K** (or Open the Composer in the tray menu) opens a small window with Fix, Improve, Shorter, Change tone, Summarise and your own instruction. It answers from the local writing model and starts no network call.
@@ -40,13 +41,13 @@ It is built as an inspectable alternative to cloud dictation tools such as Wispr
 
 ## Quick start
 
-1. Download **`KeyReed-Setup-x64.exe`** (`24.3 MB`) from the [2.1.0-beta.1 release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0-beta.1-rc1). The newest stable release is [0.5.1](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v0.5.1).
+1. Download **`KeyReed-Setup-x64.exe`** (`24.4 MB`) from the [2.1.0 release](https://github.com/Shanmukh-l33t/keyreed/releases/tag/v2.1.0).
 2. Run it. It installs for your Windows account only, so it does not ask for administrator rights. SmartScreen may warn, because the file is unsigned. See [Verifying a download](docs/installation.md#verify-your-download).
 3. On first launch, KeyReed opens the 4-step **Get started** setup (Welcome & shortcut → Microphone test → Speech model download → Live practice box). All changes save automatically.
 4. Focus any text field, hold **Right Ctrl**, speak, and release.
 5. KeyReed transcribes your speech, applies your selected writing mode, and **automatically inserts the text into your active window** (falling back to the clipboard if the target field is a password box, elevated, or unfocused).
 
-No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.1.0-beta.1-windows-x86_64-portable.zip` (`46.3 MB`), which holds the exe and its runtime DLLs but no models, so it cannot dictate until it downloads one. **No full offline archive was built for this release.** If you want one download with models in it, the 2.0 release's `keyreed-2.0.0-beta.1-windows-x64-full-offline.zip` (`1.10 GB`) already contains the default speech model and the Quick Fix grammar model; it does not have the two new speech models.
+No Rust, Python, Visual Studio or command line needed. There is also `keyreed-2.1.0-windows-x86_64-portable.zip` (`47.3 MB`), which holds the exe and its runtime DLLs but no models, so it cannot dictate until it downloads one. No full offline archive is built for this release.
 
 ## Why KeyReed
 
@@ -145,9 +146,9 @@ Details: [docs/architecture.md](docs/architecture.md).
 
 | | |
 | --- | --- |
-| OS | 64-bit Windows 11 (built for it; this build has not been run at all). Windows 10 64-bit is supported by the code but was not re-tested. |
+| OS | 64-bit Windows 11 (the interface was run and captured on it). Windows 10 64-bit is supported by the code but was not re-tested. |
 | CPU / GPU | x64, no GPU required. The optional grammar model uses a Vulkan GPU if present (`KEYREED_SLM_DEVICE=cpu` turns that off). |
-| Disk | A 24.3 MB installer plus about 460 MB for the default speech model, and 73 MB for Quick Fix's grammar model if you turn it on. The 2.0.0-beta.1 full offline archive is 1.10 GB. |
+| Disk | A 24.4 MB installer plus about 460 MB for the default speech model, and 73 MB for Quick Fix's grammar model if you turn it on. |
 | RAM | On a 3-core, 4 GB test VM the app and local grammar runtime used roughly 1.6 GB together. More free memory is safer. An 8 GB PC has not been benchmarked. |
 | Other | A microphone that desktop apps may use. |
 
@@ -164,7 +165,7 @@ Rust 1.80 or newer. Release builds: `scripts/build-release.sh`; installer: `scri
 
 ## Known limits
 
-- This beta was **not run or benchmarked before release**. Beam search with hotwords, the new resampler, the post-release tail and the new interface have not been seen working on a real PC. Install it where you can check the first dictations.
+- Dictation was **not re-run by hand for 2.1.0**. Beam search with hotwords, the new resampler and the post-release tail have not been benchmarked on a real microphone. The interface was run on Windows 11 by the automated gallery (every page, state and animation, light and dark).
 - The Windows executable, bundled runtimes and installer are **unsigned**. SmartScreen behaviour has not been observed for this download.
 - Quick Fix has not been checked by hand in Chromium-based apps, Outlook or Word; the automated check ran in a plain Windows edit control. English only.
 - The Composer needs the local writing model (Qwen3.5 0.8B) installed; without it, a request stops with a message instead of sending anything. There is no Settings picker for it yet.
