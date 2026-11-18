@@ -433,7 +433,7 @@ kbd {
   transform: translate3d(0, -8px, 0);
 }
 /* Hero starts inside a dark slab near top; keep top-of-page nav readable before scroll */
-.on-dark-hero .nav:not(.scrolled) {
+body.on-dark-hero .nav:not(.scrolled) {
   --strong: #ffffff;
   --text: #e9f2ed;
   --text-2: #c5d8cf;
@@ -506,8 +506,8 @@ kbd {
 /* Theme & Sound icon state swaps */
 :root[data-theme="light"] .theme-btn .i-sun { display: none; }
 :root[data-theme="dark"] .theme-btn .i-moon { display: none; }
-.on-dark-hero:root[data-theme="light"] .nav:not(.scrolled) .theme-btn .i-sun { display: none; }
-.on-dark-hero:root[data-theme="light"] .nav:not(.scrolled) .theme-btn .i-moon { display: block; }
+:root[data-theme="light"] body.on-dark-hero .nav:not(.scrolled) .theme-btn .i-sun { display: none; }
+:root[data-theme="light"] body.on-dark-hero .nav:not(.scrolled) .theme-btn .i-moon { display: block; }
 
 :root:not([data-sound="on"]) .sound-btn .i-vol-on { display: none; }
 :root[data-sound="on"] .sound-btn .i-vol-off { display: none; }
@@ -1739,11 +1739,10 @@ html.js:not(.rm) .proof-band.in .proof-line {
   transition: opacity 0.35s var(--ease);
 }
 .cr-pre .l::before {
-  counter-increment: ln;
-  content: counter(ln);
+  content: attr(data-ln);
   position: absolute;
   left: 14px;
-  color: #5b7569;
+  color: #6b887b;
   font-size: 11px;
 }
 .cr-pre .l.hl {
