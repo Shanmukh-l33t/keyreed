@@ -1,9 +1,15 @@
-/* Applies the saved theme before first paint. Light is the default; the choice is stored in localStorage. */
+/* Applies saved theme and motion flags before first paint. Light is the default; sound is off by default. */
 (function () {
-  var d = document.documentElement, t = 'light';
-  try { var s = localStorage.getItem('keyreed-theme'); if (s === 'dark' || s === 'light') t = s; } catch (e) { /* storage blocked */ }
+  var d = document.documentElement, t = 'light', snd = 'off';
+  try {
+    var s = localStorage.getItem('keyreed-theme');
+    if (s === 'dark' || s === 'light') t = s;
+    if (localStorage.getItem('keyreed-sound') === 'on') snd = 'on';
+  } catch (e) { /* storage blocked */ }
   d.setAttribute('data-theme', t);
-  d.className += ' js';
+  d.setAttribute('data-sound', snd);
+  d.classList.add('js');
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) d.classList.add('rm');
   var m = document.querySelector('meta[name="theme-color"]');
   if (m) m.setAttribute('content', t === 'dark' ? '#060908' : '#f6f9f6');
 })();
