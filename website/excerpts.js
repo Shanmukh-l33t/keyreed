@@ -58,6 +58,7 @@ window.KR_CODE={
   "path": "crates/vi-core/src/config.rs",
   "start": 9,
   "lines": [
+   " ",
    "<span class=\"sx-a\">#[derive(Debug, Clone, Serialize, Deserialize)]</span>",
    "<span class=\"sx-k\">pub</span> <span class=\"sx-k\">struct</span> <span class=\"sx-t\">PrivacySettings</span> {",
    "    <span class=\"sx-c\">/// Exclude dictated clipboard writes from Windows Clipboard History (Win+V) and Cloud Sync.</span>",
@@ -78,14 +79,13 @@ window.KR_CODE={
    "            exclude_from_clipboard_history: <span class=\"sx-k\">true</span>,",
    "            block_password_fields: <span class=\"sx-k\">true</span>,",
    "            redact_sensitive_window_titles: <span class=\"sx-k\">true</span>,",
-   "            ram_only_audio: <span class=\"sx-k\">true</span>,",
-   "        }"
+   "            ram_only_audio: <span class=\"sx-k\">true</span>,"
   ],
   "hl": [
-   10,
    11,
-   18,
-   20
+   12,
+   19,
+   21
   ]
  },
  "pin": {

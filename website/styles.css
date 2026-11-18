@@ -30,7 +30,6 @@
   --kbd-a:#ffffff; --kbd-b:#eaf1ed; --kbd-text:#0c1a14; --kbd-border:rgba(11,59,44,.22);
   --card-shadow:0 1px 2px rgba(11,59,44,.06),0 18px 40px -22px rgba(11,59,44,.22);
   --btn-ghost-bg:rgba(255,255,255,.7);
-  --em-fill:#047857; --em-fill-hover:#065f46; --on-em:#fff;
 }
 /* Dark theme, and surfaces that stay dark in both themes (product scene, source viewer) */
 :root[data-theme="dark"],.keep-dark{
@@ -49,7 +48,6 @@
   --kbd-a:#1a2a24; --kbd-b:#132019; --kbd-text:#e8f1ec; --kbd-border:rgba(176,236,208,.22);
   --card-shadow:none;
   --btn-ghost-bg:rgba(176,236,208,.04);
-  --em-fill:#34d399; --em-fill-hover:#6ee7b7; --on-em:#04241a;
 }
 
 *,*::before,*::after{box-sizing:border-box}
@@ -77,7 +75,7 @@ code{font-size:.88em;background:rgba(var(--tint),.08);border:1px solid var(--lin
 .mono{font-family:var(--mono)}
 .center{text-align:center;margin-left:auto;margin-right:auto}
 .muted{color:var(--text-3)}
-.serif{font-family:var(--serif);font-style:italic;font-weight:400;letter-spacing:-.01em;color:var(--serif-a);padding-right:.06em}
+.serif{font-family:var(--serif);font-style:italic;font-weight:400;letter-spacing:-.01em;background:linear-gradient(110deg,var(--serif-a) 0%,var(--serif-b) 50%,var(--serif-c) 100%);-webkit-background-clip:text;background-clip:text;color:transparent;padding-right:.06em}
 
 /* ---------- Cursor-responsive border lighting ---------- */
 .lit{position:relative}
@@ -95,9 +93,8 @@ code{font-size:.88em;background:rgba(var(--tint),.08);border:1px solid var(--lin
 .btn:active{transform:scale(.98)}
 .btn-lg{height:52px;padding:0 26px;font-size:16px;border-radius:14px}
 .btn-sm{height:36px;padding:0 14px;font-size:14px;border-radius:10px;gap:8px}
-/* One accent per screen: a solid emerald fill with a lit top edge, like the app's primary button. */
-.btn-primary{color:var(--on-em);background:var(--em-fill);box-shadow:0 1px 0 rgba(255,255,255,.22) inset,0 0 0 1px rgba(0,0,0,.04),0 10px 24px -14px rgba(4,120,87,.7)}
-.btn-primary:hover{transform:translateY(-1px);background:var(--em-fill-hover);box-shadow:0 1px 0 rgba(255,255,255,.26) inset,0 0 0 1px rgba(0,0,0,.04),0 16px 30px -14px rgba(4,120,87,.75)}
+.btn-primary{color:#04140d;background:linear-gradient(180deg,#5eead4 -40%,#34d399 30%,#10b981 100%);box-shadow:0 0 0 1px rgba(167,243,208,.5) inset,0 1px 0 rgba(255,255,255,.45) inset,0 8px 28px -8px rgba(16,185,129,.65)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(167,243,208,.7) inset,0 1px 0 rgba(255,255,255,.55) inset,0 14px 38px -8px rgba(52,211,153,.75)}
 .btn-primary:active{transform:translateY(0) scale(.98)}
 .btn-ghost{color:var(--text);background:var(--btn-ghost-bg);border:1px solid var(--line-2)}
 .btn-ghost:hover{transform:translateY(-1px);background:rgba(var(--tint),.09);border-color:rgba(110,231,183,.45)}
@@ -133,18 +130,22 @@ code{font-size:.88em;background:rgba(var(--tint),.08);border:1px solid var(--lin
 /* ---------- Hero ---------- */
 .hero{position:relative;padding:118px 0 40px;overflow:hidden;isolation:isolate}
 .hero-bg{position:absolute;inset:0;z-index:-1;pointer-events:none}
-/* A still, quiet wash of the brand tone behind the headline: nothing drifts or loops. */
-.hero-bg{background:radial-gradient(ellipse 60% 48% at 50% -6%,rgba(16,185,129,.13),transparent 70%),radial-gradient(ellipse 40% 30% at 50% 0%,rgba(var(--tint),.05),transparent 70%)}
+.aurora{position:absolute;border-radius:50%;filter:blur(90px);will-change:transform;opacity:var(--aurora-op)}
+.aurora.a1{width:720px;height:520px;left:-8%;top:-14%;background:radial-gradient(closest-side,var(--aurora-1),transparent);animation:drift1 22s ease-in-out infinite alternate}
+.aurora.a2{width:640px;height:520px;right:-10%;top:4%;background:radial-gradient(closest-side,var(--aurora-2),transparent);animation:drift2 26s ease-in-out infinite alternate}
+.grid{position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:64px 64px;-webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 0%,#000 20%,transparent 75%);mask-image:radial-gradient(ellipse 70% 60% at 50% 0%,#000 20%,transparent 75%);opacity:.55}
+@keyframes drift1{to{transform:translate3d(120px,60px,0) scale(1.12)}}
+@keyframes drift2{to{transform:translate3d(-110px,50px,0) scale(1.08)}}
 .hero-copy{display:flex;flex-direction:column;align-items:center;text-align:center}
 .pill{display:inline-flex;align-items:center;gap:10px;height:34px;padding:0 8px 0 14px;border-radius:999px;border:1px solid var(--line-2);background:rgba(16,185,129,.07);font-size:13.5px;font-weight:500;color:var(--text-2);animation:rise .8s var(--ease) both;transition:border-color .25s,background-color .25s}
 .pill:hover{border-color:rgba(110,231,183,.5);background:rgba(16,185,129,.13);color:var(--strong)}
-.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--em-2);box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--em-2);box-shadow:0 0 0 0 rgba(52,211,153,.6);animation:ping 2.4s ease-out infinite}
 .pill .sep,.dl-meta .sep{width:3px;height:3px;border-radius:50%;background:var(--text-3)}
 .pill .ic{width:15px;height:15px;transition:transform .25s var(--ease)}
 .pill:hover .ic{transform:translateX(3px)}
 @keyframes ping{70%,100%{box-shadow:0 0 0 8px rgba(52,211,153,0)}}
 .h-hero{margin-top:24px;font-size:clamp(44px,7vw,84px);line-height:.98;letter-spacing:-.05em;font-weight:600;color:var(--strong)}
-.h-hero .w:not(.serif){color:var(--h1-a)}
+.h-hero .w:not(.serif){background:linear-gradient(180deg,var(--h1-a) 35%,var(--h1-b));-webkit-background-clip:text;background-clip:text;color:transparent}
 .h-hero .w{display:inline-block;animation:word .9s var(--ease) calc(var(--i)*80ms + .1s) both}
 .h-hero .w.serif{font-size:1.08em;letter-spacing:-.03em;line-height:.92}
 @keyframes word{from{opacity:0;transform:translateY(.35em)}to{opacity:1;transform:none}}
@@ -527,7 +528,7 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 /* ---------- Final CTA ---------- */
 .final{position:relative;padding:130px 0;overflow:hidden;isolation:isolate;text-align:center}
 .final-bg{position:absolute;inset:0;z-index:-1}
-.final-bg{background:radial-gradient(ellipse 50% 60% at 50% 100%,rgba(16,185,129,.12),transparent 70%)}
+.final-bg .a1{left:10%;top:-30%;opacity:.4}.final-bg .a2{right:5%;top:0;opacity:.45}
 .final-in{display:flex;flex-direction:column;align-items:center}
 .final-mark{border-radius:18px;margin-bottom:28px;box-shadow:0 20px 60px -10px rgba(16,185,129,.6)}
 .final .sec-sub{margin-left:auto;margin-right:auto;text-align:center}
