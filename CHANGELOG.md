@@ -12,6 +12,10 @@ The first full 2.1 release: a new interface, plus the Quick Fix and sound fixes 
 - **The listener.** Waveform history travels out from the centre, silence rests as dots, the processing state shows lines of text (voice becomes text) in mint instead of a spinner, and the width springs symmetrically from its centre. Copied text no longer flashes the success animation.
 - **Steadier frames.** One back buffer for Settings and the listener, dirty-rectangle repaints, and a straight-edge fast path for shapes. Measured with `KEYREED_UI_PERF=1` at 100 % against 2.1.0-beta.1: listener frames arrive every 17.7 ms at the 95th percentile (was 34.5 ms) and take 0.6 ms to draw; a switch animates at 17.8 ms per frame (was 35.2 ms); an animated Settings frame takes 19 ms at the 95th percentile, about what a full repaint took before; idle Settings and listener windows paint nothing.
 
+### Installer
+
+- **Updating over a running KeyReed works.** The installer is a 32-bit program, so its PowerShell could not read the path of the 64-bit `llama-server.exe` and never stopped it; the old runtime's DLLs stayed locked and setup failed with "Error opening file for writing". It now finds the process through WMI. The same fix applies to the uninstaller.
+
 ### Quick Fix and sound
 - **Quick Fix works on the second press.** The Review panel takes the foreground when it opens, so a chord pressed again straight after a fix was refused as KeyReed's own window or read a stale selection. A chord that lands on KeyReed's own window now acts on the last external window the app saw, and the target is put back in front before its selection is copied. A press while a change is still on screen says so instead of doing nothing.
 - **Quick Fix applies instead of asking.** The Review panel is off by default (`quick_fix_always_review`): a fix the edit-class table marks silent replaces the text straight away, with the Undo chip. Formatting in the selection, review-only edit classes and every writing-model fix still open the Review panel. The Settings switch asks for review of every change.
