@@ -29,7 +29,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM}
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteObject, EndPaint, GetMonitorInfoW,
-    IntersectClipRect, InvalidateRect, MonitorFromPoint, RestoreDC, SaveDC, SetBkColor, SetTextColor, SetWindowRgn,
+    IntersectClipRect, InvalidateRect, MonitorFromPoint, RestoreDC, SaveDC, SetBkColor, SetTextCharacterExtra, SetTextColor,
+    SetWindowRgn,
     HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -202,40 +203,8 @@ const WM_MOUSELEAVE_U: u32 = 0x02A3;
 // Theme (light, derived from the KeyReed emerald brand; high-contrast uses system colours)
 // ------------------------------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-pub(crate) struct Theme {
-    pub(crate) bg: u32,
-    pub(crate) sidebar: u32,
-    pub(crate) surface: u32,
-    pub(crate) border: u32,
-    /// Boundary of buttons that have no fill (needs >= 3:1 against the surface, WCAG 1.4.11).
-    pub(crate) control_border: u32,
-    pub(crate) divider: u32,
-    pub(crate) text: u32,
-    pub(crate) text2: u32,
-    pub(crate) text3: u32,
-    pub(crate) accent: u32,
-    pub(crate) accent_fill: u32,
-    pub(crate) accent_press: u32,
-    pub(crate) accent_soft: u32,
-    pub(crate) hover: u32,
-    pub(crate) hover_card: u32,
-    pub(crate) on_accent: u32,
-    pub(crate) warn_fg: u32,
-    pub(crate) warn_bg: u32,
-    pub(crate) err_fg: u32,
-    pub(crate) err_bg: u32,
-    pub(crate) ok_fg: u32,
-    pub(crate) ok_bg: u32,
-    pub(crate) track: u32,
-    pub(crate) disabled_bg: u32,
-    pub(crate) focus: u32,
-    /// Keyboard focus ring on controls (emerald); `focus` (the text colour) remains for high contrast.
-    pub(crate) focus_ring: u32,
-    /// "Working" hue (transcribing, downloading): teal, so amber stays reserved for "needs attention".
-    pub(crate) working: u32,
-    pub(crate) hc: bool,
-}
+pub(crate) use crate::tokens::Theme;
+use crate::tokens::{elevation, radius};
 
 #[repr(C)]
 struct HighContrastW {
@@ -315,75 +284,13 @@ pub(crate) fn theme() -> Theme {
                 focus: txt,
                 focus_ring: txt,
                 working: txt,
+                shadows: false,
                 hc: true,
             };
         }
     }
-    if DARK.load(std::sync::atomic::Ordering::Relaxed) {
-        // Same emerald identity on the listener's dark green-black. Every text/control pair is checked
-        // against WCAG 2.2 AA (text 4.5:1, control boundaries 3:1); see docs/design/02-dark-theme.md.
-        return Theme {
-            bg: rgb(0x0F, 0x17, 0x13),
-            sidebar: rgb(0x0B, 0x12, 0x0F),
-            surface: rgb(0x17, 0x23, 0x1D),
-            border: rgb(0x26, 0x35, 0x2D),
-            control_border: rgb(0x6F, 0x84, 0x79),
-            divider: rgb(0x1F, 0x2C, 0x25),
-            text: rgb(0xE8, 0xF1, 0xEC),
-            text2: rgb(0xA9, 0xBB, 0xB2),
-            text3: rgb(0x8D, 0xA3, 0x98),
-            accent: rgb(0x5E, 0xE0, 0xB0),
-            accent_fill: rgb(0x34, 0xD3, 0x99),
-            accent_press: rgb(0x10, 0xB9, 0x81),
-            accent_soft: rgb(0x14, 0x3C, 0x2E),
-            hover: rgb(0x22, 0x32, 0x2A),
-            hover_card: rgb(0x1C, 0x2B, 0x24),
-            on_accent: rgb(0x04, 0x24, 0x1A),
-            warn_fg: rgb(0xF8, 0xCE, 0x85),
-            warn_bg: rgb(0x3B, 0x2C, 0x10),
-            err_fg: rgb(0xFD, 0xA4, 0xAF),
-            err_bg: rgb(0x3E, 0x17, 0x22),
-            ok_fg: rgb(0x7B, 0xE8, 0xBC),
-            ok_bg: rgb(0x10, 0x34, 0x26),
-            track: rgb(0x3A, 0x4B, 0x42),
-            disabled_bg: rgb(0x14, 0x1E, 0x19),
-            focus: rgb(0xE8, 0xF1, 0xEC),
-            focus_ring: rgb(0x34, 0xD3, 0x99),
-            working: rgb(0x2D, 0xD4, 0xBF),
-            hc: false,
-        };
-    }
-    Theme {
-        bg: rgb(0xF7, 0xF9, 0xF8),
-        sidebar: rgb(0xEE, 0xF3, 0xF0),
-        surface: rgb(0xFF, 0xFF, 0xFF),
-        border: rgb(0xDD, 0xE5, 0xE1),
-        control_border: rgb(0x7F, 0x8F, 0x87),
-        divider: rgb(0xEA, 0xEF, 0xEC),
-        text: rgb(0x0E, 0x1A, 0x14),
-        text2: rgb(0x4A, 0x5A, 0x52),
-        // text3 >= 4.5:1 on every surface it is drawn on (was 3.4-3.9). accent_fill carries white text at 5.5:1 (was 3.8).
-        text3: rgb(0x5B, 0x6B, 0x63),
-        accent: rgb(0x06, 0x5F, 0x46),
-        accent_fill: rgb(0x04, 0x78, 0x57),
-        accent_press: rgb(0x06, 0x4E, 0x3B),
-        accent_soft: rgb(0xE0, 0xF2, 0xE9),
-        hover: rgb(0xE4, 0xEB, 0xE7),
-        hover_card: rgb(0xF3, 0xF7, 0xF5),
-        on_accent: rgb(0xFF, 0xFF, 0xFF),
-        warn_fg: rgb(0x8A, 0x4B, 0x08),
-        warn_bg: rgb(0xFE, 0xF4, 0xD7),
-        err_fg: rgb(0xA3, 0x14, 0x3C),
-        err_bg: rgb(0xFF, 0xE8, 0xEB),
-        ok_fg: rgb(0x06, 0x5F, 0x46),
-        ok_bg: rgb(0xDC, 0xF5, 0xE8),
-        track: rgb(0xD8, 0xE1, 0xDC),
-        disabled_bg: rgb(0xEF, 0xF2, 0xF0),
-        focus: rgb(0x0E, 0x1A, 0x14),
-        focus_ring: rgb(0x04, 0x78, 0x57),
-        working: rgb(0x0F, 0x76, 0x6E),
-        hc: false,
-    }
+    // Every text/control pair of both palettes is checked against WCAG 2.2 AA (`both_themes_meet_wcag_aa`).
+    if DARK.load(std::sync::atomic::Ordering::Relaxed) { crate::tokens::DARK } else { crate::tokens::LIGHT }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -398,6 +305,8 @@ pub(crate) enum F {
     BodySemi,
     Caption,
     CaptionSemi,
+    /// Section labels: small caps-height uppercase with open tracking, like the website's mono eyebrows.
+    Eyebrow,
     Icon,
     IconSmall,
     IconLarge,
@@ -427,6 +336,7 @@ impl Fonts {
                 (F::BodySemi, mk(face, 14.0, 600)),
                 (F::Caption, mk(face, 12.0, 400)),
                 (F::CaptionSemi, mk(face, 12.0, 600)),
+                (F::Eyebrow, mk(face, 11.0, 600)),
                 (F::Icon, mk(icon_face, 16.0, 400)),
                 (F::IconSmall, mk(icon_face, 12.0, 400)),
                 (F::IconLarge, mk(icon_face, 24.0, 400)),
@@ -615,7 +525,7 @@ impl Builder {
 
     fn section(&mut self, label: &str) {
         self.y += 4;
-        self.text(r(X0, self.y, CW, 18), label, F::CaptionSemi, C::Text2, DT_SINGLELINE);
+        self.text(r(X0, self.y, CW, 18), label, F::Eyebrow, C::Text3, DT_SINGLELINE);
         self.y += 24;
     }
 
@@ -1143,8 +1053,8 @@ fn navigate(page: usize) {
 fn build(page: usize, step: usize, m: &SharedUiModel, saved: bool) -> (Vec<Item>, Vec<Ctrl>) {
     let mut b = Builder::new();
     // The frameless header's window buttons: real controls, so hover, press and focus draw as everywhere else.
-    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - 92, 10, 40, 32), Bg::Content, "Minimize");
-    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - 48, 10, 40, 32), Bg::Content, "Close");
+    b.ctrl(HEADER_MIN, Kind::WinBtn { close: false }, r(WIN_W - 92, 10, 40, 32), Bg::Sidebar, "Minimize");
+    b.ctrl(HEADER_CLOSE, Kind::WinBtn { close: true }, r(WIN_W - 48, 10, 40, 32), Bg::Sidebar, "Close");
     // Navigation
     for (i, (label, _)) in NAV.iter().enumerate() {
         let y = NAV_Y + i as i32 * 38;
@@ -2656,12 +2566,22 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(st.hwnd, &mut rc);
     let Some(mut cv) = Canvas::new(rc.right, rc.bottom) else { return };
-    cv.fill(t.bg);
-    // Frameless: KeyReed's own header row across the top; both columns start below it.
+    // Frameless: the header and the sidebar share the deepest tone, and the page lives in one raised, rounded panel
+    // beside them (light: a soft shadow; dark: a tone step and a hairline; high contrast: a plain outline).
+    cv.fill(t.sidebar);
     let head = s(HEADER_H);
-    cv.rect(0, head, s(SIDEBAR_W), rc.bottom - head, t.sidebar);
-    cv.rect(s(SIDEBAR_W), head, 1.max(s(1)), rc.bottom - head, t.border);
-    cv.rect(0, head, rc.right, 1.max(s(1)), t.border);
+    let panel = panel_rect(rc, d);
+    {
+        let (x, y, w, h) = (panel.0 as f32, panel.1 as f32, panel.2 as f32, panel.3 as f32);
+        let rad = s(radius::CARD) as f32;
+        if t.shadows {
+            cv.shadow(x, y, w, h, rad, &elevation::PANEL, d as f32 / 96.0, elevation::TINT);
+        }
+        cv.round_rect(x, y, w, h, rad, t.bg, 1.0);
+        if !t.shadows {
+            cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
+        }
+    }
 
     // The mark lives in the header now, where the stock title bar used to be.
     blit_icon(&mut cv, s(16), (head - s(20)) / 2, s(20) as usize);
@@ -2677,8 +2597,8 @@ unsafe fn paint(st: &St, hdc: HDC) {
     if let Some(m) = snapshot().filter(|_| rc.bottom - s(52) >= nav_bottom) {
         let (label, dot) = status_chip(&m, &t);
         let y = rc.bottom - s(52);
-        cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, t.surface, 1.0);
-        cv.round_rect_stroke(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(8) as f32, 1.0, t.border, 1.0);
+        cv.round_rect(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(radius::CONTROL) as f32, t.surface, 1.0);
+        cv.round_rect_stroke(s(12) as f32, y as f32, s(SIDEBAR_W - 24) as f32, s(36) as f32, s(radius::CONTROL) as f32, 1.0, t.border, 1.0);
         cv.circle(s(28) as f32, (y + s(18)) as f32, s(4) as f32, dot, 1.0);
         cv.text(&label, s(40), y, s(SIDEBAR_W - 64), s(36), st.fonts.get(F::Caption), t.text2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
@@ -2686,20 +2606,33 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let off = st.scroll;
     let s = |v: i32| sc(v, d);
     let sy = |v: i32| sc(v - off, d);
-    // Only the column right of the sidebar scrolls: clip the canvas to it so no scrolled row can paint over the
-    // sidebar or past the window edges.
-    cv.set_clip(s(SIDEBAR_W + 1), head, rc.right - s(SIDEBAR_W + 1), rc.bottom - head);
+    // Only the panel scrolls: clip the canvas to it so no scrolled row can paint over the sidebar, the header or the
+    // deep margin around the panel.
+    cv.set_clip(panel.0, panel.1, panel.2, panel.3);
     // Running x for badges placed after a text (key: anchor text + y), see Item::Badge.
     let mut badge_x: Option<(&str, i32, i32)> = None;
     for it in &st.items {
         match it {
+            Item::Text { r: rr, s: txt, font, color: c, flags } if *font == F::Eyebrow => {
+                // Uppercase and tracked at paint time only: the words (and what a screen reader gets) stay as written.
+                SetTextCharacterExtra(cv.dc(), sc(1, d).max(1));
+                cv.text(&txt.to_uppercase(), s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), *flags);
+                SetTextCharacterExtra(cv.dc(), 0);
+            }
             Item::Text { r: rr, s: txt, font, color: c, flags } => {
                 cv.text(txt, s(rr.x), sy(rr.y), s(rr.w), s(rr.h), st.fonts.get(*font), color(&t, *c), *flags);
             }
             Item::Group { r: rr } | Item::Card { r: rr } => {
+                // Cards separate by tone: a whisper of lift in light, a hairline in dark.
                 let (x, y, w, h) = (s(rr.x) as f32, sy(rr.y) as f32, s(rr.w) as f32, s(rr.h) as f32);
-                cv.round_rect(x, y, w, h, s(8) as f32, t.surface, 1.0);
-                cv.round_rect_stroke(x, y, w, h, s(8) as f32, 1.0, t.border, 1.0);
+                let rad = s(radius::CARD) as f32;
+                if t.shadows {
+                    cv.shadow(x, y, w, h, rad, &elevation::CARD, d as f32 / 96.0, elevation::TINT);
+                }
+                cv.round_rect(x, y, w, h, rad, t.surface, 1.0);
+                if !t.shadows {
+                    cv.round_rect_stroke(x, y, w, h, rad, 1.0, t.border, 1.0);
+                }
             }
             Item::Divider { x, y, w } => cv.rect(s(*x), sy(*y), s(*w), 1, t.divider),
             Item::Badge { x, y, s: txt, tone, after } => {
@@ -2776,7 +2709,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
             Item::Banner { r: rr, tone, title, body } => {
                 let (fg, bg, glyph) = tone_colors(&t, *tone);
                 let (x, y, w, h) = (s(rr.x), sy(rr.y), s(rr.w), s(rr.h));
-                cv.round_rect(x as f32, y as f32, w as f32, h as f32, s(8) as f32, if *tone == Tone::Info { t.accent_soft } else { bg }, 1.0);
+                cv.round_rect(x as f32, y as f32, w as f32, h as f32, s(radius::CARD) as f32, if *tone == Tone::Info { t.accent_soft } else { bg }, 1.0);
                 let gc = if *tone == Tone::Info { t.accent } else { fg };
                 cv.text(&glyph.to_string(), x + s(14), y + s(10), s(20), s(20), st.fonts.get(F::Icon), gc, DT_SINGLELINE);
                 cv.text(title, x + s(44), y + s(8), w - s(56), s(20), st.fonts.get(F::BodySemi), if *tone == Tone::Info { t.text } else { fg }, DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2789,7 +2722,7 @@ unsafe fn paint(st: &St, hdc: HDC) {
     for (c, h) in &st.ctrls {
         if let Kind::Edit { .. } = c.kind {
             let (x, y, w, hh) = (s(c.r.x) as f32, sy(c.r.y) as f32, s(c.r.w) as f32, s(c.r.h) as f32);
-            let rad = s(6) as f32;
+            let rad = s(radius::CONTROL) as f32;
             cv.round_rect(x, y, w, hh, rad, t.bg, 1.0);
             if *h == focus {
                 cv.round_rect_stroke(x, y, w, hh, rad, 2.0_f32.max(s(2) as f32), t.accent_fill, 1.0);
@@ -2802,8 +2735,9 @@ unsafe fn paint(st: &St, hdc: HDC) {
     let view_h = (rc.bottom as f32 * 96.0 / d as f32).round() as i32;
     let max = max_scroll(st.content_h, view_h);
     if max > 0 {
-        let (bar_x, bar_w, top) = (rc.right - s(8), s(4), s(8));
-        let track_h = (rc.bottom - 2 * top).max(1);
+        let (bar_w, inset) = (s(4), s(6));
+        let (bar_x, top) = (panel.0 + panel.2 - inset - bar_w, panel.1 + inset);
+        let track_h = (panel.3 - 2 * inset).max(1);
         let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24), track_h);
         let thumb_y = top + (track_h - thumb_h) * st.scroll / max;
         let rad = (bar_w / 2) as f32;
@@ -2823,6 +2757,15 @@ unsafe fn paint(st: &St, hdc: HDC) {
         cv.text(&md.body, s(card.x + 24), s(card.y + 54), s(card.w - 48), s(62), st.fonts.get(F::Body), t.text2, DT_WORDBREAK);
     }
     cv.blit_to(hdc, 0, 0);
+}
+
+/// Space between the raised content panel and the window's right and bottom edges.
+const PANEL_INSET: i32 = 8;
+
+/// The raised content panel in client pixels `(x, y, w, h)`: right of the sidebar, under the header.
+fn panel_rect(rc: RECT, dpi: u32) -> (i32, i32, i32, i32) {
+    let (x, y) = (sc(SIDEBAR_W, dpi), sc(HEADER_H, dpi));
+    (x, y, (rc.right - x - sc(PANEL_INSET, dpi)).max(0), (rc.bottom - y - sc(PANEL_INSET, dpi)).max(0))
 }
 
 fn blit_icon(cv: &mut Canvas, x: i32, y: i32, n: usize) {
@@ -2880,7 +2823,7 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
     let focus = di.item_state & ODS_FOCUS != 0 && di.item_state & ODS_NOFOCUSRECT == 0;
     let hot = st.hot == c.id && !disabled;
     let (wf, hf) = (w as f32, h as f32);
-    let rad = s(6) as f32;
+    let rad = s(radius::CONTROL) as f32;
     let mut focus_rect = (1.0, 1.0, wf - 2.0, hf - 2.0, rad);
 
     match &c.kind {
@@ -2922,7 +2865,7 @@ unsafe fn draw_item(st: &St, di: &DrawItem) {
             focus_rect = (sx - s(3) as f32, sy - s(3) as f32, sw + s(6) as f32, sh + s(6) as f32, (sh + s(6) as f32) / 2.0);
         }
         Kind::Choice { title, desc, selected } => {
-            let r8 = s(8) as f32;
+            let r8 = s(radius::CARD) as f32;
             let fill = if *selected { t.accent_soft } else if hot || pressed { t.hover_card } else { t.surface };
             cv.round_rect(0.0, 0.0, wf, hf, r8, fill, 1.0);
             let (bc, bw) = if *selected { (t.accent_fill, 1.5_f32 * d as f32 / 96.0) } else { (t.border, 1.0) };
@@ -3080,9 +3023,8 @@ fn child_region(x: i32, y: i32, w: i32, h: i32, view: (i32, i32, i32, i32)) -> (
 fn child_regions(st: &St) -> Vec<(HWND, (i32, i32, i32, i32))> {
     let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     unsafe { GetClientRect(st.hwnd, &mut rc) };
-    let left = sc(SIDEBAR_W + 1, st.dpi);
-    // The page starts under the header: a control scrolled up must not paint over it.
-    let top = sc(HEADER_H + 1, st.dpi);
+    // The page lives in the raised panel: a control scrolled up or down must not paint over the header or the margin.
+    let (left, top, pw, ph) = panel_rect(rc, st.dpi);
     st.ctrls
         .iter()
         // Navigation and the header's own buttons stay put; clipping them to the page column would hide them.
@@ -3090,7 +3032,7 @@ fn child_regions(st: &St) -> Vec<(HWND, (i32, i32, i32, i32))> {
         .map(|(c, h)| {
             let cr = child_rect(c);
             let (x, y) = (sc(cr.x, st.dpi), sc(cr.y - st.scroll, st.dpi));
-            (*h, child_region(x, y, sc(cr.w, st.dpi), sc(cr.h, st.dpi), (left, top, rc.right, rc.bottom)))
+            (*h, child_region(x, y, sc(cr.w, st.dpi), sc(cr.h, st.dpi), (left, top, left + pw, top + ph)))
         })
         .collect()
 }
@@ -3114,7 +3056,8 @@ fn reveal_focused() {
         let b = s.try_borrow().ok()?;
         let st = b.as_ref()?;
         let (ctrl, _) = st.ctrls.iter().find(|(_, h)| *h == f)?;
-        reveal_delta(ctrl.r.y, ctrl.r.h, st.scroll, st.view_h)
+        // The panel ends PANEL_INSET above the window's bottom edge; a control there is not visible yet.
+        reveal_delta(ctrl.r.y, ctrl.r.h, st.scroll, st.view_h - PANEL_INSET)
     });
     if let Some(delta) = delta {
         scroll_by(delta);

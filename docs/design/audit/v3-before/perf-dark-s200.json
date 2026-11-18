@@ -1,0 +1,907 @@
+{
+  "generated_by": "keyreed --ui-gallery",
+  "idle_animation_timer_running": false,
+  "idle_cpu_percent_of_one_core": 1.5625,
+  "idle_frames_painted_in_2s": 0,
+  "listening_cpu_percent_of_one_core": 19.183843555270506,
+  "perf_listening": {
+    "pill": {
+      "frame_ms_max": 5.179999828338623,
+      "frame_ms_p50": 3.0,
+      "frame_ms_p95": 4.579999923706055,
+      "frames": 157,
+      "interval_ms_p50": 19.6200008392334,
+      "interval_ms_p95": 37.040000915527344
+    }
+  },
+  "perf_pill_transitions_and_settings_pages": {
+    "composer": {
+      "frame_ms_max": 40.970001220703125,
+      "frame_ms_p50": 22.81999969482422,
+      "frame_ms_p95": 35.0,
+      "frames": 262,
+      "interval_ms_p50": 30.469999313354492,
+      "interval_ms_p95": 48.900001525878906
+    },
+    "pill": {
+      "frame_ms_max": 25.649999618530273,
+      "frame_ms_p50": 2.0399999618530273,
+      "frame_ms_p95": 13.390000343322754,
+      "frames": 448,
+      "interval_ms_p50": 60.630001068115234,
+      "interval_ms_p95": 87.58000183105469
+    },
+    "review": {
+      "frame_ms_max": 88.5199966430664,
+      "frame_ms_p50": 36.75,
+      "frame_ms_p95": 70.51000213623047,
+      "frames": 76,
+      "interval_ms_p50": 39.0099983215332,
+      "interval_ms_p95": 75.56999969482422
+    },
+    "settings": {
+      "frame_ms_max": 114.1500015258789,
+      "frame_ms_p50": 48.5099983215332,
+      "frame_ms_p95": 111.44999694824219,
+      "frames": 20,
+      "interval_ms_p50": 0.0,
+      "interval_ms_p95": 0.0
+    },
+    "settings_ctrl": {
+      "frame_ms_max": 18.760000228881836,
+      "frame_ms_p50": 0.6700000166893005,
+      "frame_ms_p95": 8.449999809265137,
+      "frames": 359,
+      "interval_ms_p50": 1.059999942779541,
+      "interval_ms_p95": 12.760000228881836
+    }
+  },
+  "perf_settings_toggle": {
+    "pill": {
+      "frame_ms_max": 1.7899999618530273,
+      "frame_ms_p50": 1.0099999904632568,
+      "frame_ms_p95": 1.6699999570846558,
+      "frames": 55,
+      "interval_ms_p50": 61.79999923706055,
+      "interval_ms_p95": 76.0999984741211
+    },
+    "settings": {
+      "frame_ms_max": 47.63999938964844,
+      "frame_ms_p50": 47.63999938964844,
+      "frame_ms_p95": 47.63999938964844,
+      "frames": 1,
+      "interval_ms_p50": 0.0,
+      "interval_ms_p95": 0.0
+    },
+    "settings_ctrl": {
+      "frame_ms_max": 0.4399999976158142,
+      "frame_ms_p50": 0.4399999976158142,
+      "frame_ms_p95": 0.4399999976158142,
+      "frames": 4,
+      "interval_ms_p50": 0.0,
+      "interval_ms_p95": 0.0
+    }
+  },
+  "scale_percent": 200,
+  "settings_idle_frames_painted_in_2s": 0,
+  "shots": [
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 5,
+      "kind": "listener",
+      "note": "Idle: icon only",
+      "shot": "pill_01_idle",
+      "window_px": {
+        "h": 88,
+        "w": 88
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 10,
+      "kind": "listener",
+      "note": "Intentional hover: writing mode + shortcut",
+      "shot": "pill_02_hover",
+      "window_px": {
+        "h": 88,
+        "w": 307
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 172,
+      "kind": "listener",
+      "note": "Listening: bars follow the RMS values passed to sync() (synthetic levels in this gallery)",
+      "shot": "pill_03_listening",
+      "window_px": {
+        "h": 53,
+        "w": 134
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 208,
+      "kind": "listener",
+      "note": "Listening with silence: bars rest at the floor",
+      "shot": "pill_04_listening_silence",
+      "window_px": {
+        "h": 53,
+        "w": 134
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 218,
+      "kind": "listener",
+      "note": "Processing (ASR)",
+      "shot": "pill_05_processing",
+      "window_px": {
+        "h": 88,
+        "w": 257
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 229,
+      "kind": "listener",
+      "note": "Processing (grammar polish)",
+      "shot": "pill_06_polishing",
+      "window_px": {
+        "h": 88,
+        "w": 221
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 236,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_07_done_inserted",
+      "window_px": {
+        "h": 88,
+        "w": 246
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 241,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_07b_done_basic_cleanup",
+      "window_px": {
+        "h": 88,
+        "w": 306
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 246,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_08_done_copied",
+      "window_px": {
+        "h": 88,
+        "w": 325
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 251,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_09_review_command",
+      "window_px": {
+        "h": 88,
+        "w": 323
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 256,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_10_discarded",
+      "window_px": {
+        "h": 88,
+        "w": 232
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 260,
+      "kind": "listener",
+      "note": "Completion state",
+      "shot": "pill_11_nothing_heard",
+      "window_px": {
+        "h": 88,
+        "w": 310
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 265,
+      "kind": "listener",
+      "note": "Error: raw WASAPI text is hidden; plain message shown",
+      "shot": "pill_12_error_mic",
+      "window_px": {
+        "h": 88,
+        "w": 328
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 270,
+      "kind": "listener",
+      "note": "Error: transcription failure",
+      "shot": "pill_13_error_transcribe",
+      "window_px": {
+        "h": 88,
+        "w": 366
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 275,
+      "kind": "listener",
+      "note": "Paused (app disabled)",
+      "shot": "pill_14_paused",
+      "window_px": {
+        "h": 88,
+        "w": 88
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 281,
+      "kind": "listener",
+      "note": "Mode switched by shortcut: brief hint instead of a notification",
+      "shot": "pill_15_mode_hint",
+      "window_px": {
+        "h": 88,
+        "w": 363
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 286,
+      "kind": "listener",
+      "note": "Hint collapses back to idle by itself",
+      "shot": "pill_16_hint_expired",
+      "window_px": {
+        "h": 88,
+        "w": 88
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 295,
+      "kind": "listener",
+      "note": "Quick Fix working: one band of light per 600 ms",
+      "shot": "pill_20_fixing",
+      "window_px": {
+        "h": 88,
+        "w": 184
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 299,
+      "kind": "listener",
+      "note": "Quick Fix done, mid pop: tick drawing, count rolling",
+      "shot": "pill_21a_fixed_mid",
+      "window_px": {
+        "h": 88,
+        "w": 490
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 306,
+      "kind": "listener",
+      "note": "Quick Fix done, at rest: Undo and Deeper chips",
+      "shot": "pill_21b_fixed",
+      "window_px": {
+        "h": 88,
+        "w": 576
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 318,
+      "kind": "listener",
+      "note": "Two-digit count, no deeper pass available",
+      "shot": "pill_21c_fixed_no_deeper",
+      "window_px": {
+        "h": 88,
+        "w": 452
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 320,
+      "kind": "listener",
+      "note": "Undo: tick unwinding, count rolling down",
+      "shot": "pill_22a_undo_mid",
+      "window_px": {
+        "h": 88,
+        "w": 395
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 330,
+      "kind": "listener",
+      "note": "Undone",
+      "shot": "pill_22b_undone",
+      "window_px": {
+        "h": 88,
+        "w": 208
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 341,
+      "kind": "listener",
+      "note": "Nothing needed changing",
+      "shot": "pill_23_looks_good",
+      "window_px": {
+        "h": 88,
+        "w": 288
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 346,
+      "kind": "listener",
+      "note": "Grammar model missing: spelling and rules only",
+      "shot": "pill_24_spelling_only",
+      "window_px": {
+        "h": 88,
+        "w": 262
+      }
+    },
+    {
+      "animation_timer_running": true,
+      "frames_painted_total": 348,
+      "kind": "listener",
+      "note": "Refusal, mid shake",
+      "shot": "pill_25a_refused_shake",
+      "window_px": {
+        "h": 88,
+        "w": 343
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 356,
+      "kind": "listener",
+      "note": "Refusal, at rest",
+      "shot": "pill_25b_refused",
+      "window_px": {
+        "h": 88,
+        "w": 385
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 367,
+      "kind": "listener",
+      "note": "Refusal: administrator window",
+      "shot": "pill_25c_refused_admin",
+      "window_px": {
+        "h": 88,
+        "w": 401
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 379,
+      "kind": "listener",
+      "note": "Grammar model missing: one sentence and an Open Settings chip",
+      "shot": "pill_25d_refused_grammar",
+      "window_px": {
+        "h": 88,
+        "w": 1153
+      }
+    },
+    {
+      "animation_timer_running": false,
+      "frames_painted_total": 387,
+      "kind": "listener",
+      "note": "Everything returns to idle by itself; the animation timer is off",
+      "shot": "pill_26_quick_fix_gone",
+      "window_px": {
+        "h": 88,
+        "w": 88
+      }
+    },
+    {
+      "kind": "review",
+      "note": "Review panel mid-open: fading in, underlines drawing left to right",
+      "shot": "review_01_opening",
+      "window_px": {
+        "h": 408,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "Review panel at rest: changes tinted, underlines relaxed",
+      "shot": "review_02_settled",
+      "window_px": {
+        "h": 408,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "Show original: each change shows the old word struck through",
+      "shot": "review_03_show_original",
+      "window_px": {
+        "h": 456,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "Second change rejected (shown as the original), third has keyboard focus, first is hovered",
+      "shot": "review_04_rejected_and_focus",
+      "window_px": {
+        "h": 408,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "With a note: the copy carried links or a list",
+      "shot": "review_05_note",
+      "window_px": {
+        "h": 488,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "Long selection: the text area scrolls, the window stops at its maximum height",
+      "shot": "review_06_long_text",
+      "window_px": {
+        "h": 720,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "review",
+      "note": "First use: what Quick Fix does, the clipboard, privacy, undo",
+      "shot": "review_07_first_use",
+      "window_px": {
+        "h": 558,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Opening: the bar grows out of the pill, content revealed in place",
+      "shot": "composer_01_bloom_mid",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "At rest with a selection: context chip, route, input, presets",
+      "shot": "composer_02_selection",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "A custom instruction typed",
+      "shot": "composer_03_typed",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Keyboard focus on the Improve chip (Tab)",
+      "shot": "composer_04_chip_focus",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Streaming: words rise and fade in; Esc stops",
+      "shot": "composer_05_streaming",
+      "window_px": {
+        "h": 484,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Result: Replace (Enter), Copy (Ctrl+Enter), Again (Ctrl+R); presets act on the result",
+      "shot": "composer_06_result",
+      "window_px": {
+        "h": 572,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "The result as a native edit box after a click",
+      "shot": "composer_07_editing",
+      "window_px": {
+        "h": 572,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Nothing selected, a draft typed, the input focused: the presets act on the draft, so they are live",
+      "shot": "composer_08_typed_focus",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "A real click on Fix with the input focused submitted the draft; the presets are dimmed while it runs",
+      "shot": "composer_09_preset_click_while_typing",
+      "window_px": {
+        "h": 484,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "The microphone is recording into the bar: the mic chip shows the listening state; a second click cancels",
+      "shot": "composer_10_listening",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "bar_closed": true,
+      "kind": "composer",
+      "note": "A real click outside an empty bar: the bar folded away, leaving the desktop",
+      "shot": "composer_11_after_outside_click"
+    },
+    {
+      "kind": "composer",
+      "note": "A click outside with a draft on screen keeps the bar (Esc closes it): typed text is never thrown away",
+      "shot": "composer_12_outside_click_keeps_draft",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "After a move of (+60,-40) and a later update: the bar stayed at (500, 572) with its content whole, not offset or torn",
+      "shot": "composer_13_after_move",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Nothing selected (presets need text), cloud route",
+      "shot": "composer_14_no_selection_cloud",
+      "window_px": {
+        "h": 284,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "No writing model and cloud off: one sentence and Open Settings",
+      "shot": "composer_15_unavailable",
+      "window_px": {
+        "h": 484,
+        "w": 1040
+      }
+    },
+    {
+      "kind": "composer",
+      "note": "Closing: folding back into the pill",
+      "shot": "composer_16_folding",
+      "window_px": {
+        "h": 263,
+        "w": 506
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_01_general",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_02_dictation",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_03_writing",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_04_output",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_05_microphone",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_06_models",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_07_processing",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_08_privacy",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_09_about",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Settings page",
+      "shot": "settings_10_mystyle",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Microphone page: cue choice, its own volume at 100 %, Play",
+      "shot": "settings_12_sounds",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Frameless Settings on the desktop: rounded corners, shadow, KeyReed's header",
+      "shot": "settings_12_on_desktop",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Delete-all confirmation: in-app card instead of the system dialog",
+      "shot": "settings_13_confirm_delete",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Speech models page scrolled: no overlap with the header or sidebar",
+      "shot": "settings_06_models_scrolled",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Quick Fix grammar row: download in progress",
+      "shot": "settings_11_grammar_downloading",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings-live",
+      "note": "Dictation scrolled to its end: offset 140 of 1076 (view 516); Mouse group reachable",
+      "shot": "settings_02_dictation_bottom",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "check",
+      "note": "wheel over the Forward-button combo scrolled the page 140 -> 84 (content 1076, view 516)",
+      "shot": "settings_wheel_over_control"
+    },
+    {
+      "kind": "settings-live",
+      "note": "Speech models scrolled to the middle: offset 194 of 388 (view 516)",
+      "shot": "settings_06_models_middle",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Quick Fix shortcut field recording: nothing pressed yet",
+      "shot": "shortcut_01_recording",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Recording with Ctrl and Win held",
+      "shot": "shortcut_02_held",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Ctrl + C refused: the reason shows under the row, nothing saved",
+      "shot": "shortcut_03_refused",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_1",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_2",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_3",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "First-run setup step",
+      "shot": "onboarding_4",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Download in progress (injected state)",
+      "shot": "models_downloading",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Checksum verification + extraction (injected state)",
+      "shot": "models_verifying",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Download failure (injected state)",
+      "shot": "models_failed",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test running (injected level)",
+      "shot": "mic_testing",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_good",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_low",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    },
+    {
+      "kind": "settings",
+      "note": "Mic test verdict (injected)",
+      "shot": "mic_result_silent",
+      "window_px": {
+        "h": 1032,
+        "w": 1880
+      }
+    }
+  ]
+}

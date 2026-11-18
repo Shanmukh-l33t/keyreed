@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod context;
 pub mod hotkey;
 pub mod icon_data;
+pub mod motion;
 pub mod overlay;
 pub mod perf;
 pub mod security;
@@ -15,6 +16,7 @@ pub mod selection;
 pub mod settings;
 #[cfg(windows)]
 pub mod spell;
+pub mod tokens;
 pub mod typing;
 #[cfg(windows)]
 pub mod uia;

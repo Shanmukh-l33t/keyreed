@@ -1043,6 +1043,8 @@ pub mod win_gui {
 
     const TWEEN_MS: f32 = 160.0;
     const FADE_MS: f32 = 140.0;
+    /// The success flash: an emerald edge and glow that fade out once (P4).
+    const RING_MS: f32 = 320.0;
     /// A Processing label stays at least this long so a very fast transcription does not flash it.
     const PROCESSING_MIN_MS: u128 = 200;
 
@@ -1477,6 +1479,17 @@ pub mod win_gui {
                 Vec::new()
             };
             let bars = pill.wave.bars();
+            // The edge light is honest: the smoothed mic level while listening, one fading flash on a real success.
+            let (ring, ring_moving) = match view.kind {
+                PillKind::Listening => (pill.wave.level().sqrt(), false),
+                // A clipboard fallback is neutral-positive: no flash (P5).
+                PillKind::Done | PillKind::Fixed if !reduced && !matches!(snap.last_outcome, Some(ReadyOutcome::Copied)) => {
+                    let ms = now.duration_since(pill.state_since).as_secs_f32() * 1000.0;
+                    let t = (ms / RING_MS).clamp(0.0, 1.0);
+                    ((1.0 - t) * (1.0 - t), t < 1.0)
+                }
+                _ => (0.0, false),
+            };
             let phase = if reduced { 0.35 } else { now.duration_since(pill.state_since).as_secs_f32() };
             let frame = PillFrame {
                 scale,
@@ -1490,6 +1503,10 @@ pub mod win_gui {
                 tick,
                 opacity: 1.0,
                 content_opacity: ease_out_cubic(fade_t),
+                // The keycap stays pressed while the dictation key is held.
+                press: if view.kind == PillKind::Listening { 1.0 } else { 0.0 },
+                ring,
+                polishing: matches!(snap.state, EngineState::Correcting),
             };
             let bgra = render_pill(w, h, &frame);
 
@@ -1522,6 +1539,7 @@ pub mod win_gui {
                 SetTimer(hwnd, IDT_QF_EXPIRE, (left as u32).max(30) + 20, None);
             }
             let animate = tweening
+                || ring_moving
                 || (needs_frames(view.kind) && !(reduced && matches!(view.kind, PillKind::Processing | PillKind::Fixing)));
             // 60 frames a second while the waveform or Quick Fix moves (a 35 ms attack needs it); other motion stays at 30.
             let interval = if qf_moving || matches!(view.kind, PillKind::Fixing | PillKind::Listening) { 16 } else { 33 };

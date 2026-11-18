@@ -20,10 +20,7 @@ pub const DT_CALCRECT: u32 = 0x400;
 pub const DT_NOPREFIX: u32 = 0x800;
 pub const DT_END_ELLIPSIS: u32 = 0x8000;
 
-/// COLORREF (0x00BBGGRR) helper.
-pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
-}
+pub use crate::tokens::rgb;
 
 #[inline]
 fn colorref_to_px(c: u32) -> u32 {
@@ -187,6 +184,37 @@ impl Canvas {
         }
     }
 
+    /// Soft drop shadow of a rounded rectangle from CSS-style layers `(y offset, blur, spread, alpha)` in colour `c`.
+    /// Paints only outside the rectangle itself (it is about to be covered), so a big panel costs a thin band.
+    #[allow(clippy::too_many_arguments)]
+    pub fn shadow(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, layers: &[(f32, f32, f32, f32)], scale: f32, c: u32) {
+        for &(dy, blur, spread, a) in layers {
+            let (dy, blur, spread) = (dy * scale, (blur * scale).max(1.0), spread * scale);
+            let (sx, sy, sw, sh) = (x - spread, y + dy - spread, (w + 2.0 * spread).max(1.0), (h + 2.0 * spread).max(1.0));
+            let sr = (r + spread).max(0.0);
+            // A Gaussian edge spans about +-0.75 blur; beyond that the layer adds nothing.
+            let reach = 0.75 * blur;
+            let x0 = (sx - reach).floor().max(self.clip.0 as f32) as i32;
+            let y0 = (sy - reach).floor().max(self.clip.1 as f32) as i32;
+            let x1 = ((sx + sw + reach).ceil() as i32).min(self.clip.2);
+            let y1 = ((sy + sh + reach).ceil() as i32).min(self.clip.3);
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let (px, py) = (xx as f32 + 0.5, yy as f32 + 0.5);
+                    if Self::sd_round_rect(px, py, x, y, w, h, r) < -0.5 {
+                        continue;
+                    }
+                    let d = Self::sd_round_rect(px, py, sx, sy, sw, sh, sr);
+                    let t = ((d + reach) / (2.0 * reach)).clamp(0.0, 1.0);
+                    let k = 1.0 - t * t * (3.0 - 2.0 * t);
+                    if k > 0.0 {
+                        self.blend((yy * self.w + xx) as usize, c, a * k);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn circle(&mut self, cx: f32, cy: f32, r: f32, c: u32, alpha: f32) {
         self.round_rect(cx - r, cy - r, r * 2.0, r * 2.0, r, c, alpha);
     }
@@ -309,6 +337,19 @@ mod tests {
         cv.set_clip(0, 0, 0, 0);
         cv.rect(0, 0, 20, 10, rgb(0xFF, 0, 0));
         assert_eq!(px(&cv, 5, 5), colorref_to_px(rgb(0x10, 0x10, 0x10)));
+    }
+
+    #[test]
+    fn a_shadow_darkens_below_the_shape_and_never_inside_it() {
+        let mut cv = unsafe { Canvas::new(60, 60) }.expect("canvas");
+        let bg = rgb(0xF6, 0xF9, 0xF6);
+        cv.fill(bg);
+        cv.shadow(10.0, 10.0, 40.0, 30.0, 6.0, &[(4.0, 8.0, 0.0, 0.3)], 1.0, rgb(0, 0, 0));
+        assert_eq!(px(&cv, 30, 20), colorref_to_px(bg), "inside the shape is left for the shape itself");
+        let below = px(&cv, 30, 42) & 0xFF;
+        let above = px(&cv, 30, 8) & 0xFF;
+        assert!(below < 0xF6 && below < above, "the offset shadow falls below: {below:x} vs {above:x}");
+        assert_eq!(px(&cv, 0, 0), colorref_to_px(bg), "nothing far from the shape");
     }
 
     #[test]
