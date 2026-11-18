@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.1 (unreleased)
+## 2.1.1 (2026-11-18)
 
 ### Fixed
 - Clicking the idle pill could close KeyReed: a rounding error in the drawing code made a clamp panic. The same kind of clamp in the Settings scrollbar is hardened too.

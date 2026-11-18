@@ -74,7 +74,7 @@ UninstPage custom un.WelcomeShow
 UninstPage custom un.FinishShow
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "2.1.0.0"
+VIProductVersion "2.1.1.0"
 VIAddVersionKey "ProductName" "KeyReed"
 VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

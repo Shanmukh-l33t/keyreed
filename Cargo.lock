@@ -1632,7 +1632,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vi-app"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "vi-asr"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "bzip2",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "vi-audio"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "vi-core"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "vi-rewrite"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "log",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "vi-win32"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "base64",
