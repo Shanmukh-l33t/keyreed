@@ -95,7 +95,7 @@ Every factual statement on `/`, `/details`, and `/vs-wispr-flow` traces to an ex
 | Claim on Site | Exact Value | Source |
 | --- | --- | --- |
 | Latest version & release date | `2.1.0` (18 November 2026) | `README.md:32`, `CHANGELOG.md:3`, GitHub tag `v2.1.0` |
-| Installer filename, size & SHA-256 | `KeyReed-Setup-x64.exe`, `24.4 MB` (`24,421,395` bytes), `7ad5fdbbbe0d97b93eb09c7bb562346aef6844ec5cb5fea2bc427e382c52bcd1` | `gh release view v2.1.0`, `docs/installation.md:17,48` |
+| Installer filename, size & SHA-256 | `KeyReed-Setup-x64.exe`, `24.4 MB` (`24,427,697` bytes), `e83ccc84791ccece3e00524b9c7fb2f4e76b876409b8867cce84475a2f0e18dd` | `gh release view v2.1.0`, `docs/installation.md:17,48` |
 | Portable archive filename, size & SHA-256 | `keyreed-2.1.0-windows-x86_64-portable.zip`, `47.3 MB` (`47,320,361` bytes), `ed19f1f265134db2968205bbf51248b36fd5d6ea8149ec28f8322ed50e8bb35c` | `gh release view v2.1.0`, `docs/installation.md:18,49` |
 | Quick Fix grammar archive & SHA-256 | `gector-bert-en-int8.tar.bz2`, `73.1 MB` (`~70 MB` catalog), `5654cefc549c938bbac8770d9753a8be50e6d66f9afdc6d7ec746f3d51590ae0`, Apache-2.0 | `crates/vi-asr/src/catalog.rs:151-163`, `docs/installation.md:19,50` |
 | Supported OS | Windows 10 & 11 x64 (built & tested on 64-bit Windows 11; Windows 10 x64 supported by code, not re-tested for 2.1.0) | `README.md:149,177`, `docs/installation.md:5` |
