@@ -707,7 +707,6 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 @media (max-width:860px){.vs-pick,.vs-cols{grid-template-columns:1fr}.cmp{font-size:14px}.cmp th,.cmp td{padding:14px}}
 
 /* ---------- Core features (after How it works) ---------- */
-.core{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
 .core-card{display:flex;flex-direction:column;gap:12px;padding:24px 22px 22px;border-radius:var(--r);background:var(--surface);border:1px solid var(--line);box-shadow:var(--card-shadow)}
 .core-card:hover{border-color:var(--line-2)}
 .core-keys{display:inline-flex;gap:5px}
@@ -718,8 +717,6 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 .core-more{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--mint)}
 .core-more .arrow{width:15px;height:15px;transition:transform .25s var(--ease)}
 .core-card:hover .core-more .arrow{transform:translateX(4px)}
-@media (max-width:1020px){.core{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:620px){.core{grid-template-columns:1fr}}
 .states img{image-rendering:auto}
 
 /* Light theme: the product scene and the listener list sit on light surfaces; only the listener itself stays dark. */
@@ -731,3 +728,16 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 :root:not([data-theme="dark"]) .taskbar{background:rgba(232,240,235,.95)}
 :root:not([data-theme="dark"]) .pill-kr{box-shadow:0 14px 34px -12px rgba(11,59,44,.55),0 0 40px -14px rgba(16,185,129,.45)}
 :root:not([data-theme="dark"]) .states{background:var(--surface);box-shadow:var(--card-shadow)}
+
+/* Core features: real screenshots on a soft tinted stage */
+.showcase{border-top:0;padding:56px 0}
+.showcase + .showcase{border-top:1px solid var(--line)}
+.keys{display:inline-flex;gap:4px;vertical-align:middle;margin:0 2px}
+.keys kbd{min-width:28px;height:26px;padding:0 8px;font-size:12px;border-bottom-width:2px;box-shadow:none}
+.shot-stack{position:relative;margin:0;padding:34px 30px 46px;border-radius:var(--r-lg);background:radial-gradient(ellipse 80% 70% at 50% 0%,rgba(16,185,129,.14),transparent 70%),var(--bg-2);border:1px solid var(--line)}
+.shot{width:100%;height:auto;border-radius:12px;box-shadow:0 1px 2px rgba(11,59,44,.08),0 30px 60px -30px rgba(11,59,44,.45),0 0 0 1px rgba(11,59,44,.08)}
+.shot-pill{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);width:auto;height:auto;max-width:90%;filter:drop-shadow(0 12px 22px rgba(4,36,26,.35))}
+:root[data-theme="dark"] .shot{box-shadow:0 30px 60px -30px rgba(0,0,0,.8),0 0 0 1px rgba(176,236,208,.12)}
+.core{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:24px}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+@media (max-width:860px){.shot-stack{padding:22px 16px 40px}}

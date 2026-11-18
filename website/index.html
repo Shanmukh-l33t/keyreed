@@ -260,25 +260,43 @@
         <header class="sec-head" data-reveal>
           <p class="eyebrow">Beyond dictation</p>
           <h2>Dictate, fix, rewrite. <span class="serif">All on your PC.</span></h2>
-          <p class="sec-sub">The same shortcut habit, three more tools. Each one runs locally and starts no network call.</p>
+          <p class="sec-sub">The same shortcut habit, two more tools. Both run on your PC and send nothing anywhere.</p>
         </header>
+
+        <article class="feat showcase" id="quick-fix" data-reveal>
+          <div class="feat-copy">
+            <p class="eyebrow sm">Quick Fix</p>
+            <h3>Select it. Press a key. <span class="serif">Fixed.</span></h3>
+            <p>Select text in any app and press <span class="keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>. Spelling comes from the Windows spell checker, grammar from a small local model. A fix KeyReed is sure about lands straight away, with Undo on the listener.</p>
+            <p class="muted">Anything uncertain, formatted or rewritten opens the Review panel instead, so you see every change before it replaces your text. Links, addresses, paths and names are left alone.</p>
+          </div>
+          <div class="feat-vis">
+            <figure class="shot-stack">
+              <img class="shot" src="assets/app/quickfix-review.webp" width="1040" height="408" loading="lazy" decoding="async" alt="The Quick Fix Review panel: five changes underlined in a short email, with Show original, Dismiss, Copy and Replace buttons.">
+              <img class="shot-pill" src="assets/app/quickfix-fixed.png" width="286" height="42" loading="lazy" decoding="async" alt="The listener after a fix: Fixed, 4 changes, with Undo and Deeper chips.">
+            </figure>
+          </div>
+        </article>
+
+        <article class="feat showcase flip" data-reveal>
+          <div class="feat-copy">
+            <p class="eyebrow sm">The Composer</p>
+            <h3>Ask for it shorter, <span class="serif">warmer, clearer.</span></h3>
+            <p>Press <span class="keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span> on a selection, or with nothing selected to write something new. Fix, Improve, Shorter, Change tone, Summarise, or type your own instruction.</p>
+            <p class="muted">A small writing model on this PC answers as it thinks. Replace, copy or try again; Esc cancels. Without the model installed it says so and sends nothing.</p>
+          </div>
+          <div class="feat-vis">
+            <figure class="shot-stack">
+              <img class="shot" src="assets/app/composer-result.webp" width="1040" height="572" loading="lazy" decoding="async" alt="The Composer with a selection from Outlook: a rewritten update about the release moving to Thursday, preset chips, and Again, Copy and Replace buttons.">
+            </figure>
+          </div>
+        </article>
+
         <div class="core" data-stagger>
-          <a class="core-card lit" href="#quick-fix">
-            <span class="core-keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>G</kbd></span>
-            <h3>Quick Fix</h3>
-            <p>Select text in any app and fix its spelling and grammar in place. A fix KeyReed is sure about lands straight away, with Undo on the listener.</p>
-            <span class="core-more">How it works<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
-          </a>
-          <a class="core-card lit" href="#quick-fix">
-            <span class="core-keys"><kbd>Ctrl</kbd><kbd>Win</kbd><kbd>K</kbd></span>
-            <h3>The Composer</h3>
-            <p>Fix, Improve, Shorter, Change tone, Summarise, or your own instruction, answered by a small writing model on this PC.</p>
-            <span class="core-more">How it works<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
-          </a>
           <a class="core-card lit" href="#models">
-            <span class="core-tag">8 models</span>
-            <h3>Eight speech models</h3>
-            <p>Parakeet by default, Parakeet 110M for light English, Parakeet Ultra for 25 languages, plus Whisper, SenseVoice and Moonshine.</p>
+            <span class="core-tag">8 speech models</span>
+            <h3>A model for every PC</h3>
+            <p>Parakeet by default, Parakeet 110M for light English, Parakeet Ultra for 25 languages, plus Whisper, SenseVoice and Moonshine. Each is checked against a pinned SHA-256.</p>
             <span class="core-more">Compare them<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
           </a>
           <a class="core-card lit" href="#features">
@@ -288,6 +306,7 @@
             <span class="core-more">See all features<svg class="ic arrow"><use href="#i-arrow"/></svg></span>
           </a>
         </div>
+        <p class="fine center" data-reveal>Actual screenshots of KeyReed 2.1.0 with example text.</p>
       </div>
     </section>
 
@@ -448,24 +467,8 @@
           </div>
         </article>
 
-        <article class="feat" id="quick-fix" data-reveal>
-          <div class="feat-copy">
-            <p class="eyebrow sm">Quick Fix and the Composer</p>
-            <h3>Fix what you selected. Or ask for it shorter.</h3>
-            <p>Select text in another application and press <strong>Ctrl + Win + G</strong>. A fix KeyReed is sure about replaces the text straight away, with Undo on the listener; turn on the Review panel in Settings to see every change first. Spelling comes from the Windows spell checker, grammar from a small local model.</p>
-            <p class="muted"><strong>Ctrl + Win + K</strong> opens the Composer: Fix, Improve, Shorter, Change tone, Summarise or your own instruction, answered on this PC. Undo sits on the pill after a fix.</p>
-          </div>
-          <div class="feat-vis">
-            <ol class="pipe lit" data-stagger>
-              <li><b>Your selection</b><span>read through the clipboard, which is put back afterwards</span></li>
-              <li><b>Spelling and grammar</b><span>Windows spell checker, then a local tagger; links, addresses, paths and names are left alone</span></li>
-              <li class="guard"><b>Sure fixes apply</b><span>anything uncertain, formatted or rewritten opens the Review panel instead</span></li>
-              <li class="end"><b>Undo on the listener</b><span>puts the original back</span></li>
-            </ol>
-          </div>
-        </article>
 
-        <article class="feat flip" data-reveal>
+        <article class="feat" data-reveal>
           <div class="feat-copy">
             <p class="eyebrow sm">Your controls</p>
             <h3>Yours to tune.</h3>
