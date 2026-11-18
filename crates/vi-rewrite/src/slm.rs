@@ -506,7 +506,14 @@ impl LlamaServerSupervisor {
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
         // The first request after a GPU start can include one-time shader compilation (~22 s measured on a
         // cold shader cache), so it gets a longer timeout instead of silently dropping the rewrite.
-        let read_timeout = if self.using_gpu && !self.served_once { 60 } else { 12 };
+        // A warm rewrite is ~0.6 s on a discrete GPU and ~4 s on CPU; anything past these bounds is a
+        // stall, and waiting the old 12 s put a measured 12.01 s gap in front of insertion.
+        let read_timeout = match (self.served_once, self.using_gpu) {
+            (false, true) => 60,
+            (false, false) => 15,
+            (true, true) => 4,
+            (true, false) => 8,
+        };
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(2))
             .timeout_read(Duration::from_secs(read_timeout))

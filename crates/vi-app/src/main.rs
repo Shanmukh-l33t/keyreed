@@ -214,6 +214,12 @@ struct InferenceSupervisor {
     asr: Option<LocalAsrEngine>,
     /// Active streaming ASR worker decoding audio chunks while the user is still speaking.
     live_asr: Option<(String, vi_asr::live::LiveAsr)>,
+    /// Every 16 kHz sample of the dictation in progress. The streaming session drains the microphone
+    /// buffer as it goes, so without this the clip reaching the dump, the cloud path and any fallback
+    /// decode was only the tail left after the last drain.
+    clip16k: Vec<f32>,
+    /// Samples already handed to the streaming session, so only the remainder goes out at release.
+    live_fed: usize,
     /// Speech model being loaded in the background while the user is still talking or at startup.
     pending_asr: Option<(String, crossbeam_channel::Receiver<Result<LocalAsrEngine>>)>,
     /// Grammar model whose SHA-256 is still being verified in the background. Joined before the
@@ -317,6 +323,31 @@ fn wants_hotword_decoding(cfg: &AppConfig) -> bool {
         && !cfg.dictionary.to_sherpa_hotwords().is_empty()
 }
 
+/// The speech model is on every dictation's critical path: loading it again measured 8.0 s at p50 and
+/// 13.2 s at worst (real dictations), so idle time alone must not release it. 1 GiB free is the valve.
+fn asr_unload_due(avail_mb: u64, idle: Duration, effective_secs: u64) -> bool {
+    avail_mb < 1_024 && idle >= Duration::from_secs(effective_secs)
+}
+
+#[cfg(test)]
+mod unload_policy {
+    use super::asr_unload_due;
+    use std::time::Duration;
+
+    #[test]
+    fn a_quiet_machine_keeps_the_speech_model_loaded() {
+        // 64 GiB free, 30 minutes idle: the old policy reloaded the model inside the next dictation.
+        assert!(!asr_unload_due(42_604, Duration::from_secs(1_800), 1_800));
+        assert!(!asr_unload_due(1_024, Duration::from_secs(86_400), 1_800));
+    }
+
+    #[test]
+    fn a_genuinely_short_machine_may_still_reclaim_it() {
+        assert!(asr_unload_due(512, Duration::from_secs(1_800), 1_800));
+        assert!(!asr_unload_due(512, Duration::from_secs(60), 1_800)); // idle time still has to pass
+    }
+}
+
 fn load_asr_engine(paths: &RuntimePaths, cfg: &AppConfig) -> Result<LocalAsrEngine> {
     let spec = find_model_spec(&cfg.local_asr_model)
         .with_context(|| format!("ASR model '{}' not in catalog", cfg.local_asr_model))?;
@@ -380,6 +411,8 @@ impl InferenceSupervisor {
             loaded_asr_id: String::new(),
             asr: None,
             live_asr: None,
+            clip16k: Vec::new(),
+            live_fed: 0,
             pending_asr: None,
             pending_slm,
             slm_threads: cfg.inference_threads.max(1),
@@ -489,7 +522,7 @@ impl InferenceSupervisor {
         if let Some(mut eng) = self.rewrite.try_lock() {
             let _ = eng.maybe_unload_idle(effective_secs);
         }
-        if self.asr.is_some() && self.last_used.elapsed() >= Duration::from_secs(effective_secs) {
+        if self.asr.is_some() && asr_unload_due(avail_mb, self.last_used.elapsed(), effective_secs) {
             self.asr = None;
             self.pending_asr = None;
             self.loaded_asr_id.clear();
@@ -641,6 +674,33 @@ impl InferenceSupervisor {
         // this scope ends, so no path can forget it.
         let mut stages = self.session_stages.take();
         let dictation_id = stages.as_ref().map(|s| s.id().to_string()).unwrap_or_default();
+        // Opt-in diagnostic (config `debug_dump_wav`): keep the exact clip the ASR is about to see, before the
+        // pipeline consumes it, one timestamped file plus a line in last-clips.jsonl so repeated takes survive.
+        // This is the user's own speech and only ever happens when they asked for it.
+        if let Some(dir_path) = cfg.debug_dump_wav.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            let base = std::path::Path::new(dir_path);
+            let dir = base.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let stem = base.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "clip".into());
+            let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let wav = dir.join(format!("{stem}-{ms}.wav"));
+            match vi_audio::write_wav_16k_mono(&wav, &samples_16k) {
+                Ok(()) => {
+                    let line = serde_json::json!({
+                        "file": wav.file_name().map(|f| f.to_string_lossy().to_string()),
+                        "samples": samples_16k.len(),
+                        "audio_duration_ms": (samples_16k.len() as u64) * 1000 / 16_000,
+                        "model": cfg.local_asr_model,
+                        "process": fg_ctx.process_name,
+                        "streamed_ms": self.live_fed * 1000 / 16_000,
+                    });
+                    use std::io::Write as _;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("last-clips.jsonl")) {
+                        let _ = writeln!(f, "{line}");
+                    }
+                }
+                Err(e) => log::warn!("debug clip dump failed: {e:#}"),
+            }
+        }
         let mut audio_duration_ms = ((samples_16k.len() as u64) * 1000) / 16_000;
 
         // Determine effective writing mode: explicit override -> per-app user rule -> automatic context -> default
@@ -712,7 +772,9 @@ impl InferenceSupervisor {
 
         if !cloud_stt_ok {
             if let Some((live_id, live)) = self.live_asr.take() {
-                let tail = std::mem::take(&mut samples_16k);
+                // Only the audio the streaming session has not seen yet: the rest reached it as it arrived.
+                let from = self.live_fed.min(samples_16k.len());
+                let tail = samples_16k.split_off(from);
                 let done = live.finish(tail);
                 if let Some(eng) = done.engine {
                     self.asr = Some(eng);
@@ -966,6 +1028,16 @@ impl InferenceSupervisor {
             cold_model,
             dictation_id,
         };
+
+        if cfg.debug_dump_wav.as_deref().map(str::trim).is_some_and(|p| !p.is_empty()) {
+            let base = std::path::Path::new(cfg.debug_dump_wav.as_deref().unwrap_or(""));
+            let dir = base.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let line = serde_json::json!({ "stage": "result", "text": rw.final_text, "metrics": metrics });
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("last-clips.jsonl")) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
         if let Ok(line) = serde_json::to_string(&metrics) {
             perf_trace_record(&line);
         }
@@ -2851,6 +2923,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             // Drain only into a live session; otherwise the audio stays in the capture
                             // buffer for the whole-buffer path at stop (cloud profile, failed live start).
                             let chunk = if supervisor.live_asr.is_some() { mic.take_new_16k() } else { Vec::new() };
+                            supervisor.live_fed += chunk.len();
+                            supervisor.clip16k.extend_from_slice(&chunk);
                             supervisor.feed_live_audio(&cfg, chunk);
                             if mic.is_disconnected() {
                                 // Microphone disconnected mid-recording: attempt seamless rebind to default device
@@ -2926,6 +3000,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                     cap.start_ms()
                                 ));
                                 gui_for_worker.set_level_source(Some(cap.level_handle()));
+                                supervisor.clip16k.clear();
+                                supervisor.live_fed = 0;
                                 active_mic = Some(cap);
                                 busy_flag.store(true, Ordering::Relaxed);
                                 // The cue goes out before the work that is not on the audio path.
@@ -3005,7 +3081,11 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             supervisor.session_first_frame_ms = m.first_frame_ms();
                             let t_fin = Instant::now();
                             // Keeps capturing 200 to 600 ms after release so the last word is not clipped.
-                            let samples = m.stop_with_release_tail_and_take_16k();
+                            let tail = m.stop_with_release_tail_and_take_16k();
+                            // Everything drained during the hold plus the tail: the whole utterance.
+                            let mut samples = std::mem::take(&mut supervisor.clip16k);
+                            samples.extend_from_slice(&tail);
+                            supervisor.live_fed = supervisor.live_fed.min(samples.len());
                             supervisor.session_chunk_finalize_ms = t_fin.elapsed().as_secs_f64() * 1000.0;
                             if let Some(s) = &mut supervisor.session_stages {
                                 s.mark(1); // final mic audio ready: release tail included
