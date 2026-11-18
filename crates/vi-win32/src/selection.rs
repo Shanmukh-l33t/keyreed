@@ -18,6 +18,7 @@ use crate::typing::{
     release_active_modifiers_cleanly, sanitize_for_injection,
 };
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use vi_core::{AppCategory, ForegroundContext};
@@ -46,8 +47,12 @@ const VK_C: u16 = 0x43;
 const VK_V: u16 = 0x56;
 const VK_Z: u16 = 0x5A;
 
-/// How long the copy may take to reach the clipboard before "nothing is selected" is assumed.
-const COPY_WAIT: Duration = Duration::from_millis(400);
+/// How long the copy may take to reach the clipboard before "nothing is selected" is assumed. The wait ends the
+/// moment the clipboard changes, so a long limit costs nothing except when nothing really is selected; a busy
+/// application (Outlook, a big web page) can take well over 400 ms to answer Ctrl+C.
+const COPY_WAIT: Duration = Duration::from_millis(900);
+/// How long a new capture waits for the previous paste to finish putting the user's clipboard back.
+const PASTE_SETTLE_WAIT: Duration = Duration::from_millis(1500);
 /// A capture older than this is repeated before it is replaced, and must give the same text (plan C2).
 const STALE_AFTER: Duration = Duration::from_secs(1);
 const RECEIPT_WAIT: Duration = Duration::from_secs(2);
@@ -107,6 +112,13 @@ pub fn refusal_for(ctx: &ForegroundContext, self_elevated: bool) -> Option<Refus
     } else {
         None
     }
+}
+
+/// Whether a copy that looks like a single line plus its line break means "nothing was selected". Only code editors
+/// (VS Code, Visual Studio, JetBrains...) copy the whole line when nothing is selected. In an email, a document or a
+/// web page, triple-clicking a line selects it together with its line break, and that is a real selection.
+pub fn copied_line_means_nothing_selected(text: &str, category: AppCategory) -> bool {
+    category == AppCategory::CodeEditor && looks_like_copied_line(text)
 }
 
 /// The signature of "copy line" in editors that copy the whole line when nothing is selected.
@@ -307,13 +319,14 @@ pub fn capture(ctx: &ForegroundContext) -> Result<Captured, Refusal> {
         return Err(refusal);
     }
     let _gate = input_gate();
+    wait_for_previous_paste();
     // KeyReed's own window can be in front: the Review panel takes the foreground when it opens, and the chord
     // can be pressed again straight after a fix. The selection is still in the window the chord was for, so put
     // it back in front first; another application's window is never taken from.
     return_to_target(ctx.hwnd);
     let (text, structured, clipboard_restored) = copy_selection(ctx.hwnd)?;
     Ok(Captured {
-        copied_line: looks_like_copied_line(&text),
+        copied_line: copied_line_means_nothing_selected(&text, ctx.category),
         text,
         structured,
         clipboard_restored,
@@ -352,10 +365,18 @@ pub fn replace(captured: &Captured, text: &str, ctx: &ForegroundContext) -> Resu
     let (tx, rx) = mpsc::sync_channel(1);
     let (hwnd, focus) = (captured.hwnd, captured.focus);
     let units: Vec<u16> = normalize_windows_newlines(&clean).encode_utf16().chain(std::iter::once(0)).collect();
-    std::thread::Builder::new()
+    PASTE_ACTIVE.store(true, Ordering::Release);
+    if std::thread::Builder::new()
         .name("keyreed-paste".into())
-        .spawn(move || paste_thread(units, snapshot, hwnd, focus, tx))
-        .map_err(|_| Refusal::Failed)?;
+        .spawn(move || {
+            let _active = PasteActive;
+            paste_thread(units, snapshot, hwnd, focus, tx)
+        })
+        .is_err()
+    {
+        PASTE_ACTIVE.store(false, Ordering::Release);
+        return Err(Refusal::Failed);
+    }
     match rx.recv_timeout(RECEIPT_WAIT + Duration::from_secs(1)) {
         Ok(PasteResult::Receipt) => Ok(Replaced::Pasted),
         Ok(PasteResult::NoReceipt) => Ok(Replaced::NoReceipt),
@@ -403,6 +424,27 @@ impl Drop for PasteState {
 
 thread_local! {
     static PASTE: RefCell<Option<PasteState>> = const { RefCell::new(None) };
+}
+
+/// True from the moment a paste thread starts until it has put the user's clipboard back (or decided not to).
+static PASTE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Clears `PASTE_ACTIVE` when the paste thread ends, on every path.
+struct PasteActive;
+
+impl Drop for PasteActive {
+    fn drop(&mut self) {
+        PASTE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+/// A capture right after a replace must not start while the earlier paste is still restoring the clipboard: that
+/// restore would land in the middle of the new copy and hand back the old clipboard instead of the selection.
+fn wait_for_previous_paste() {
+    let start = Instant::now();
+    while PASTE_ACTIVE.load(Ordering::Acquire) && start.elapsed() < PASTE_SETTLE_WAIT {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn with_state<R>(f: impl FnOnce(&mut PasteState) -> R) -> Option<R> {
@@ -600,6 +642,17 @@ mod tests {
         assert!(!looks_like_copied_line("let x = 1;"));
         assert!(!looks_like_copied_line("a\r\nb\r\n"));
         assert!(!looks_like_copied_line(""));
+    }
+
+    #[test]
+    fn a_selected_line_with_its_break_is_a_selection_outside_code_editors() {
+        // Triple-clicking a line in an email, a document or a page selects it with its line break.
+        for c in [AppCategory::Email, AppCategory::Document, AppCategory::Browser, AppCategory::Chat, AppCategory::Notes, AppCategory::General] {
+            assert!(!copied_line_means_nothing_selected("Thanks for the update.\r\n", c), "{c:?}");
+        }
+        // A code editor that copies the line because nothing was selected is still caught.
+        assert!(copied_line_means_nothing_selected("let x = 1;\r\n", AppCategory::CodeEditor));
+        assert!(!copied_line_means_nothing_selected("let x = 1;", AppCategory::CodeEditor));
     }
 
     #[test]

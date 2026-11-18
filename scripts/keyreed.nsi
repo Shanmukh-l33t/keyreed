@@ -17,7 +17,7 @@
 !include "LogicLib.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "2.1.0"
+!define APP_VERSION "2.1.1"
 
 !ifndef PAYLOAD_DIR
   !define PAYLOAD_DIR "..\dist\keyreed-win-x64-slim"

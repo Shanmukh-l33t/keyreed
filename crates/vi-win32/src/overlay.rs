@@ -465,7 +465,8 @@ pub fn render_pill_into(buf: &mut Vec<u32>, width: usize, height: usize, f: &Pil
     let radius = cap_h * 0.5;
     let cy = ry + margin + radius;
     let left_cx = rx + margin + radius;
-    let right_cx = rx + margin + cap_w - radius;
+    // max: for a circle (cap_w == cap_h) rounding can put this a hair left of `left_cx`, and `f32::clamp` panics on that.
+    let right_cx = (rx + margin + cap_w - radius).max(left_cx);
 
     let ring = f.ring.clamp(0.0, 1.0);
     let (accent, border_a, surface) = match f.kind {
@@ -1008,6 +1009,28 @@ mod tests {
             lift: 0.0,
             chip_hover: None,
             rect: None,
+        }
+    }
+
+    #[test]
+    fn an_idle_circle_at_any_sub_pixel_rect_renders_without_panicking() {
+        // Clicking the idle icon springs its size and press, so the capsule rect takes fractional values. With width
+        // equal to height the two end-cap centres coincide, and rounding used to put them a hair apart the wrong way
+        // round, which made `f32::clamp` panic (min > max) and closed the app.
+        for scale in [1.0f32, 1.25, 1.5, 2.0] {
+            let m = PillMetrics::for_pill(scale, PillKind::Idle);
+            let (w, h) = (pill_window_width(scale, PillKind::Idle, 0, 0, 0) as usize, m.window_height() as usize);
+            for i in 0..400 {
+                let t = i as f32 * 0.0137;
+                let mut f = frame(PillKind::Idle, &[], None);
+                f.scale = scale;
+                f.press = (t * 3.1).sin().abs();
+                f.lift = (t * 1.7).cos().abs();
+                f.pop = (t * 2.3).sin() * 0.3;
+                f.rect = Some((t % 1.0, (t * 7.0) % 1.0, w as f32 - (t % 1.0), h as f32 - ((t * 5.0) % 1.0)));
+                let mut buf = vec![0u32; w * h];
+                render_pill_into(&mut buf, w, h, &f);
+            }
         }
     }
 

@@ -825,20 +825,26 @@ fn open(req: ComposerRequest) {
     }
 }
 
-/// Starts the fold back into the pill; the window is destroyed when it ends.
+/// Starts the fold back into the pill; the window is destroyed when it ends. Tells the coordinator the bar is gone
+/// (once), so `Ctrl+Win+K` opens a new one: before, only Esc and an outside click did, and after Replace, Insert or
+/// Copy the coordinator kept believing the bar was open and ignored the chord until KeyReed restarted.
 pub fn close() {
-    let h = BAR.with(|b| {
+    let (h, first) = BAR.with(|b| {
         let mut bb = b.borrow_mut();
-        let bar = bb.as_mut()?;
-        if bar.closing.is_none() {
+        let Some(bar) = bb.as_mut() else { return (None, false) };
+        let first = bar.closing.is_none();
+        if first {
             bar.closing = Some(Instant::now());
             // Fold from where the bar is now.
             let mut r: RECT = unsafe { std::mem::zeroed() };
             unsafe { GetWindowRect(bar.hwnd, &mut r) };
             bar.to = r;
         }
-        Some(bar.hwnd)
+        (Some(bar.hwnd), first)
     });
+    if first {
+        send(UiAction::ComposerClosed);
+    }
     if let Some(h) = h {
         unsafe { SetTimer(h, IDT_BAR_ANIM, 16, None) };
     }
@@ -1002,7 +1008,6 @@ fn escape() {
 
 /// The bar goes away: the coordinator forgets the session, and the window folds back into the pill.
 fn dismiss() {
-    send(UiAction::ComposerClosed);
     close();
 }
 
@@ -1234,7 +1239,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_CLOSE => {
-            send(UiAction::ComposerClosed);
             close();
             0
         }

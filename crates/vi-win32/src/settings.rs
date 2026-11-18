@@ -3027,7 +3027,7 @@ unsafe fn paint_page(st: &St, cv: &mut Canvas, t: &Theme, rc: RECT, ctrls: bool)
         let (bar_w, inset) = (s(4), s(6));
         let (bar_x, top) = (panel.0 + panel.2 - inset - bar_w, head + inset);
         let track_h = (panel.1 + panel.3 - head - 2 * inset).max(1);
-        let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24), track_h);
+        let thumb_h = ((track_h as f32 * view_h as f32 / st.content_h as f32) as i32).clamp(s(24).min(track_h), track_h);
         let thumb_y = top + (track_h - thumb_h) * st.scroll / max;
         let rad = (bar_w / 2) as f32;
         cv.round_rect(bar_x as f32, top as f32, bar_w as f32, track_h as f32, rad, t.track, 1.0);
