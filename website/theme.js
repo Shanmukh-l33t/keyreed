@@ -11,5 +11,5 @@
   d.classList.add('js');
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) d.classList.add('rm');
   var m = document.querySelector('meta[name="theme-color"]');
-  if (m) m.setAttribute('content', t === 'dark' ? '#060908' : '#f6f9f6');
+  if (m) m.setAttribute('content', t === 'dark' ? '#070a09' : '#ffffff');
 })();

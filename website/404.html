@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Page not found | KeyReed</title>
   <meta name="robots" content="noindex">
-  <meta name="theme-color" content="#f6f9f6">
+  <meta name="theme-color" content="#ffffff">
   <link rel="icon" href="/favicon.ico" sizes="48x48">
   <link rel="stylesheet" href="/styles.css">
   <script src="/theme.js"></script>
 </head>
-<body class="on-dark-hero">
+<body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <defs>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m-6-6 6 6-6 6"/></symbol>
@@ -18,8 +18,9 @@
     </defs>
   </svg>
 
-  <main class="slab-shell end" id="main">
-    <div class="slab-dark nf-stage">
+  <main class="hero-open nf-stage" id="main">
+    <canvas class="hero-field" id="hero-field" aria-hidden="true"></canvas>
+    <div class="hero-in" style="gap:18px">
       <p class="eyebrow">Error 404</p>
       <h1 class="h1-sub">Can't find <span class="serif">that key.</span></h1>
       <p class="sec-sub center">Nothing is bound to this address. Press the keycap below, or head back to KeyReed.</p>
@@ -37,10 +38,10 @@
         <a class="btn btn-lg btn-primary" href="/">Back to KeyReed<svg class="ic arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
         <a class="btn btn-lg btn-ghost" href="https://github.com/Shanmukh-l33t/keyreed" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
       </div>
+    </div>
 
-      <div class="reeds-bed" aria-hidden="true">
-        <canvas id="hero-reeds"></canvas>
-      </div>
+    <div class="reeds-bed hero-reeds-bed" aria-hidden="true">
+      <canvas id="hero-reeds"></canvas>
     </div>
   </main>
 

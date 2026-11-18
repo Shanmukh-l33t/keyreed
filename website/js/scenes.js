@@ -380,24 +380,6 @@ function initFeaturesScene() {
    4. Block 5 — "Private by design" slab, particle flow & code receipt
    ===================================================== */
 function initPrivacyScene() {
-  const slab = $('#privacy-slab');
-  if (slab && gsap && ScrollTrigger && !isReducedMotion()) {
-    gsap.fromTo(
-      slab,
-      { scale: 0.94 },
-      {
-        scale: 1,
-        ease: 'power2.out',
-        scrollTrigger: {
-          trigger: slab,
-          start: 'top 92%',
-          end: 'top 30%',
-          scrub: 0.8,
-        },
-      }
-    );
-  }
-
   // Animated emerald particle stream (Mic -> CPU -> Text lines -> App; Cloud stays dark/disconnected)
   const svg = $('#priv-svg');
   if (svg && !isReducedMotion() && 'IntersectionObserver' in window) {
