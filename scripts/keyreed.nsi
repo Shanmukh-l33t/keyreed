@@ -10,7 +10,7 @@
 ; status text. Build with scripts\build-installer.sh.
 ;
 ; /DSANDBOX_TEST builds a copy that uses its own registry keys, install folder and Start menu
-; folder and never kills running processes or touches the Run key, so the wizard can be exercised
+; folder, only ever stops processes running from that folder, and never touches the Run key, so the wizard can be exercised
 ; on a machine that has a real KeyReed installed. It is for testing only and is never released.
 
 !include "MUI2.nsh"
@@ -63,11 +63,13 @@ ShowUninstDetails hide
 Page custom WelcomeShow WelcomeLeave
 ; The show callback belongs to the page inserted right after it.
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW InstFilesShow
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE InstFilesLeave
 !insertmacro MUI_PAGE_INSTFILES
 Page custom FinishShow FinishLeave
 
 UninstPage custom un.WelcomeShow
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.InstFilesShow
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.InstFilesLeave
 !insertmacro MUI_UNPAGE_INSTFILES
 UninstPage custom un.FinishShow
 !insertmacro MUI_LANGUAGE "English"
@@ -99,8 +101,9 @@ Function InstFilesShow
   KeyReedSetup::Progress "install"
 FunctionEnd
 
-Function .onInstSuccess
-  KeyReedSetup::Success
+; The work is done and the Finish page is next: the bar eases to 100% and the page says so before it is replaced.
+Function InstFilesLeave
+  KeyReedSetup::Finishing
 FunctionEnd
 
 Function .onInstFailed
@@ -138,8 +141,8 @@ Function un.InstFilesShow
   KeyReedSetup::Progress "uninstall"
 FunctionEnd
 
-Function un.onUninstSuccess
-  KeyReedSetup::Success
+Function un.InstFilesLeave
+  KeyReedSetup::Finishing
 FunctionEnd
 
 Function un.onUninstFailed
@@ -163,14 +166,10 @@ FunctionEnd
 Section "KeyReed" SecApp
   SectionIn RO
   !insertmacro STAGE "Preparing KeyReed"
-!ifndef SANDBOX_TEST
-  nsExec::Exec 'taskkill /F /IM keyreed.exe'
-  ; Only KeyReed's own llama-server (under the install folder), never another app's. WMI, not Get-Process: this 32-bit
-  ; installer starts 32-bit PowerShell, which cannot read the path of a 64-bit process.
-  nsExec::Exec `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $$_.Name -eq 'llama-server.exe' -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
-  ; Windows releases the DLLs a moment after the processes end.
-  Sleep 800
-!endif
+  ; Native (milliseconds): ends the keyreed.exe and llama-server.exe that run from $INSTDIR, then waits for Windows to
+  ; release their files. Replaces taskkill + PowerShell/WMI + a fixed sleep, which held the install at 0% for 5-7 s.
+  ; Scoped to $INSTDIR, so the test build (its own folder) can use it without touching a real KeyReed.
+  KeyReedSetup::StopApp "$INSTDIR"
   !insertmacro STAGE "Installing application files"
   ClearErrors
   SetOutPath "$INSTDIR"
@@ -207,10 +206,7 @@ SectionEnd
 
 Section "Uninstall"
   !insertmacro STAGE "Closing KeyReed"
-!ifndef SANDBOX_TEST
-  nsExec::ExecToLog 'taskkill /F /IM keyreed.exe'
-  nsExec::ExecToLog `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $$_.Name -eq 'llama-server.exe' -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith('$INSTDIR\runtime\llama\', 'OrdinalIgnoreCase') } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
-!endif
+  KeyReedSetup::StopApp "$INSTDIR"
   !insertmacro STAGE "Removing shortcuts"
   Delete "${DESKTOP_LNK}"
   Delete "${SM_DIR}\KeyReed.lnk"

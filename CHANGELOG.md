@@ -13,6 +13,16 @@
 - A click anywhere outside the Composer bar (left, right or middle button) closes it, even with a draft or a result on screen. Esc still works.
 - Quick Fix refusals are written to the log (reason and app category, never your text) so a failure can be traced.
 
+### Installer and uninstaller
+- **Starting an install or uninstall no longer sits at 0% for 5 to 7 seconds.** Stopping a running KeyReed used `taskkill`, then PowerShell and WMI, then a fixed 0.8 s wait. It is now one native step that ends the `keyreed.exe` and `llama-server.exe` running from the install folder, waits until Windows has released their files, and takes about 17 ms (nothing at all when KeyReed is not running). It only touches processes that run from the install folder, so a dev build or another copy of KeyReed is left alone.
+- **Smooth, steady motion.** The setup animation ran at about 20 frames per second, paced by `WM_TIMER`, and each frame repainted and copied the whole window. It now runs on a 60 Hz clock (measured: 16.3 ms between frames, 95th percentile 18 ms, none over 40 ms) and repaints only the rows that change, so a frame costs about 1.4 ms instead of 6.2 ms. A 530 ms freeze seen mid-install is gone from the timing runs.
+- **The progress shown eases toward the real progress** instead of jumping with the installer's coarse steps, and never runs ahead of it. The line under it names the step in progress (Installing application files, Registering KeyReed with Windows, and so on), crossfading as it changes.
+- **Screens move into each other.** Pages crossfade (their buttons too), and each page's elements rise in a beat apart. Hover and the shortcut switch are tweened, and a ripple leaves the ring on the finish screen.
+- **The progress screen is never a flash.** An uninstall that finishes in a fraction of a second now eases to 100% and shows "KeyReed is removed" for a beat (about 1.7 s in all) before the final page. The "installed" screen used to appear only as the window closed; it now appears when the work is done.
+- NSIS's own grey page no longer shows through for a frame when the install starts.
+- Setup follows Windows "Animation effects": with it off there is no clock, no transitions and no dwell.
+- For testing: `KEYREED_SETUP_PERF=<file>` logs every painted frame's time and cost, and `KEYREED_SETUP_SCALE=1.5` draws setup at 150% on a 100% screen. New tests: `scripts/installer/test_stop_app.py` (8 checks), and an upgrade over a running app in `test_installer.py` (21 checks in all).
+
 ## 2.1.0 (2026-11-18)
 
 The first full 2.1 release: a new interface, plus the Quick Fix and sound fixes below, on top of everything in 2.1.0-beta.1. Speech recognition, cleanup, insertion and your settings file work exactly as before. The grammar model now downloads from the 2.1.0 release (same file, same SHA-256), because the beta releases were taken down.

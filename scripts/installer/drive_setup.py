@@ -93,7 +93,7 @@ def run(exe, out, title, flags, args=()):
     hw = find(title, None if "uninstall" in title.lower() else p.pid)
     assert hw, f"{title} window not found"
     assert overlay(hw), "KeyReed screen not found"
-    u.SetForegroundWindow(hw); time.sleep(0.8)
+    u.SetForegroundWindow(hw); time.sleep(1.4)  # the page entrance takes 0.9 s
     shot(hw, out / "01_welcome.bmp")
     if "--cancel" in flags:
         click(hw, SECONDARY); time.sleep(0.8)
@@ -101,7 +101,9 @@ def run(exe, out, title, flags, args=()):
     click(hw, PRIMARY)
     frames, t0 = 0, time.time()
     while time.time() - t0 < 120:
-        shot(hw, out / f"progress_{frames:03d}.bmp"); frames += 1
+        if "--quiet" not in flags:  # screenshots add paints of their own; --quiet is for frame-timing runs
+            shot(hw, out / f"progress_{frames:03d}.bmp")
+        frames += 1
         if btn_text(hw, PRIMARY) in ("Finish", "Close") or btn_text(hw, SECONDARY) == "Close":
             break
         time.sleep(0.05)

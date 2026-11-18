@@ -122,6 +122,20 @@ def main():
     check("upgrade restored the replaced program file", hashlib.sha256((INST / "keyreed.exe").read_bytes()).hexdigest() == payload_files["keyreed.exe"])
     check("upgrade kept an unrelated file in the folder", (INST / "user-note.txt").exists())
 
+    # 2b. upgrade while the app is running from the install folder: it is stopped and its files replaced
+    import shutil
+    shutil.copy(Path(os.environ["SystemRoot"]) / "System32/PING.EXE", INST / "keyreed.exe")  # a stand-in process, never a real KeyReed
+    running = subprocess.Popen([str(INST / "keyreed.exe"), "-t", "127.0.0.1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.5)
+    t0 = time.time()
+    rc = silent()
+    took = time.time() - t0
+    check("upgrade over a running keyreed.exe exits 0 and stops it", rc == 0 and running.poll() is not None, f"rc={rc} running={running.poll() is None}")
+    check("upgrade over a running keyreed.exe replaced the locked file", hashlib.sha256((INST / "keyreed.exe").read_bytes()).hexdigest() == payload_files["keyreed.exe"])
+    print(f"  (silent upgrade over a running app took {took:.1f}s)")
+    if running.poll() is None:
+        running.kill()
+
     # 3. uninstall
     rc = subprocess.run([str(INST / "Uninstall.exe"), "/S", "_?=" + str(INST)], timeout=120).returncode
     time.sleep(1)
