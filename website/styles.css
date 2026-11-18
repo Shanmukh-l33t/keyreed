@@ -721,3 +721,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:34px
 @media (max-width:1020px){.core{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:620px){.core{grid-template-columns:1fr}}
 .states img{image-rendering:auto}
+
+/* Light theme: the product scene and the listener list sit on light surfaces; only the listener itself stays dark. */
+:root:not([data-theme="dark"]) .stage{background:linear-gradient(180deg,#eef5f1,#e2ece6);border-color:var(--line-2);box-shadow:0 1px 2px rgba(11,59,44,.06),0 40px 90px -40px rgba(11,59,44,.35),0 30px 120px -60px rgba(16,185,129,.35)}
+:root:not([data-theme="dark"]) .stage-glow{background:radial-gradient(ellipse at 50% 0%,rgba(16,185,129,.12),transparent 65%)}
+:root:not([data-theme="dark"]) .win{background:linear-gradient(180deg,#ffffff,#f7faf8);box-shadow:0 24px 50px -28px rgba(11,59,44,.45),0 0 0 1px rgba(11,59,44,.1)}
+:root:not([data-theme="dark"]) .rail,:root:not([data-theme="dark"]) .key{background:rgba(255,255,255,.85)}
+:root:not([data-theme="dark"]) .bubble{background:rgba(255,255,255,.9);box-shadow:0 18px 40px -24px rgba(11,59,44,.35)}
+:root:not([data-theme="dark"]) .taskbar{background:rgba(232,240,235,.95)}
+:root:not([data-theme="dark"]) .pill-kr{box-shadow:0 14px 34px -12px rgba(11,59,44,.55),0 0 40px -14px rgba(16,185,129,.45)}
+:root:not([data-theme="dark"]) .states{background:var(--surface);box-shadow:var(--card-shadow)}
