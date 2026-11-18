@@ -516,8 +516,14 @@ mod win_impl {
                     }
                     for ev in d.events {
                         match ev {
-                            HotkeyEvent::PttDown => crate::security::timing_mark_async("hook_ptt_down"),
-                            HotkeyEvent::PttUp => crate::security::timing_mark_async("hook_ptt_up"),
+                            HotkeyEvent::PttDown => {
+                                crate::security::stage_hook_ptt_clear();
+                                crate::security::timing_mark_async("hook_ptt_down");
+                            }
+                            HotkeyEvent::PttUp => {
+                                crate::security::stage_hook_ptt_up();
+                                crate::security::timing_mark_async("hook_ptt_up");
+                            }
                             _ => {}
                         }
                         let _ = ctx.tx.try_send(ev);
@@ -558,6 +564,12 @@ mod win_impl {
                 if let Some(ctx) = HOOK_CTX.get().filter(|_| !CAPTURE_ACTIVE.load(Ordering::Relaxed)) {
                     let d = decide_mouse(&ctx.shared.lock(), button, is_down);
                     for ev in d.events {
+                        // The mouse chord stamps t0 the same way the keyboard does.
+                        match ev {
+                            HotkeyEvent::PttDown => crate::security::stage_hook_ptt_clear(),
+                            HotkeyEvent::PttUp => crate::security::stage_hook_ptt_up(),
+                            _ => {}
+                        }
                         let _ = ctx.tx.try_send(ev);
                     }
                     if d.swallow {

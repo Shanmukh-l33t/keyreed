@@ -431,6 +431,10 @@ pub struct PipelineMetrics {
     pub working_set_mb: f64,
     #[serde(default)]
     pub cold_model: bool,
+    /// Joins this row to its `dictation_stages` timing line: the release's monotonic instant and the pid.
+    /// Empty when stage timing (`KEYREED_TIMING_LOG`) is off.
+    #[serde(default)]
+    pub dictation_id: String,
 }
 
 /// Complete output of one transcription + correction cycle.

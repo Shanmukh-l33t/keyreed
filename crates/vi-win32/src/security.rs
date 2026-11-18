@@ -3,6 +3,9 @@
 use anyhow::{bail, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::Instant;
 use zeroize::Zeroize;
 
 /// Tag placed in `dwExtraInfo` on synthetic `SendInput` events so our own `WH_KEYBOARD_LL` hook ignores them.
@@ -228,19 +231,126 @@ pub fn timing_mark(event: &str) {
     let Ok(path) = std::env::var("KEYREED_TIMING_LOG") else {
         return;
     };
-    let ms = std::time::SystemTime::now()
+    let ms = unix_now_ms();
+    write_timing_line(&path, &format!("{ms} {event}"));
+}
+
+fn unix_now_ms() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn write_timing_line(path: &str, line: &str) {
+    use std::io::Write;
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{ms} {event}")
-        });
+        .and_then(|mut f| writeln!(f, "{line}"));
 }
+
+/// One monotonic base for a whole dictation: the keyboard hook stamps t0 and the coordinator stamps t1..t5,
+/// so both must read the same clock. Nanoseconds since first use, because an `Instant` cannot cross the
+/// hook callback without a lock or an allocation. `None` (and nothing read) unless the log is on.
+static STAGE_BASE: OnceLock<Option<Instant>> = OnceLock::new();
+const STAGE_NOT_SET: u64 = u64::MAX;
+static STAGE_PTT_UP: AtomicU64 = AtomicU64::new(STAGE_NOT_SET);
+/// A key-up older than this belongs to an earlier press (tap/toggle, cancel, Composer stop), not to the
+/// dictation being released now: the coordinator's own instant is then the honest t0.
+const HOOK_UP_MAX_AGE_NS: u64 = 1_000_000_000;
+
+/// Read once: the hook calls this on every press and must not touch the environment each time.
+fn stage_base() -> Option<Instant> {
+    *STAGE_BASE.get_or_init(|| {
+        std::env::var("KEYREED_TIMING_LOG").is_ok_and(|p| !p.trim().is_empty()).then(Instant::now)
+    })
+}
+
+fn stage_now() -> Option<u64> {
+    stage_base().map(|b| b.elapsed().as_nanos() as u64)
+}
+
+/// Stamps the key-up the hook saw: that release is this dictation's t0.
+pub fn stage_hook_ptt_up() {
+    if let Some(ns) = stage_now() {
+        STAGE_PTT_UP.store(ns, Ordering::Relaxed);
+    }
+}
+
+/// Forgets any stamped key-up at a new press, so a press that never releases cannot seed a later t0.
+pub fn stage_hook_ptt_clear() {
+    STAGE_PTT_UP.store(STAGE_NOT_SET, Ordering::Relaxed);
+}
+
+/// One dictation's stages in milliseconds from t0; `None` = not reached. t0 is the hook's key-up when it is
+/// fresh, else the coordinator's own release instant (labelled `coordinator`). Every mark comes off the same
+/// `Instant`, so the series is monotonic even if the wall clock jumps. Dropping it writes the single
+/// `dictation_stages` line. t5 is delivery *start*: `SendInput` returning only means the keystrokes were
+/// queued, not that the target app has them, so insertion is never claimed as a stage.
+pub struct DictationStages {
+    id: String,
+    t0_ns: u64,
+    from_hook: bool,
+    ms: [Option<f32>; 6],
+}
+
+impl DictationStages {
+    /// `None` when the timing log is off, so the caller's field simply stays empty.
+    pub fn start() -> Option<Self> {
+        let now = stage_now()?;
+        let hook = STAGE_PTT_UP.swap(STAGE_NOT_SET, Ordering::Relaxed);
+        let hook = (hook != STAGE_NOT_SET && now.saturating_sub(hook) <= HOOK_UP_MAX_AGE_NS).then_some(hook);
+        let t0_ns = hook.unwrap_or(now);
+        Some(Self {
+            // Joins this line to its metrics row: one monotonic instant, one process, one dictation.
+            id: format!("{}-{}", std::process::id(), t0_ns),
+            t0_ns,
+            from_hook: hook.is_some(),
+            ms: [Some(0.0), None, None, None, None, None],
+        })
+    }
+
+    /// The identifier also carried by `PipelineMetrics::dictation_id`.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Marks stage `1..=5`: t1 final audio ready, t2 handed to ASR, t3 ASR done, t4 cleanup done,
+    /// t5 delivery starting.
+    pub fn mark(&mut self, stage: usize) {
+        if let (1..=5, Some(now)) = (stage, stage_now()) {
+            self.ms[stage] = Some(now.saturating_sub(self.t0_ns) as f32 / 1_000_000.0);
+        }
+    }
+}
+
+impl Drop for DictationStages {
+    fn drop(&mut self) {
+        // A press that never got a capture is not a dictation: nothing to measure.
+        if self.ms[1..].iter().all(Option::is_none) {
+            return;
+        }
+        if let Ok(path) = std::env::var("KEYREED_TIMING_LOG") {
+            let src = if self.from_hook { "hook" } else { "coordinator" };
+            let line = stages_line(&self.id, &self.ms, src);
+            write_timing_line(&path, &format!("{} {line}", unix_now_ms()));
+        }
+    }
+}
+
+fn stages_line(id: &str, ms: &[Option<f32>; 6], source: &str) -> String {
+    let mut line = format!("dictation_stages id={id} t0_src={source}");
+    for (i, v) in ms.iter().enumerate() {
+        match v {
+            Some(v) => line.push_str(&format!(" t{i}={v:.1}")),
+            None => line.push_str(&format!(" t{i}=na")),
+        }
+    }
+    line
+}
+
 /// Like `timing_mark` but safe to call from the keyboard hook callback: the time is taken here and the
 /// file write happens on a writer thread, so the hook never blocks on disk. No-op without the env var.
 pub fn timing_mark_async(event: &'static str) {
@@ -423,12 +533,21 @@ pub fn perf_trace_record(json_line: &str) {
     let Ok(path) = std::env::var("KEYREED_PERF_TRACE") else {
         return;
     };
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{json_line}")
-        });
+    write_timing_line(&path, json_line);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_stage_line_names_every_stage_and_says_which_were_not_reached() {
+        let ms = [Some(0.0), Some(12.5), None, Some(900.04), None, None];
+        assert_eq!(
+            super::stages_line("4242-1000", &ms, "hook"),
+            "dictation_stages id=4242-1000 t0_src=hook t0=0.0 t1=12.5 t2=na t3=900.0 t4=na t5=na"
+        );
+        assert_eq!(
+            super::stages_line("4242-1000", &[Some(0.0); 6], "coordinator"),
+            "dictation_stages id=4242-1000 t0_src=coordinator t0=0.0 t1=0.0 t2=0.0 t3=0.0 t4=0.0 t5=0.0"
+        );
+    }
 }

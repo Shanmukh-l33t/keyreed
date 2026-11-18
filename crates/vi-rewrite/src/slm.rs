@@ -421,6 +421,7 @@ impl LlamaServerSupervisor {
         }
 
         let child = cmd.spawn().context("failed to spawn llama-server")?;
+        log::info!("llama-server spawned pid={} port={port} gpu={}", child.id(), self.using_gpu);
         self.child = Some(child);
         self.port = port;
         self.healthy = false;

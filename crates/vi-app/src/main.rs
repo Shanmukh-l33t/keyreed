@@ -230,6 +230,9 @@ struct InferenceSupervisor {
     session_chunk_finalize_ms: f64,
     session_target_id_ms: f64,
     session_cold_model: bool,
+    /// t0..t5 of the dictation being released (`KEYREED_TIMING_LOG`); taken by the pipeline, which writes
+    /// the one stage line when it returns. Empty when the timing log is off.
+    session_stages: Option<vi_win32::DictationStages>,
 }
 
 /// How long dictation waits for the language model when a text job holds it.
@@ -388,6 +391,7 @@ impl InferenceSupervisor {
             session_chunk_finalize_ms: 0.0,
             session_target_id_ms: 0.0,
             session_cold_model: false,
+            session_stages: None,
         }
     }
 
@@ -633,6 +637,10 @@ impl InferenceSupervisor {
     ) -> Result<PipelineResult> {
         let t_release = Instant::now();
         let cpu_t0 = current_process_cpu_ms();
+        // t0/t1 were stamped at the release; t2..t5 are marked here and the one stage line is written when
+        // this scope ends, so no path can forget it.
+        let mut stages = self.session_stages.take();
+        let dictation_id = stages.as_ref().map(|s| s.id().to_string()).unwrap_or_default();
         let mut audio_duration_ms = ((samples_16k.len() as u64) * 1000) / 16_000;
 
         // Determine effective writing mode: explicit override -> per-app user rule -> automatic context -> default
@@ -661,6 +669,10 @@ impl InferenceSupervisor {
             .as_deref()
             .and_then(|b| dpapi_decrypt_from_b64(b).ok())
             .unwrap_or_default();
+
+        if let Some(s) = &mut stages {
+            s.mark(2); // final audio handed to ASR: the debug dump is done, live.finish/transcribe is next
+        }
 
         // Stage 1: Speech Recognition (Cloud when MaxAccuracy + configured + online; otherwise Local CPU ASR)
         let mut vad_ms = 0.0;
@@ -738,6 +750,13 @@ impl InferenceSupervisor {
             }
         }
 
+        if model_load_ms > 0.0 {
+            timing_mark(&format!("asr_model_load cold={cold_model} ms={model_load_ms:.0}"));
+        }
+        if let Some(s) = &mut stages {
+            s.mark(3); // ASR done
+        }
+
         // Zeroize raw PCM audio immediately after ASR finishes!
         samples_16k.zeroize();
 
@@ -776,6 +795,9 @@ impl InferenceSupervisor {
             rw
         });
         decrypted_key.zeroize();
+        if let Some(s) = &mut stages {
+            s.mark(4); // cleanup done: final text ready
+        }
 
         let mic_init_ms = std::mem::replace(&mut self.session_mic_init_ms, 0.0);
         let first_frame_ms = std::mem::replace(&mut self.session_first_frame_ms, 0.0);
@@ -817,6 +839,7 @@ impl InferenceSupervisor {
                 cpu_ms,
                 working_set_mb: ws_mb,
                 cold_model,
+                dictation_id: dictation_id.clone(),
             };
             if let Ok(line) = serde_json::to_string(&metrics) {
                 perf_trace_record(&line);
@@ -836,6 +859,13 @@ impl InferenceSupervisor {
 
         // Stage 3: Clipboard / Direct Typing Delivery
         let t_out = Instant::now();
+        // t5 is where delivery starts: before the input gate, the clipboard write and SendInput. A dictation
+        // that delivers nothing (Composer, voice command) has no t5, and insertion is never claimed at all.
+        if deliver_output {
+            if let Some(s) = &mut stages {
+                s.mark(5);
+            }
+        }
         let mut delivered_via = OutputMode::Clipboard;
         let mut fallback_to_clipboard = false;
         let mut delivery_reason: Option<String> = None;
@@ -934,6 +964,7 @@ impl InferenceSupervisor {
             cpu_ms,
             working_set_mb: ws_mb,
             cold_model,
+            dictation_id,
         };
         if let Ok(line) = serde_json::to_string(&metrics) {
             perf_trace_record(&line);
@@ -1089,7 +1120,8 @@ fn parse_category_str(s: &str) -> AppCategory {
 }
 
 fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
-    let mut wav_path: Option<PathBuf> = None;
+    let mut wav_paths = Vec::new();
+    let mut bench_config = None;
     let mut mode: Option<WritingMode> = None;
     let mut cat = AppCategory::General;
     let mut copy_clipboard = false;
@@ -1106,8 +1138,17 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
             "--transcribe-wav" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
-                    wav_path = Some(PathBuf::from(v));
+                    wav_paths.push(PathBuf::from(v));
                 }
+            }
+            "--bench-wav-list" => {
+                i += 1;
+                let list = std::fs::read_to_string(args.get(i).context("missing WAV list path")?)?;
+                wav_paths.extend(list.lines().filter(|s| !s.is_empty()).map(PathBuf::from));
+            }
+            "--bench-config" => {
+                i += 1;
+                bench_config = Some(args.get(i).context("missing benchmark config path")?);
             }
             "--mode" => {
                 i += 1;
@@ -1153,8 +1194,14 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
         i += 1;
     }
 
-    let wav = wav_path.context("--transcribe-wav requires a WAV file path")?;
-    let mut cfg = AppConfig::load_or_default(&AppConfig::default_config_path());
+    anyhow::ensure!(!wav_paths.is_empty(), "expected at least one WAV file");
+    let mut cfg = if let Some(path) = bench_config {
+        let (cfg, invalid) = AppConfig::parse_lenient(&std::fs::read_to_string(path)?);
+        anyhow::ensure!(invalid.is_empty(), "invalid benchmark settings: {invalid:?}");
+        cfg
+    } else {
+        AppConfig::load_or_default(&AppConfig::default_config_path())
+    };
     if let Some(m) = asr_model_override {
         cfg.local_asr_model = m;
     }
@@ -1173,8 +1220,8 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
     }
     let mut fg = ForegroundContext::default();
     fg.category = cat;
-    for n in 1..=repeat {
-        let samples = load_wav_16k_mono(&wav)?;
+    for (wav_index, n) in (0..wav_paths.len()).flat_map(|i| (1..=repeat).map(move |n| (i, n))) {
+        let samples = load_wav_16k_mono(&wav_paths[wav_index])?;
         let res = if live_mode {
             sup.session_keydown_at = Some(Instant::now());
             sup.begin_live_session(&cfg);
@@ -1195,7 +1242,8 @@ fn run_cli_transcribe_wav(args: &[String]) -> Result<()> {
         let (ws_mb, priv_mb) = current_process_memory_mb();
         let out_json = serde_json::json!({
             "run": n,
-            "cold": n == 1,
+            "wav_index": wav_index,
+            "cold": wav_index == 0 && n == 1 && !prewarm_before,
             "result": res,
             "memory": {
                 "working_set_mb": ws_mb,
@@ -2937,6 +2985,8 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                     }
                     PttAction::StopAndProcess => {
                         timing_mark("coordinator_stop");
+                        // t0: the hook's key-up when it is fresh, else this instant (labelled `coordinator`).
+                        supervisor.session_stages = vi_win32::DictationStages::start();
                         // The coordinator is blocked in the pipeline from here on and cannot service a cancel,
                         // so Escape must reach the user's app again instead of being swallowed.
                         busy_flag.store(false, Ordering::Relaxed);
@@ -2957,6 +3007,9 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                             // Keeps capturing 200 to 600 ms after release so the last word is not clipped.
                             let samples = m.stop_with_release_tail_and_take_16k();
                             supervisor.session_chunk_finalize_ms = t_fin.elapsed().as_secs_f64() * 1000.0;
+                            if let Some(s) = &mut supervisor.session_stages {
+                                s.mark(1); // final mic audio ready: release tail included
+                            }
                             let gui_stage = gui_for_worker.clone();
                             let on_corr = move || {
                                 gui_stage.set_processing_note(None);
@@ -2987,12 +3040,14 @@ fn run_windows_desktop_daemon(open_settings_on_start: bool) -> Result<()> {
                                 }
                                 Ok(res) if !res.final_text.is_empty() => {
                                     timing_mark(&format!(
-                                        "clipboard_ready asr_ms={:.1} rewrite_ms={:.1} output_ms={:.2} total_ms={:.1} tier={}",
+                                        "clipboard_ready asr_ms={:.1} rewrite_ms={:.1} output_ms={:.2} total_ms={:.1} tier={} model_load_ms={:.1} slm_startup_ms={:.1}",
                                         res.metrics.asr_ms,
                                         res.metrics.rewrite_ms,
                                         res.metrics.output_ms,
                                         res.metrics.total_release_to_ready_ms,
-                                        res.metrics.used_tier
+                                        res.metrics.used_tier,
+                                        res.metrics.model_load_ms,
+                                        res.metrics.slm_startup_ms
                                     ));
                                     last_completed_text = res.final_text.clone();
                                     let mut outcome = ReadyOutcome::from_pipeline(
@@ -3099,6 +3154,7 @@ fn print_help() {
            [--mode smart|exact|professional|casual|technical|terminal]\n    \
            [--app-category email|chat|document|code_editor|terminal|notes]\n    \
            [--asr-model <id>] [--llm-model <name|none>] [--copy-clipboard]\n  \
+         keyreed --bench-wav-list <list.txt> [--bench-config <json>] [--live]  Replay WAV paths in one process\n  \
          keyreed --print-foreground                  Print the foreground classifier and exit. No mic, no hook.
          keyreed --win32-e2e-test [wav] [png]     Execute automated Windows 11 live E2E verification suite",
         PRODUCT_NAME, VERSION_STR, PRODUCT_TAGLINE
@@ -3231,7 +3287,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--transcribe-wav") {
+    if args.iter().any(|a| a == "--transcribe-wav" || a == "--bench-wav-list") {
         return run_cli_transcribe_wav(&args);
     }
 
