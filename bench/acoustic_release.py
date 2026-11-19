@@ -18,12 +18,19 @@ def main():
     a.add_argument('--exe', required=True, type=Path)
     a.add_argument('wav', type=Path)
     a.add_argument('--repeat', type=int, default=1)
+    a.add_argument('--sim', action='store_true',
+                   help='feed the WAV through KEYREED_TEST_AUDIO_WAV instead of speakers + mic')
     args = a.parse_args()
     with wave.open(str(args.wav), 'rb') as w:
         duration = w.getnframes() / w.getframerate()
     u = C.windll.user32
     k = C.windll.kernel32
-    p = subprocess.Popen([str(args.exe.resolve()), '--e2e-target-window'])
+    env = None
+    if args.sim:
+        import os
+        env = dict(os.environ, KEYREED_TEST_AUDIO_WAV=str(args.wav.resolve()),
+                   KEYREED_TEST_AUDIO_SPEED=os.environ.get('KEYREED_TEST_AUDIO_SPEED', '6'))
+    p = subprocess.Popen([str(args.exe.resolve()), '--e2e-target-window'], env=env)
     try:
         hwnd = 0
         for _ in range(100):
@@ -60,16 +67,28 @@ def main():
             u.SendMessageW(edit, 0xC, 0, '')
             u.keybd_event(0xA3, 0x1D, 1, 0)
             try:
-                time.sleep(.35)
-                winsound.PlaySound(str(args.wav), winsound.SND_FILENAME | winsound.SND_NODEFAULT)
+                if args.sim:
+                    # The app is clocking the simulated mic itself; hold long enough for it to finish.
+                    time.sleep(.35 + duration / 6.0)
+                else:
+                    time.sleep(.35)
+                    winsound.PlaySound(str(args.wav), winsound.SND_FILENAME | winsound.SND_NODEFAULT)
             finally:
                 release = time.perf_counter()
                 u.keybd_event(0xA3, 0x1D, 3, 0)
             first = last = None
             length = 0
+            refocus = 0
             while time.perf_counter() - release < 30:
-                if u.GetForegroundWindow() != hwnd or p.poll() is not None:
-                    raise RuntimeError('target lost focus')
+                if p.poll() is not None:
+                    raise RuntimeError('app exited during the trial')
+                if u.GetForegroundWindow() != hwnd:
+                    # Something stole focus mid-trial (the desktop is in use). Take it back once or
+                    # twice; only give up when the app really cannot type here any more.
+                    refocus += 1
+                    if refocus > 3:
+                        raise RuntimeError('target lost focus')
+                    u.SetForegroundWindow(hwnd)
                 n = u.SendMessageW(edit, 0xE, 0, 0)
                 t = time.perf_counter() - release
                 if n != length:

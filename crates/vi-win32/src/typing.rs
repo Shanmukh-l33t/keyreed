@@ -302,6 +302,11 @@ pub fn deliver_direct_or_clipboard_fallback(
             GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
         };
 
+        // Delivery cost breakdown, only when KEYREED_PERF_TRACE names a file: insertion was the
+        // largest stage after transcription on real dictations (350-1100 ms), so measure it.
+        let d0 = std::time::Instant::now();
+        let mut marks: [f64; 4] = [0.0; 4];
+
         let target_hwnd = target_ctx.hwnd as usize as HWND;
         if IsWindow(target_hwnd) == 0 {
             write_clipboard_unicode(text, exclude_from_clipboard_history)?;
@@ -347,6 +352,8 @@ pub fn deliver_direct_or_clipboard_fallback(
             }
         }
 
+        marks[0] = d0.elapsed().as_secs_f64() * 1000.0; // focus restore + editor focus
+
         let is_term = target_ctx.category == AppCategory::Terminal;
         let is_chat = target_ctx.category == AppCategory::Chat;
         let sanitized = sanitize_for_injection(text, is_term);
@@ -357,8 +364,10 @@ pub fn deliver_direct_or_clipboard_fallback(
         // Keep completed text on clipboard as backup so transcription is never lost. Always excluded from
         // Win+V history and cloud sync: this copy is written on every dictation, whatever the setting says.
         let _ = write_clipboard_unicode(&sanitized, true);
+        marks[1] = d0.elapsed().as_secs_f64() * 1000.0; // clipboard backup
 
         release_active_modifiers_cleanly();
+        marks[2] = d0.elapsed().as_secs_f64() * 1000.0; // modifier drain
 
         let key = |vk: u16, flags: u32| INPUT {
             r#type: INPUT_KEYBOARD,
@@ -436,6 +445,17 @@ pub fn deliver_direct_or_clipboard_fallback(
             if inputs.len() > 64 {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
+        }
+        marks[3] = d0.elapsed().as_secs_f64() * 1000.0; // keystrokes
+        if std::env::var("KEYREED_PERF_TRACE").is_ok() {
+            crate::security::perf_trace_record(&format!(
+                "{{\"kind\":\"delivery\",\"focus_ms\":{:.1},\"clipboard_ms\":{:.1},\"modifiers_ms\":{:.1},\"typing_ms\":{:.1},\"units\":{}}}",
+                marks[0],
+                marks[1] - marks[0],
+                marks[2] - marks[1],
+                marks[3] - marks[2],
+                total_sent / 2
+            ));
         }
         Ok(DirectTypeOutcome::TypedDirectly {
             code_units_sent: total_sent / 2,
