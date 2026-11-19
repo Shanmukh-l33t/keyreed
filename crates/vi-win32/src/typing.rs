@@ -296,7 +296,7 @@ pub fn deliver_direct_or_clipboard_fallback(
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-            KEYEVENTF_UNICODE, VK_RETURN, VK_SHIFT, VK_TAB,
+            KEYEVENTF_UNICODE, VK_CONTROL, VK_RETURN, VK_SHIFT, VK_TAB, VK_V,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
@@ -363,7 +363,8 @@ pub fn deliver_direct_or_clipboard_fallback(
 
         // Keep completed text on clipboard as backup so transcription is never lost. Always excluded from
         // Win+V history and cloud sync: this copy is written on every dictation, whatever the setting says.
-        let _ = write_clipboard_unicode(&sanitized, true);
+        // A failed clipboard write must not turn into a paste of whatever was there before.
+        let clipboard_ready = write_clipboard_unicode(&sanitized, true).is_ok();
         marks[1] = d0.elapsed().as_secs_f64() * 1000.0; // clipboard backup
 
         release_active_modifiers_cleanly();
@@ -381,8 +382,21 @@ pub fn deliver_direct_or_clipboard_fallback(
                 },
             },
         };
+        // Pasting costs four key events; typing costs two per character and measured 508-1051 ms
+        // for 62 characters into a plain EDIT control, which was all of output_ms. Consoles do not
+        // paste on Ctrl+V, and a chat newline must stay Shift+Enter, so those keep the typed path.
+        let paste = clipboard_ready && !is_term && !sanitized.contains('\n');
         let mut inputs: Vec<INPUT> = Vec::with_capacity(sanitized.len() * 2 + 8);
-        for ch in sanitized.chars() {
+        if paste {
+            inputs.extend([
+                key(VK_CONTROL, 0),
+                key(VK_V, 0),
+                key(VK_V, KEYEVENTF_KEYUP),
+                key(VK_CONTROL, KEYEVENTF_KEYUP),
+            ]);
+        }
+        let typed: &str = if paste { "" } else { &sanitized };
+        for ch in typed.chars() {
             if ch == '\x0d' {
                 continue;
             }
