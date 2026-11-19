@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Everything in detail | KeyReed technical reference</title>
-  <meta name="description" content="Complete technical reference for KeyReed 2.1.1: all 8 SHA-256-pinned speech models, processing pipeline, privacy architecture, benchmarks, and known limits.">
+  <meta name="description" content="Complete technical reference for KeyReed 2.2.0: all 8 SHA-256-pinned speech models, processing pipeline, privacy architecture, benchmarks, and known limits.">
   <link rel="canonical" href="https://www.keyreed.com/details">
   <meta name="theme-color" content="#ffffff">
   <meta name="color-scheme" content="light dark">
@@ -31,11 +31,11 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "@id": "https://www.keyreed.com/details",
-    "headline": "KeyReed 2.1.1 — Everything, in detail",
+    "headline": "KeyReed 2.2.0 — Everything, in detail",
     "url": "https://www.keyreed.com/details",
     "dateModified": "2026-11-18",
     "image": "https://www.keyreed.com/assets/og-image.png",
-    "about": { "@type": "SoftwareApplication", "name": "KeyReed", "softwareVersion": "2.1.1" }
+    "about": { "@type": "SoftwareApplication", "name": "KeyReed", "softwareVersion": "2.2.0" }
   }
   </script>
 </head>
@@ -108,9 +108,9 @@
   <main id="main">
     <section class="sub-hero" id="top">
       <div class="wrap">
-        <p class="eyebrow">Technical Reference · KeyReed <span data-bind="version">2.1.1</span></p>
+        <p class="eyebrow">Technical Reference · KeyReed <span data-bind="version">2.2.0</span></p>
         <h1 class="h1-sub">Everything, <span class="serif">in detail.</span></h1>
-        <p class="sec-sub">Every model, pipeline stage, privacy guarantee, shortcut, benchmark, and limitation in the current 2.1.1 source — with zero hand-waving.</p>
+        <p class="sec-sub">Every model, pipeline stage, privacy guarantee, shortcut, benchmark, and limitation in the current 2.2.0 source — with zero hand-waving.</p>
       </div>
     </section>
 
@@ -159,7 +159,7 @@
 
             <div class="det-card">
               <table class="data-table">
-                <caption class="sr">KeyReed 2.1.1 local speech models catalog</caption>
+                <caption class="sr">KeyReed 2.2.0 local speech models catalog</caption>
                 <thead>
                   <tr>
                     <th scope="col">Model</th>
@@ -207,7 +207,7 @@
               <li><b>Audio in RAM only:</b> Recorded samples live in memory, never touch disk on the normal dictation path, and are zeroized once decoded.</li>
               <li><b>Optional cloud profiles:</b> <em>Balanced</em> and <em>Maximum Accuracy</em> only run if you opt in and enter your own API key (stored encrypted with Windows DPAPI; KeyReed ships no key).</li>
               <li><b>Clipboard hygiene:</b> Excluding fallback clipboard writes from Windows Clipboard History defaults to <code>true</code> for new configurations in <code>%LOCALAPPDATA%\keyreed\config.json</code>.</li>
-              <li><b>Audit note:</b> The style store and edit watcher exist in <code>vi-core</code> with unit tests, but neither is wired into the 2.1.1 runtime — KeyReed reads back none of your edits. An independent third-party packet capture of the offline profile has not been published yet; inspect the code below or capture your own.</li>
+              <li><b>Audit note:</b> The style store and edit watcher exist in <code>vi-core</code> with unit tests, but neither is wired into the 2.2.0 runtime — KeyReed reads back none of your edits. An independent third-party packet capture of the offline profile has not been published yet; inspect the code below or capture your own.</li>
             </ul>
 
             <div class="code-receipt lit keep-dark">
@@ -269,7 +269,7 @@
               <table class="data-table">
                 <caption class="sr">Windows system requirements</caption>
                 <tbody>
-                  <tr><th scope="row">Operating system</th><td>64-bit Windows 11 (UI and gallery verified). Windows 10 x64 is supported by the Win32/WASAPI code but was not re-tested for 2.1.1. No macOS, Linux, 32-bit, or ARM builds.</td></tr>
+                  <tr><th scope="row">Operating system</th><td>64-bit Windows 11 (UI and gallery verified). Windows 10 x64 is supported by the Win32/WASAPI code but was not re-tested for 2.2.0. No macOS, Linux, 32-bit, or ARM builds.</td></tr>
                   <tr><th scope="row">Processor &amp; GPU</th><td>x64 CPU; no dedicated GPU required. Optional grammar/writing model uses Vulkan GPU if available (<code>KEYREED_SLM_DEVICE=cpu</code> forces CPU).</td></tr>
                   <tr><th scope="row">Disk space</th><td>24.4 MB installer (or 46.2 MB portable zip) + ~460 MB for the default speech model + 73.1 MB for Quick Fix's grammar archive if enabled.</td></tr>
                   <tr><th scope="row">Memory</th><td>On a 3-core, 4 GB test VM, KeyReed + the local grammar runtime used ~1.6 GB together. Lighter ASR models (Moonshine Tiny ~95 MB RAM, Parakeet 110M ~190 MB RAM) fit tighter machines.</td></tr>
@@ -281,12 +281,13 @@
 
           <!-- 8. Known Limitations & Docs -->
           <section class="det-sec" id="limitations" data-reveal>
-            <h2 class="h3">Known limitations (2.1.1)</h2>
+            <h2 class="h3">Known limitations (2.2.0)</h2>
             <ul class="det-list">
-              <li><b>Automated verification on 2.1.1:</b> The new v3 Win32 interface was verified via automated tests and screenshot galleries on Windows 11; live microphone dictation, beam-search hotwords, and Quick Fix in Chromium/Outlook/Word were not re-tested by hand for 2.1.1. Review your first dictations.</li>
+              <li><b>Automated verification on 2.2.0:</b> Latency was measured by replaying 44 recorded clips through the same code path and by a release-to-text harness that drives the real insertion path; the interface was verified by automated tests and screenshot galleries. A by-hand dictation pass into Notepad, a browser and a chat app was not run for 2.2.0, and sleep/resume was not tested. Review your first dictations.</li>
+              <li><b>Rapid repeat presses:</b> pressing the dictation key again within about 0.2 s of the previous release transcribes every clip but delivers only one to the app. Normal back-to-back dictation works.</li>
               <li><b>Unsigned Windows binaries:</b> <code>KeyReed-Setup-x64.exe</code>, <code>keyreed.exe</code>, and bundled DLLs are not code-signed yet, so Windows SmartScreen may warn. Compare SHA-256 checksums before running.</li>
               <li><b>Composer model setup:</b> The Composer requires the local writing model (<code>Qwen3.5 0.8B</code>) installed; without it, requests stop cleanly with a local notice and send nothing anywhere.</li>
-              <li><b>Not in 2.1.1:</b> Voice commands to edit text, a "My style" Settings page, learning from user edits, and scored Hindi WER are open roadmap items.</li>
+              <li><b>Not in 2.2.0:</b> Voice commands to edit text, a "My style" Settings page, learning from user edits, and scored Hindi WER are open roadmap items.</li>
             </ul>
             <p class="fine">Read more in the repository: <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/installation.md" rel="noopener">Installation guide</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/architecture.md" rel="noopener">Architecture</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/troubleshooting.md" rel="noopener">Troubleshooting</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/blob/main/docs/development.md" rel="noopener">Development</a> · <a href="https://github.com/Shanmukh-l33t/keyreed/tree/main/docs/release" rel="noopener">Release audits</a>.</p>
           </section>

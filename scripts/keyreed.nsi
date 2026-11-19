@@ -17,7 +17,7 @@
 !include "LogicLib.nsh"
 
 !define APP_NAME "KeyReed"
-!define APP_VERSION "2.1.1"
+!define APP_VERSION "2.2.0"
 
 !ifndef PAYLOAD_DIR
   !define PAYLOAD_DIR "..\dist\keyreed-win-x64-slim"
@@ -74,7 +74,7 @@ UninstPage custom un.WelcomeShow
 UninstPage custom un.FinishShow
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "2.1.1.0"
+VIProductVersion "2.2.0.0"
 VIAddVersionKey "ProductName" "KeyReed"
 VIAddVersionKey "FileDescription" "KeyReed — Voice it. Everywhere."
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

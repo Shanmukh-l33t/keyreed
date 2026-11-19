@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.2.0 (2026-11-19)
+
+Dictation is faster where the time actually went, measured on this machine with 44 real recordings
+(read English plus Indian, British and US accents). Word error rate is unchanged at 10.18%
+(120 of 1,179 words), and 42 of the 44 transcripts are byte-identical to 2.1.1.
+
+### Fixed
+- **The speech model was unloaded after 30 minutes idle and loaded again inside the next dictation.** Real dictation logs showed `model_load_ms` 8.0 s typical and 13.2 s worst, in 5 of 7 dictations, while a dictation with the model already loaded took 0.711 s. The model now stays resident and is only released when the machine has under 1 GiB free; the cleanup model still unloads as before.
+- **The optional cleanup step could stall for 12 s before falling back to the rule text.** A warm local-model call is now bounded at 4 s on a GPU and 8 s on a CPU; the first call after the model starts keeps its longer allowance for shader compilation.
+- **Transcription only started after release.** Chunks only closed at a pause of 550 ms or more, which is longer than a breath inside a sentence, so continuous speech decoded in one blob at key-up. A 250 ms pause now closes a chunk and decodes it while you are still talking: release-to-transcript p50 1,009 → 523 ms, p95 4,171 → 1,038 ms, word error rate unchanged.
+- **Inserting the text cost 0.5–1.1 s.** Measured per stage, 99% of it was the simulated keystrokes themselves: 62 characters meant 124 key events. The transcript is now pasted with Ctrl+V over the clipboard copy KeyReed already writes, which takes 15–21 ms and lands in one edit. Terminals and any transcript containing a newline keep the typed path, and a failed clipboard write falls back to typing.
+- Trailing ellipsis runs and repeated-letter hallucinations from weak models are dropped in the rule pass, and two computed `f32::clamp` bounds that could panic (`min > max`) are ordered.
+
+### Known issue
+- Pressing the dictation key again within about 0.2 s of the previous release transcribes every clip but delivers only one to the app. Normal back-to-back dictation (a second or more apart) works.
+
+### Verified / not verified
+- Verified: 373 workspace tests; 44-clip word error rate before and after; release-to-text measured end to end through the real insertion path on a simulated microphone; edge cases for a 60 s monologue, a 100 s clip, silence only, and taps under and over 0.9 s.
+- Not verified: dictation into Notepad, a browser text box and a chat app by hand; sleep/resume; a live microphone pass on the final build.
+
 ## 2.1.1 (2026-11-18)
 
 ### Fixed
