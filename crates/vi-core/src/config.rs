@@ -229,6 +229,10 @@ pub struct AppConfig {
     /// Maximum Privacy profile (plan P3.5).
     #[serde(default)]
     pub text_jobs_allow_cloud: bool,
+    /// Diagnostic: when set to a file path, every dictation rewrites that WAV with the clip the ASR saw.
+    /// Off by default and never enabled by the app itself.
+    #[serde(default)]
+    pub debug_dump_wav: Option<String>,
     /// Learn words and habits from the corrections the user makes to KeyReed's own text (plan F3, P4.2).
     #[serde(default = "default_true")]
     pub learn_from_edits: bool,
@@ -278,6 +282,7 @@ impl Default for AppConfig {
             cloud: CloudSettings::default(),
             dictionary: PersonalDictionary::default(),
             text_jobs_allow_cloud: false,
+            debug_dump_wav: None,
             learn_from_edits: true,
             dialect: Dialect::Auto,
         }

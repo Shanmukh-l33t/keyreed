@@ -270,7 +270,32 @@ pub fn is_likely_silence_hallucination(raw: &str, speech_ratio: f32) -> bool {
     if speech_ratio < 0.08 && KNOWN_HALLUCINATIONS.contains(&norm.as_str()) {
         return true;
     }
+    // Weak English models fill silence with a repeated letter ("uuuuuuuuuu") or a stray character. A single
+    // letter on its own is only speech when it is a word ("I", "a").
+    let letters: Vec<char> = norm.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.len() < 2 && !matches!(norm.as_str(), "i" | "a") {
+        return true;
+    }
+    if letters.len() >= 3 && letters.windows(2).all(|w| w[0] == w[1]) {
+        return true;
+    }
     false
+}
+
+/// Trims the ellipsis runs weak models emit for trailing silence ("Hello ........" -> "Hello."). A single
+/// full stop, a real ellipsis inside the sentence and a normal word are left untouched.
+fn strip_trailing_ellipsis(s: &str) -> String {
+    let trimmed = s.trim_end();
+    let without = trimmed.trim_end_matches(['.', '\u{2026}', ' ']);
+    let dots = trimmed.len() - without.len();
+    if dots < 3 {
+        return s.to_string();
+    }
+    let mut out = without.to_string();
+    if out.chars().any(|c| c.is_alphanumeric()) {
+        out.push('.');
+    }
+    out
 }
 
 /// Drops standalone filler tokens. A sentence-ending mark that followed the filler moves onto the
@@ -632,7 +657,7 @@ pub fn run_tier0(
         };
     }
 
-    let mut s = raw_transcript.trim().to_string();
+    let mut s = strip_trailing_ellipsis(raw_transcript.trim());
     // Strip unmatched leading quote artifacts occasionally emitted by BPE tokenizers (e.g. Moonshine `"'I checked...`)
     if (s.starts_with("\"'") || s.starts_with("'\"") || s.starts_with('"') || s.starts_with('\''))
         && !s.ends_with('"')
@@ -730,6 +755,24 @@ pub fn run_tier0(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_repeated_letter_or_a_stray_character_is_not_speech() {
+        assert!(is_likely_silence_hallucination("uuuuuuuuuuuuuuuuuu", 0.9), "a repeated letter is noise");
+        assert!(is_likely_silence_hallucination("...", 0.9));
+        assert!(!is_likely_silence_hallucination("I", 0.9), "a single letter can be a word");
+        assert!(!is_likely_silence_hallucination("a", 0.9));
+        assert!(!is_likely_silence_hallucination("Hello there", 0.9));
+    }
+
+    #[test]
+    fn trailing_ellipsis_from_silence_is_trimmed() {
+        assert_eq!(strip_trailing_ellipsis("Hello ..............."), "Hello.");
+        assert_eq!(strip_trailing_ellipsis("Hello..."), "Hello.");
+        assert_eq!(strip_trailing_ellipsis("Hello."), "Hello.", "one full stop is real text");
+        assert_eq!(strip_trailing_ellipsis("and so on"), "and so on");
+        assert_eq!(strip_trailing_ellipsis("..."), "");
+    }
+
     use super::*;
 
     #[test]

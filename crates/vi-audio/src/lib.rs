@@ -991,6 +991,25 @@ pub fn tail_should_stop(frame_rms: &[f32], floor_rms: f32) -> bool {
 
 /// Loads any WAV file (8/16/24/32-bit int or 32-bit float, mono or stereo, any sample rate)
 /// and returns normalized 16 kHz mono `f32` samples for deterministic E2E testing and CLI transcription.
+/// Writes a 16 kHz mono 16-bit WAV. Used by the opt-in diagnostic that dumps the clip the ASR actually saw,
+/// so a bad transcript can be traced to the audio instead of guessed at. Never called unless the user asked.
+pub fn write_wav_16k_mono(path: &Path, samples: &[f32]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        }
+    }
+    let spec = hound::WavSpec { channels: 1, sample_rate: 16_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut writer = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("failed to write WAV {}", path.display()))?;
+    for s in samples {
+        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        writer.write_sample(v).with_context(|| format!("failed to write WAV {}", path.display()))?;
+    }
+    writer.finalize().with_context(|| format!("failed to finish WAV {}", path.display()))?;
+    Ok(())
+}
+
 pub fn load_wav_16k_mono(path: &Path) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)
         .with_context(|| format!("failed to open WAV {}", path.display()))?;

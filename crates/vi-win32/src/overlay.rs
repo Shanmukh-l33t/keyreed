@@ -498,7 +498,9 @@ pub fn render_pill_into(buf: &mut Vec<u32>, width: usize, height: usize, f: &Pil
         let top = ((cy - py) / radius).clamp(0.0, 1.0);
         for x in 0..width {
             let pxf = x as f32 + 0.5;
-            let cx = pxf.clamp(left_cx, right_cx);
+            // max() on the upper bound: a capsule a hair narrower than 2 px inverts the pair by 1e-6
+            // and f32::clamp panics on min > max.
+            let cx = pxf.clamp(left_cx, right_cx.max(left_cx));
             let d = ((pxf - cx).powi(2) + (py - cy).powi(2)).sqrt() - radius; // <0 inside
             if d >= shadow_r {
                 continue;

@@ -351,7 +351,10 @@ impl Panel {
         let content = self.layout.as_ref().map_or(0, |l| l.content_h) as f32 * 96.0 / self.dpi as f32;
         let note = if self.note.is_some() { NOTE_H + 8 } else { 0 };
         let chrome = HEADER_H + note + FOOTER_H + 2 * CARD_PAD;
-        ((content.ceil() as i32) + chrome).clamp(HEADER_H + FOOTER_H + 2 * CARD_PAD + 3 * LINE_H, MAX_H)
+        // The lower bound is computed and the upper is a constant: keep them ordered instead of letting a
+        // future layout make min > max (clamp panics then).
+        let min = HEADER_H + FOOTER_H + 2 * CARD_PAD + 3 * LINE_H;
+        ((content.ceil() as i32) + chrome).clamp(min, MAX_H.max(min))
     }
 
     fn geo(&mut self) -> Geo {
