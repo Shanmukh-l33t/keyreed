@@ -30,3 +30,31 @@ Speaker playback of one 4.035 s WAV → OWL microphone → running installed app
 371 workspace tests passed; 7 ignored. The normal installer was rebuilt at `dist/KeyReed-Setup-x64.exe` (24,454,277 bytes, SHA-256 `66c3546b7d6bbb3bab98e0301a43cac44fc425cc0a0cd831f24f5d36fbcb8cd1`). Installed the sandbox variant and checked that its executable SHA-256 matches the release executable and the slim payload. The working-tree build includes the six pre-existing dirty files, not just the instrumentation commit. The user's regular installation was not replaced.
 
 No verified after-gain to ship. Real release-to-visible percentiles in Notepad/browser/chat, rapid dictations, a 60 s microphone capture, silence/tap and sleep/resume on the new binary remain open. The optional audio dump is enabled in the user's existing config; benchmark config disabled it without modifying that file. No claim that the target is impossible on this hardware. Raw results: `bench/results/perf-local/` (machine-local, not committed).
+
+## Insertion and edge cases (19 Nov)
+
+Delivery was timed by stage with `KEYREED_PERF_TRACE` (62-character clip, 4 runs):
+
+| stage | ms |
+|---|---:|
+| foreground restore + editor focus | 1–4 |
+| clipboard backup | 0.3–1.4 |
+| modifier drain | 0.7–0.9 |
+| **SendInput keystrokes** | **508–1,051** |
+
+The cost was the per-character `SendInput`, not its overhead. Delivering the same text with
+Ctrl+V on the clipboard copy the path already writes: 15–21 ms, and the text appears in one
+change instead of growing character by character. Warm release-to-text on the clip 2,278 → 894 ms.
+Terminals and transcripts containing a newline keep the typed path; a failed clipboard write
+falls back to typing.
+
+Edge cases, simulated microphone:
+
+| case | result |
+|---|---|
+| 60 s monologue, normal pauses | total 2.39 s, 8/9 chunks decoded during the hold |
+| 100 s / 47 s clip | post-release 585 / 654 ms |
+| silence only | filtered in 1 ms, nothing inserted |
+| tap 0.7 s | filtered (deliberate minimum); 0.9 s and 1.2 s transcribe |
+| continuous speech with no 250 ms pause | worst case one 24 s chunk ≈ 3.9 s; a 10 s cap made p50 3x worse, so 24 s stays |
+| rapid back-to-back (0.2 s apart) | all dictations transcribe, but only one of four reached the target: open defect |

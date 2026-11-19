@@ -41,6 +41,8 @@ def main():
     a.add_argument('wav', type=Path)
     a.add_argument('--repeat', type=int, default=3)
     a.add_argument('--speed', type=float, default=6.0)
+    a.add_argument('--gap', type=float, default=None,
+                   help='seconds to wait for text before the next press; 0 = fire the next one immediately')
     args = a.parse_args()
     with wave.open(str(args.wav), 'rb') as w:
         duration = w.getnframes() / w.getframerate()
@@ -74,7 +76,7 @@ def main():
                 time.sleep(.2)
                 if u.GetForegroundWindow() != hwnd:
                     raise RuntimeError('target lost focus; no hotkey sent')
-            u.SendMessageW(edit, 0xC, 0, '')
+            before = u.SendMessageW(edit, 0xE, 0, 0)
             time.sleep(.05)
             u.keybd_event(0xA3, 0x1D, 1, 0)
             time.sleep(.3 + duration / args.speed)
@@ -88,12 +90,19 @@ def main():
                 if n != length:
                     first = t if first is None else first
                     last, length = t, n
-                if last is not None and t - last > 1.5:
+                if args.gap is not None and t >= args.gap:
+                    break
+                if args.gap is None and last is not None and t - last > 1.5:
                     break
                 time.sleep(.005)
-            print(json.dumps(dict(run=run + 1, audio_s=duration, chars=length,
+            print(json.dumps(dict(run=run + 1, audio_s=duration, chars=length - before,
                                   first_ms=None if first is None else round(first * 1000),
                                   last_change_ms=None if last is None else round(last * 1000))), flush=True)
+        # Back-to-back presses are fired before the previous insert lands: let the queue drain so the
+        # trial reports what the app actually delivered, not what had arrived when the last gap ended.
+        if args.gap is not None:
+            time.sleep(8)
+            print(json.dumps(dict(run='final', chars=u.SendMessageW(edit, 0xE, 0, 0) - before)), flush=True)
     finally:
         window.terminate()
         daemon.terminate()
